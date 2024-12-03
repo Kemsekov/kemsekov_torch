@@ -55,7 +55,7 @@ class ResidualNetwork(torch.nn.Module):
         )
         self.block5=torch.nn.Sequential(self.block5,SEModule(512))
         
-        self.avg_pool = torch.nn.AdaptiveAvgPool2d(final_pool_size)
+        self.avg_pool = torch.nn.AdaptiveAvgPool2d((final_pool_size,final_pool_size))
         self.fc = torch.nn.Linear(512*final_pool_size**2,classes)
         
     def forward(self,x):
