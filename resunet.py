@@ -119,11 +119,11 @@ class ResidualUnet(torch.nn.Module):
         ]
 
         downs_conv2d_impl = [
-            [nn.Conv2d]+[BSConvU]*(block_sizes[0]-1),
-            [nn.Conv2d]+[BSConvU]*(block_sizes[1]-1),
-            [nn.Conv2d]+[BSConvU]*(block_sizes[2]-1),
-            [nn.Conv2d]+[BSConvU]*(block_sizes[3]-1),
-            [nn.Conv2d]+[BSConvU]*(block_sizes[4]-1),
+            [BSConvU]*(block_sizes[0]),
+            [BSConvU]*(block_sizes[1]),
+            [BSConvU]*(block_sizes[2]),
+            [BSConvU]*(block_sizes[3]),
+            [BSConvU]*(block_sizes[4]),
         ]
 
         up_block_sizes = block_sizes[::-1]
