@@ -129,7 +129,7 @@ class ResidualBlock(torch.nn.Module):
         activation=torch.nn.ReLU,      # Activation function. Always pass constructor
         repeats = 1,                   # how many times repeat block internal transformation
         batch_norm = True,             #add batch normalization
-        conv2d_impl = BSConvU,          #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d
+        conv2d_impl = torch.nn.Conv2d, #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d
     ):
         """
         Initializes the ResidualBlock.
