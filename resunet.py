@@ -119,11 +119,11 @@ class ResidualUnet(torch.nn.Module):
         ]
 
         downs_conv2d_impl = [
-            BSConvU,#[nn.Conv2d]+[BSConvU]*(block_sizes[0]-1),
-            BSConvU,#[nn.Conv2d]+[BSConvU]*(block_sizes[1]-1),
-            BSConvU,#[nn.Conv2d]+[BSConvU]*(block_sizes[2]-1),
-            BSConvU,#[nn.Conv2d]+[BSConvU]*(block_sizes[3]-1),
-            BSConvU,#[nn.Conv2d]+[BSConvU]*(block_sizes[4]-1),
+            [nn.Conv2d]+[BSConvU]*(block_sizes[0]-1),
+            [nn.Conv2d]+[BSConvU]*(block_sizes[1]-1),
+            [nn.Conv2d]+[BSConvU]*(block_sizes[2]-1),
+            [nn.Conv2d]+[BSConvU]*(block_sizes[3]-1),
+            [nn.Conv2d]+[BSConvU]*(block_sizes[4]-1)
         ]
 
         up_block_sizes = block_sizes[::-1]
@@ -131,7 +131,7 @@ class ResidualUnet(torch.nn.Module):
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[0]-1),
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[1]-1),
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[2]-1),
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[3]-1),
+            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[3]-1)
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
