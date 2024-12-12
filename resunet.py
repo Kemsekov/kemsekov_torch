@@ -71,7 +71,7 @@ class Decoder(torch.nn.Module):
                 stride = int(0.5/output_scale),
                 dilation=1,
                 repeats=up_block_sizes[4],
-                conv2d_impl=nn.Conv2d
+                conv2d_impl=[nn.Conv2d]+[BSConvU]*(up_block_sizes[4]-1)
             )
         
         if output_scale==1:
@@ -82,7 +82,7 @@ class Decoder(torch.nn.Module):
                 stride = 2,
                 dilation=1,
                 repeats=up_block_sizes[4],
-                conv2d_impl=torch.nn.ConvTranspose2d
+                conv2d_impl=[torch.nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[4]-1)
             )
 
     def forward(self,x: torch.Tensor,skip_connections : List[torch.Tensor]):
@@ -119,19 +119,19 @@ class ResidualUnet(torch.nn.Module):
         ]
 
         downs_conv2d_impl = [
-            [nn.Conv2d]+[BSConvU]*(block_sizes[0]-1),
-            [nn.Conv2d]+[BSConvU]*(block_sizes[1]-1),
-            [nn.Conv2d]+[BSConvU]*(block_sizes[2]-1),
-            [nn.Conv2d]+[BSConvU]*(block_sizes[3]-1),
-            [nn.Conv2d]+[BSConvU]*(block_sizes[4]-1)
+            [nn.Conv2d]+[BSConvU]*(block_sizes[0]-1),#nn.Conv2d,
+            [nn.Conv2d]+[BSConvU]*(block_sizes[1]-1),#nn.Conv2d,
+            [nn.Conv2d]+[BSConvU]*(block_sizes[2]-1),#nn.Conv2d,
+            [nn.Conv2d]+[BSConvU]*(block_sizes[3]-1),#nn.Conv2d,
+            [nn.Conv2d]+[BSConvU]*(block_sizes[4]-1)#nn.Conv2d,
         ]
 
         up_block_sizes = block_sizes[::-1]
         ups_conv2d_impl = [
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[0]-1),
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[1]-1),
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[2]-1),
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[3]-1)
+            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[0]-1),#nn.ConvTranspose2d,#
+            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[1]-1),#nn.ConvTranspose2d,#
+            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[2]-1),#nn.ConvTranspose2d,#
+            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[3]-1)#nn.ConvTranspose2d,#
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
