@@ -65,24 +65,24 @@ class Decoder(torch.nn.Module):
             if output_scale<0.25:
                 kernel_size = 5
             self.up5 = ResidualBlock(
-                in_channels=up_in_channels[4],
+                in_channels=up_in_channels[-1],
                 out_channels=out_channels,
                 kernel_size=kernel_size,
                 stride = int(0.5/output_scale),
                 dilation=1,
-                repeats=up_block_sizes[4],
-                conv2d_impl=[nn.Conv2d]+[BSConvU]*(up_block_sizes[4]-1)
+                repeats=up_block_sizes[-1],
+                conv2d_impl=[nn.Conv2d]+[BSConvU]*(up_block_sizes[-1]-1)
             )
         
         if output_scale==1:
             self.up5 = ResidualBlock(
-                in_channels=up_in_channels[4],
+                in_channels=up_in_channels[-1],
                 out_channels=out_channels,
                 kernel_size=3,
                 stride = 2,
                 dilation=1,
-                repeats=up_block_sizes[4],
-                conv2d_impl=[torch.nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[4]-1)
+                repeats=up_block_sizes[-1],
+                conv2d_impl=[torch.nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[-1]-1)
             )
 
     def forward(self,x: torch.Tensor,skip_connections : List[torch.Tensor]):
