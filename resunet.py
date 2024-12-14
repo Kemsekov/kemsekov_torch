@@ -20,7 +20,7 @@ class Encoder(torch.nn.Module):
         self.downs =        torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]
 
-    def forward(self, x):
+    def forward_with_skip(self, x):
         skip_connections = []
         # Downsampling path
         for down in self.downs:
@@ -28,7 +28,8 @@ class Encoder(torch.nn.Module):
             skip_connections.append(x)
         x = self.down5(x)
         return x, skip_connections
-    def forward_without_skip(self,x):
+    
+    def forward(self,x):
         """makes same forward but do not keep track of skip connections"""
         for down in self.downs:
             x = down(x)
@@ -139,6 +140,6 @@ class ResidualUnet(torch.nn.Module):
         self.decoder = Decoder(up_in_channels,up_out_channels,up_block_sizes,ups_conv2d_impl,output_scale,out_channels)
 
     def forward(self, x):
-        x,skip = self.encoder(x)
+        x,skip = self.encoder.forward_with_skip(x)
         x = self.decoder(x,skip)
         return x
