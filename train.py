@@ -23,7 +23,8 @@ def train(
         tie_weights=False, 
         cast_batch_to_mixed_precision_dtype = False,
         scheduler = None,
-        checkpoints_count = 5
+        checkpoints_count = 5,
+        wrapped_model = None
     ):
     """
     Train and evaluate a model, saving checkpoints, plots, and metric history 
@@ -170,7 +171,8 @@ def train(
       except Exception as e:
           print(f"failed to compile model: {e}")
           model_script = None
-        
+    if wrapped_model is not None:
+        model = wrapped_model
     model, train_loader, test_loader,optimizer, scheduler = acc.prepare(model,train_loader,test_loader,optimizer, scheduler)
 
     if load_checkpoint_dir is not None and os.path.exists(load_checkpoint_dir):
