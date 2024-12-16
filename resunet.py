@@ -88,7 +88,7 @@ class Decoder(torch.nn.Module):
 
     def forward(self,x: torch.Tensor,skip_connections : List[torch.Tensor]):
         # Upsampling path
-        for i, up in enumerate(self.ups):
+        for i, up,conv_1x1 in enumerate(zip(self.ups,self.up_1x1_convs):
             x = up(x)
             if len(skip_connections)!=0:
                 # Concatenate the corresponding skip connection (from the downsampling path)
@@ -98,7 +98,7 @@ class Decoder(torch.nn.Module):
                 x = torch.cat((x, skip), dim=1)
                 
                 # to decrease num of channels
-                x = self.up_1x1_convs[i](x)
+                x = conv_1x1(x)
         x = self.up5(x)
         return x
     
