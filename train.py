@@ -277,8 +277,9 @@ def train(
             test_loss_history.append(test_loss)
 
         if acc.is_main_process:
-            print(f'\tTrain {metric_name}: {train_metric:.4f}')
-            if is_testing:
+            if train_metric!=0:
+                print(f'\tTrain {metric_name}: {train_metric:.4f}')
+            if is_testing and test_metric!=0:
                 print(f'\tTest  {metric_name}: {test_metric:.4f}')
             print(f'\tTrain Loss: {running_loss:.4f}')
             if is_testing:
