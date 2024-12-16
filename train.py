@@ -7,7 +7,7 @@ from accelerate import Accelerator
 import math
 import shutil
 import time
-
+from accelerate import load_checkpoint_and_dispatch
 
 def train(
         model,
@@ -386,3 +386,12 @@ dtype_map = {
     'int8': torch.int8,
     'int16': torch.int16,
 }
+
+def load_best_checkpoint(model,bast_path):
+    checkpoints = os.path.join(base_path,'checkpoints')
+    c = os.listdir(checkpoints)
+    best = sorted(c,key=lambda x: int(x.split('-')[-1]))[-1]
+    checkpoint = os.path.join(checkpoints,best,'state')
+    print("loading",checkpoint)
+    model = load_checkpoint_and_dispatch(model,checkpoint)
+    return model
