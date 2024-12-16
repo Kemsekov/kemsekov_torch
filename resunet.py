@@ -86,7 +86,7 @@ class Decoder(torch.nn.Module):
                 conv2d_impl=[torch.nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[-1]-1)
             )
 
-    def forward(self,x: torch.Tensor,skip_connections : List[torch.Tensor]):
+    def forward_with_skip(self,x: torch.Tensor,skip_connections : List[torch.Tensor]):
         # Upsampling path
         for i, (up,conv_1x1) in enumerate(zip(self.ups,self.up_1x1_convs)):
             x = up(x)
@@ -102,6 +102,13 @@ class Decoder(torch.nn.Module):
         x = self.up5(x)
         return x
     
+
+    def forward(self,x: torch.Tensor):
+        # Upsampling path
+        for i, up in enumerate(self.ups):
+            x = up(x)
+        x = self.up5(x)
+        return x
     
 class ResidualUnet(torch.nn.Module):
     # output_scale must be power of 2: 0.125 0.25 0.5 1 2 4 etc
@@ -142,5 +149,5 @@ class ResidualUnet(torch.nn.Module):
 
     def forward(self, x):
         x,skip = self.encoder.forward_with_skip(x)
-        x = self.decoder(x,skip)
+        x = self.decoder.forward_with_skip(x,skip)
         return x
