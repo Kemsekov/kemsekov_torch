@@ -117,8 +117,8 @@ class ResidualUnet(torch.nn.Module):
         super().__init__()
         assert output_scale>=0.125 and output_scale<=1, "output_scale must be in range [0.125,1]"
 
-        in_channels_ = [in_channels,64,128,128,256]
-        out_channels_ = [64,128,128,256,256]
+        in_channels_ = [in_channels,64,128,256,512]
+        out_channels_ = [64,128,128,256,512]
         dilations=[
             1,
             1,
