@@ -388,7 +388,7 @@ dtype_map = {
     'int16': torch.int16,
 }
 
-def load_best_checkpoint(model,bast_path):
+def load_best_checkpoint(model,base_path):
     checkpoints = os.path.join(base_path,'checkpoints')
     c = os.listdir(checkpoints)
     best = sorted(c,key=lambda x: int(x.split('-')[-1]))[-1]
