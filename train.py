@@ -296,7 +296,7 @@ def train(
         
         # create history plots in plots folder
         # Update to save loss and metric plots in separate files and only for the last epoch
-        if acc.is_main_process and len(loss_history)>1:
+        if acc.is_main_process:
             # Loss plot
             plt.figure()
             plt.plot(loss_history, label="Train Loss")
