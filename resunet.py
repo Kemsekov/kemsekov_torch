@@ -117,7 +117,7 @@ class ResidualUnet(torch.nn.Module):
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[1]-1),#nn.ConvTranspose2d,#
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[2]-1),#nn.ConvTranspose2d,#
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[3]-1),#nn.ConvTranspose2d,#
-            nn.ConvTranspose2d,# make last layer full to get best reconstruction performance
+            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[4]-1),# make last layer full to get best reconstruction performance
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
