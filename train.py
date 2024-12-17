@@ -403,3 +403,9 @@ def load_best_checkpoint(model,base_path):
     print("loading",checkpoint)
     model = load_checkpoint_and_dispatch(model,checkpoint)
     return model
+
+def load_last_checkpoint(model,base_path):
+    checkpoint = os.path.join(base_path,'last','state')
+    print("loading",checkpoint)
+    model = load_checkpoint_and_dispatch(model,checkpoint)
+    return model
