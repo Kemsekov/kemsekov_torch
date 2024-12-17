@@ -2,7 +2,7 @@ from typing import List
 from residual import *
 
 class Encoder(torch.nn.Module):
-    def __init__(self, in_channels_, out_channels_, dilations, block_sizes, downs_conv2d_impl):
+    def __init__(self, in_channels_, out_channels_, dilations, block_sizes, downs_conv2d_impl,dropout_p=0.5):
         super().__init__()
         downs_list = []
         for i in range(len(block_sizes)):
@@ -19,12 +19,14 @@ class Encoder(torch.nn.Module):
             downs_list.append(down_i)
         self.downs =        torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]
+        self.dropout = nn.Dropout2d(p=dropout_p)
 
     def forward_with_skip(self, x):
         skip_connections = []
         # Downsampling path
         for down in self.downs:
             x = down(x)
+            x=self.dropout(x)
             skip_connections.append(x)
         x = self.down5(x)
         return x, skip_connections
@@ -33,11 +35,12 @@ class Encoder(torch.nn.Module):
         """makes same forward but do not keep track of skip connections"""
         for down in self.downs:
             x = down(x)
+            x=self.dropout(x)
         x = self.down5(x)
         return x
 
 class Decoder(torch.nn.Module):
-    def __init__(self, up_in_channels, up_out_channels, up_block_sizes, ups_conv2d_impl):
+    def __init__(self, up_in_channels, up_out_channels, up_block_sizes, ups_conv2d_impl,dropout_p=0.5):
         super().__init__()
         ups = []
         conv1x1s = []
@@ -59,6 +62,7 @@ class Decoder(torch.nn.Module):
         self.ups =          torch.nn.ModuleList(ups[:-1])
         self.up_1x1_convs = torch.nn.ModuleList(conv1x1s[:-1])
         self.up5 = ups[-1][0]
+        self.dropout = nn.Dropout2d(p=dropout_p)
 
     def forward_with_skip(self,x: torch.Tensor,skip_connections : List[torch.Tensor]):
         # Upsampling path
@@ -70,7 +74,7 @@ class Decoder(torch.nn.Module):
                 
                 # here skip needs to be reshaped to x size before making concat
                 x = torch.cat((x, skip), dim=1)
-                
+                x=self.dropout(x)
                 # to decrease num of channels
                 x = conv_1x1(x)
         x = self.up5(x)
@@ -81,6 +85,7 @@ class Decoder(torch.nn.Module):
         # Upsampling path
         for i, up in enumerate(self.ups):
             x = up(x)
+            x=self.dropout(x)
         x = self.up5(x)
         return x
     
