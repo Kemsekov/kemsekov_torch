@@ -224,11 +224,11 @@ def train(
         running_loss = 0.0
         metric = 0
         optimizer.zero_grad()  # Reset gradients before accumulation
-        model.train()
         train_metric = 0.0
         pbar = tqdm(train_loader,desc=f"train {acc.process_index}")
         start = time.time()
         
+        model.train()
         for batch in pbar:
             with acc.accumulate(model):
                 # sometimes accelerate autocast fails to do it's job
@@ -360,6 +360,10 @@ def train(
                 # for each improvement save training state and model
                 # copy current saved state from last to checkpoint
                 shutil.copytree(save_last_dir, checkpoints_dir_with_epoch,dirs_exist_ok=True)
+                # update base model
+                if model_script is not None:
+                    model_script=load_last_checkpoint(model_script,save_results_dir,log=False)
+                    model_script.save(model_save_path)
 
 
 def cast_to_dtype(inputs,dtype):
@@ -395,17 +399,19 @@ dtype_map = {
     'int16': torch.int16,
 }
 
-def load_best_checkpoint(model,base_path):
+def load_best_checkpoint(model,base_path,log = True):
     checkpoints = os.path.join(base_path,'checkpoints')
     c = os.listdir(checkpoints)
     best = sorted(c,key=lambda x: int(x.split('-')[-1]))[-1]
     checkpoint = os.path.join(checkpoints,best,'state')
-    print("loading",checkpoint)
+    if log:
+        print("loading",checkpoint)
     model = load_checkpoint_and_dispatch(model,checkpoint)
     return model
 
-def load_last_checkpoint(model,base_path):
+def load_last_checkpoint(model,base_path,log=True):
     checkpoint = os.path.join(base_path,'last','state')
-    print("loading",checkpoint)
+    if log:
+        print("loading",checkpoint)
     model = load_checkpoint_and_dispatch(model,checkpoint)
     return model
