@@ -18,28 +18,25 @@ def gcd(a, b):
 # advanced residual block with modular structure
 class ResidualBlock(torch.nn.Module):
     """
-    Advanced Residual Block with Modular Structure.
+    Advanced Residual Block with a Modular Structure.
 
     This block supports residual convolutional transformations with custom kernel sizes, dilations, 
-    and stride. It allows modular selection of the convolution implementation (e.g., BSConvU or 
-    standard Conv2d) and is compatible with transpose convolutions for upsampling. 
+    and stride. It allows modular selection of the convolution implementation (e.g., BSConvU, standard Conv2d, or ConvTranspose2d)
+    and is compatible with transpose convolutions for upsampling.
+
+    The ResidualBlock can be repeated multiple times, with each repeat potentially using a different convolution implementation.
+    It also includes an optional batch normalization layer after each convolution and an activation function applied after each normalization.
 
     Attributes:
-        convs (torch.nn.ModuleList): List of convolutional layers applied in sequence.
+        convs (torch.nn.ModuleList): List of convolutional layers applied in sequence for each repeat.
         batch_norms (torch.nn.ModuleList): List of batch normalization layers corresponding to each repeat.
-        x_correct (torch.nn.Module): A linear correction applied to the input to match the output shape for residual addition.
-        activation (torch.nn.Module): The activation function applied after each convolution.
+        x_correct (torch.nn.Module): A correction module applied to the input to match the output shape for residual addition.
+        activation (torch.nn.Module): The activation function applied after each convolution and normalization.
 
-    Args:
-        in_channels (int): Number of input channels.
-        out_channels (int): Number of output channels.
-        kernel_size (int or list of int): Kernel size(s) for the convolutions.
-        stride (int, optional): Stride for the convolutions, used to modify output spatial dimensions. Default is 1.
-        dilation (int or list of int, optional): Dilation rates for the convolutions. Default is 1.
-        activation (type, optional): Constructor for the activation function to use. Default is torch.nn.ReLU.
-        repeats (int, optional): Number of times to repeat the residual block transformation. Default is 1.
-        batch_norm (bool, optional): If True, includes BatchNorm after each convolution. Default is True.
-        conv2d_impl (type, optional): Convolution implementation class to use (e.g., BSConvU or Conv2d). Default is BSConvU.
+    Raises:
+        AssertionError: 
+            - If the length of `conv2d_impl` (when provided as a list) does not match `repeats`.
+            - If the length of `dilation` does not match `kernel_size` when they are provided as lists.
     """
 
     def __init__(
@@ -57,22 +54,28 @@ class ResidualBlock(torch.nn.Module):
         """
         Initializes the ResidualBlock.
 
-        This method sets up the residual block's convolutional structure, batch normalization, 
+        This method sets up the residual block's convolutional layers, batch normalization layers, 
         and residual correction to ensure input-output compatibility for residual addition.
+
+        The residual connection is adjusted using a separate convolution (`x_correct`) if there's a change
+        in the number of channels or the stride, ensuring that the input can be added to the output.
+
+        Additionally, the block optimizes computation by collapsing consecutive convolutions with the same
+        kernel size and dilation into grouped convolutions.
 
         Args:
             in_channels (int): Number of input channels.
             out_channels (int): Number of output channels.
-            kernel_size (int or list of int): Kernel size(s) for the convolutions.
+            kernel_size (int or list of int): Kernel size(s) for the convolutions. If a list is provided, it should match the number of output channels.
             stride (int, optional): Stride for the convolutions, used to modify output spatial dimensions. Default is 1.
-            dilation (int or list of int, optional): Dilation rates for the convolutions. Default is 1.
-            activation (type, optional): Constructor for the activation function to use. Default is torch.nn.ReLU.
-            repeats (int, optional): Number of times to repeat the residual block transformation. Default is 1.
+            dilation (int or list of int, optional): Dilation rates for the convolutions. If a list is provided, it should match the number of kernel sizes. Default is 1.
+            activation (type, optional): Constructor for the activation function to use (e.g., `torch.nn.ReLU`). Default is `torch.nn.ReLU`.
+            repeats (int, optional): Number of times to repeat the residual block transformation. Each repeat can use a different convolution implementation if `conv2d_impl` is a list. Default is 1.
             batch_norm (bool, optional): If True, includes BatchNorm after each convolution. Default is True.
-            conv2d_impl (List[type],type, optional): Convolution implementation class to use per each repeat (e.g., BSConvU or Conv2d or Conv2dTranspose). Default is BSConvU
-
-        Raises:
-            AssertionError: If the number of dilations does not match the number of output channels.
+            conv2d_impl (type or list of type, optional): Convolution implementation class to use. 
+                Can be a single type (e.g., `BSConvU`, `nn.Conv2d`, `nn.ConvTranspose2d`) applied to all repeats, 
+                or a list of types with length equal to `repeats`, specifying the convolution implementation for each repeat. 
+                Default is `BSConvU`.
         """
         super().__init__()
 
@@ -83,7 +86,7 @@ class ResidualBlock(torch.nn.Module):
         
         self._is_transpose_conv = "output_padding" in inspect.signature(conv2d_impl[0].__init__).parameters
         
-        self.conv_x_correct(in_channels, out_channels, stride, batch_norm, conv2d_impl)
+        self._conv_x_correct(in_channels, out_channels, stride, batch_norm, conv2d_impl)
         # self.resize_x_correct(in_channels, out_channels, stride, batch_norm, conv2d_impl)
         
         if not isinstance(dilation,list):
@@ -152,7 +155,25 @@ class ResidualBlock(torch.nn.Module):
         self.convs = torch.nn.ModuleList(self.convs)
         self.batch_norms = torch.nn.ModuleList(self.batch_norms)
         
-    def conv_x_correct(self, in_channels, out_channels, stride, batch_norm, conv2d_impl):
+    def _conv_x_correct(self, in_channels, out_channels, stride, batch_norm, conv2d_impl):
+        """
+        Initializes the residual correction module to adjust the input tensor for residual addition.
+
+        This method creates a convolutional layer (or a sequential module with batch normalization)
+        that transforms the input tensor `x` to match the shape of the output tensor, ensuring that
+        the residual connection can be added correctly.
+
+        Args:
+            in_channels (int): Number of input channels.
+            out_channels (int): Number of output channels.
+            stride (int): Stride used in the main convolutions.
+            batch_norm (bool): Whether to include batch normalization after the correction convolution.
+            conv2d_impl (list of type): List of convolution implementations used in the main block.
+
+        Notes:
+            - If `stride > 1` or `in_channels != out_channels`, a convolutional correction is applied.
+            - Uses `nn.Conv2d` or `nn.ConvTranspose2d` based on whether the block is a transposed convolution.
+        """
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
         # number of channels or some stride
         correct_x_ksize = 1 if stride==1 else (1+stride)//2 *2 +1
@@ -194,6 +215,7 @@ class ResidualBlock(torch.nn.Module):
 
         This method processes the input through the convolutional transformations, 
         adds the residual correction, and applies the activation function. 
+        It leverages TorchScript's parallelism features to optimize performance.
 
         Args:
             x (torch.Tensor): Input tensor of shape (batch_size, in_channels, height, width).
@@ -224,14 +246,17 @@ class ResidualBlock(torch.nn.Module):
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
     def transpose(self,conv2d_transpose_impl = torch.nn.ConvTranspose2d):
         """
-        Creates a transposed version of the current ResidualBlock.
-        This method returns a new ResidualBlock instance with the specified transpose convolution 
-        implementation. The resulting block can be used for upsampling operations.
+        Creates a transposed (upsampling) version of the current ResidualBlock.
+
+        This method returns a new `ResidualBlock` instance configured with the specified 
+        transposed convolution implementation, enabling the block to perform upsampling operations.
+
         Args:
-            conv2d_transpose_impl (type, optional): Transpose convolution implementation class to use 
-                (e.g., ConvTranspose2d). Default is torch.nn.ConvTranspose2d.
+            conv2d_transpose_impl (type, optional): Transposed convolution implementation class to use 
+                (e.g., `nn.ConvTranspose2d`). Default is `torch.nn.ConvTranspose2d`.
+
         Returns:
-            ResidualBlock: A new ResidualBlock instance configured for transposed convolutions.
+            ResidualBlock: A new `ResidualBlock` instance configured for transposed convolutions.
         """
         
         # if we use stride 1 do not change anything

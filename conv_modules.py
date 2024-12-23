@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-# blueprint pointwise-depthwise convolution, which works better than original depthwise-pointwise convolution
 class SEModule(nn.Module):
     """
     Spatial squeeze & channel excitation attention module, as proposed in https://arxiv.org/abs/1709.01507.
@@ -18,7 +17,6 @@ class SEModule(nn.Module):
 
     def forward(self, x):
         return x * self.cSE(x)
-    
 
 class BSConvU(torch.nn.Sequential): 
     """
