@@ -1,6 +1,8 @@
 from typing import List
 from residual import *
 
+attention = SCSEModule
+
 class Encoder(torch.nn.Module):
     """
     Encoder module for the Residual U-Net architecture.
@@ -19,7 +21,7 @@ class Encoder(torch.nn.Module):
         """
         Initializes the Encoder module.
 
-        Constructs a sequence of ResidualBlocks, each followed by an SEModule and dropout.
+        Constructs a sequence of ResidualBlocks, each followed by an attention and dropout.
         The final ResidualBlock is stored separately as `down5`.
 
         Args:
@@ -45,7 +47,7 @@ class Encoder(torch.nn.Module):
                 repeats=block_sizes[i],
                 conv2d_impl=downs_conv2d_impl[i]
             )
-            down_i = torch.nn.Sequential(down_i,SEModule(out_channels_[i]))
+            down_i = torch.nn.Sequential(down_i,attention(out_channels_[i]))
             downs_list.append(down_i)
         self.downs =        torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]
@@ -113,7 +115,7 @@ class Decoder(torch.nn.Module):
         """
         Initializes the Decoder module.
 
-        Constructs a sequence of ResidualBlocks configured for upsampling, each followed by an SEModule.
+        Constructs a sequence of ResidualBlocks configured for upsampling, each followed by an attention.
         Additionally, it sets up 1x1 convolutional layers to reduce the number of channels after concatenation
         with skip connections. The final ResidualBlock is stored separately as `up5`.
 
@@ -140,7 +142,7 @@ class Decoder(torch.nn.Module):
                 repeats=up_block_sizes[i],
                 conv2d_impl=ups_conv2d_impl[i]
             )
-            up_i = torch.nn.Sequential(up_i,SEModule(up_out_channels[i]))
+            up_i = torch.nn.Sequential(up_i,attention(up_out_channels[i]))
             conv1x1_i = torch.nn.Conv2d(up_out_channels[i]*2, up_out_channels[i], kernel_size=1)
 
             ups.append(up_i)
