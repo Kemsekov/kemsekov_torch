@@ -83,7 +83,7 @@ class Decoder(torch.nn.Module):
 
     def forward(self,x: torch.Tensor):
         # Upsampling path
-        for i, up in enumerate(self.ups):
+        for up in self.ups:
             x = up(x)
             x=self.dropout(x)
         x = self.up5(x)
