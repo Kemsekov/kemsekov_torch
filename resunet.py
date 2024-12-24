@@ -52,7 +52,7 @@ class Encoder(torch.nn.Module):
         self.downs =        torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]
         self.dropout = nn.Dropout2d(p=dropout_p)
-
+    @torch.jit.export
     def forward_with_skip(self, x):
         """
         Forward pass through the Encoder with skip connections.
@@ -152,6 +152,7 @@ class Decoder(torch.nn.Module):
         self.up5 = ups[-1][0]
         self.dropout = nn.Dropout2d(p=dropout_p)
 
+    @torch.jit.export
     def forward_with_skip(self,x: torch.Tensor,skip_connections : List[torch.Tensor]):
         """
         Forward pass through the Decoder with skip connections.
