@@ -1,4 +1,5 @@
 import inspect
+from typing import Literal
 import torch
 import torch.nn as nn
 from conv_modules import *
@@ -35,21 +36,21 @@ class ResidualBlock(torch.nn.Module):
 
     Raises:
         AssertionError: 
-            - If the length of `conv2d_impl` (when provided as a list) does not match `repeats`.
+            - If the length of `conv_impl` (when provided as a list) does not match `repeats`.
             - If the length of `dilation` does not match `kernel_size` when they are provided as lists.
     """
 
     def __init__(
         self,
-        in_channels,                   # Number of input channels.
-        out_channels,                  # Number of output channels.
-        kernel_size = 3,               # Kernel size. Could be a list
-        stride = 1,                    # stride to use, will reduce/increase output size(dependent on conv2d impl) as multiple of itself
-        dilation = 1,                  # List of dilation values for each output channel. Can be an integer
-        activation=torch.nn.ReLU,      # Activation function. Always pass constructor
-        repeats = 1,                   # how many times repeat block internal transformation
-        batch_norm = True,             #add batch normalization
-        conv2d_impl = BSConvU, #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d
+        in_channels,                        # Number of input channels.
+        out_channels,                       # Number of output channels.
+        kernel_size = 3,                    # Kernel size. Could be a list
+        stride = 1,                         # stride to use, will reduce/increase output size(dependent on conv2d impl) as multiple of itself
+        dilation = 1,                       # List of dilation values for each output channel. Can be an integer
+        activation=torch.nn.ReLU,           # Activation function. Always pass constructor
+        batch_norm = True,                  #add batch normalization
+        conv_impl = BSConvU,                #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d
+        dimensions : Literal[1,2,3] = 2
     ):
         """
         Initializes the ResidualBlock.
@@ -70,24 +71,30 @@ class ResidualBlock(torch.nn.Module):
             stride (int, optional): Stride for the convolutions, used to modify output spatial dimensions. Default is 1.
             dilation (int or list of int, optional): Dilation rates for the convolutions. If a list is provided, it should match the number of kernel sizes. Default is 1.
             activation (type, optional): Constructor for the activation function to use (e.g., `torch.nn.ReLU`). Default is `torch.nn.ReLU`.
-            repeats (int, optional): Number of times to repeat the residual block transformation. Each repeat can use a different convolution implementation if `conv2d_impl` is a list. Default is 1.
             batch_norm (bool, optional): If True, includes BatchNorm after each convolution. Default is True.
-            conv2d_impl (type or list of type, optional): Convolution implementation class to use. 
+            conv_impl (type or list of type, optional): Convolution implementation class to use. 
                 Can be a single type (e.g., `BSConvU`, `nn.Conv2d`, `nn.ConvTranspose2d`) applied to all repeats, 
                 or a list of types with length equal to `repeats`, specifying the convolution implementation for each repeat. 
                 Default is `BSConvU`.
         """
         super().__init__()
 
-        if not isinstance(conv2d_impl,list):
-            conv2d_impl=[conv2d_impl]*repeats
+        if not isinstance(conv_impl,list):
+            conv_impl=[conv_impl]
+        repeats=len(conv_impl)
+        
+        self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
+        
+        bn = [nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d]
+        x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
+        x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
+        if batch_norm:
+            batch_norm_impl=bn[dimensions-1]
+        else:
+            batch_norm_impl=nn.Identity()
 
-        assert len(conv2d_impl) == repeats, "Length of conv2d_impl must match the number of repeats."
-        
-        self._is_transpose_conv = "output_padding" in inspect.signature(conv2d_impl[0].__init__).parameters
-        
-        self._conv_x_correct(in_channels, out_channels, stride, batch_norm, conv2d_impl)
-        # self.resize_x_correct(in_channels, out_channels, stride, batch_norm, conv2d_impl)
+        self._conv_x_correct(in_channels, out_channels, stride, batch_norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
+        # self._resize_x_correct(in_channels, out_channels, stride, batch_norm_impl, conv_impl)
         
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels
@@ -105,8 +112,7 @@ class ResidualBlock(torch.nn.Module):
         self._activation_func = activation
         self.activation = activation()
         self.repeats = repeats
-        self.batch_norm = batch_norm
-        self.conv2d_impl=conv2d_impl
+        self.conv_impl=conv_impl
 
         # collapse same-shaped conv blocks to reduce computation resources
         out_channels_ = [1]
@@ -141,21 +147,30 @@ class ResidualBlock(torch.nn.Module):
                 )
                 if v==0 and self._is_transpose_conv:
                     conv_kwargs['output_padding']=stride_ - 1
-                convs_.append(conv2d_impl[v](**conv_kwargs))
+                convs_.append(conv_impl[v](**conv_kwargs))
 
             conv = torch.nn.ModuleList(convs_)
             self.convs.append(conv)
             
             #optionally add batch normalization
-            batch_norm = \
-                torch.nn.BatchNorm2d(out_channels) \
-                if batch_norm else torch.nn.Identity()
-            self.batch_norms.append(batch_norm)
+            self.batch_norms.append(batch_norm_impl(out_channels))
             
         self.convs = torch.nn.ModuleList(self.convs)
         self.batch_norms = torch.nn.ModuleList(self.batch_norms)
+    def _resize_x_correct(self, in_channels, out_channels, stride, batch_norm_impl, conv_impl):
+        scale = 1/stride
+        if self._is_transpose_conv:
+            scale=stride
+
+        # if we have different output tensor size, apply linear x_correction
+        # to make sure we can add it with output
+        if stride>1 or in_channels!=out_channels:
+            # there is many ways to linearly downsample x, but max pool with conv2d works best of all
+            self.x_correct = torch.nn.Upsample(scale_factor=scale)
+        else:
+            self.x_correct = torch.nn.Identity()
         
-    def _conv_x_correct(self, in_channels, out_channels, stride, batch_norm, conv2d_impl):
+    def _conv_x_correct(self, in_channels, out_channels, stride, batch_norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         """
         Initializes the residual correction module to adjust the input tensor for residual addition.
 
@@ -168,7 +183,7 @@ class ResidualBlock(torch.nn.Module):
             out_channels (int): Number of output channels.
             stride (int): Stride used in the main convolutions.
             batch_norm (bool): Whether to include batch normalization after the correction convolution.
-            conv2d_impl (list of type): List of convolution implementations used in the main block.
+            conv_impl (list of type): List of convolution implementations used in the main block.
 
         Notes:
             - If `stride > 1` or `in_channels != out_channels`, a convolutional correction is applied.
@@ -190,9 +205,9 @@ class ResidualBlock(torch.nn.Module):
             padding = correct_x_padding,
             groups=gcd(in_channels,out_channels)
         )
-        x_conv_impl = nn.Conv2d
+        x_conv_impl = x_corr_conv_impl
         if self._is_transpose_conv:
-            x_conv_impl = nn.ConvTranspose2d
+            x_conv_impl = x_corr_conv_impl_T
             x_corr_kwargs['output_padding'] = stride - 1
             x_corr_kwargs['groups'] = 1
 
@@ -203,8 +218,7 @@ class ResidualBlock(torch.nn.Module):
             self.x_correct = \
                 torch.nn.Sequential(
                     x_conv_impl(**x_corr_kwargs),
-                    torch.nn.BatchNorm2d(out_channels) \
-                    if batch_norm else torch.nn.Identity()
+                    batch_norm_impl(out_channels)
                 )
         else:
             self.x_correct = torch.nn.Identity()
@@ -261,7 +275,7 @@ class ResidualBlock(torch.nn.Module):
         
         # if we use stride 1 do not change anything
         if self.stride==1: 
-            conv2d_transpose_impl=self.conv2d_impl
+            conv2d_transpose_impl=self.conv_impl
             
         return ResidualBlock(
             in_channels=self.in_channels,
@@ -272,5 +286,5 @@ class ResidualBlock(torch.nn.Module):
             activation = self._activation_func,
             repeats = self.repeats,
             batch_norm = self.batch_norm,
-            conv2d_impl = conv2d_transpose_impl
+            conv_impl = conv2d_transpose_impl
         )

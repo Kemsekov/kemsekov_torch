@@ -17,7 +17,7 @@ class Encoder(torch.nn.Module):
         dropout (torch.nn.Dropout2d): Dropout layer applied after each downsampling block.
     """
 
-    def __init__(self, in_channels_, out_channels_, dilations, block_sizes, downs_conv2d_impl,dropout_p=0.5):
+    def __init__(self, in_channels_, out_channels_, dilations, downs_conv_impl,dropout_p=0.5):
         """
         Initializes the Encoder module.
 
@@ -28,8 +28,7 @@ class Encoder(torch.nn.Module):
             in_channels_ (List[int]): List of input channel sizes for each ResidualBlock.
             out_channels_ (List[int]): List of output channel sizes for each ResidualBlock.
             dilations (List[List[int]]): List of dilation rates for each ResidualBlock.
-            block_sizes (List[int]): List indicating the number of repeats for each ResidualBlock.
-            downs_conv2d_impl (List[List[type]]): List of convolution implementations for each ResidualBlock.
+            downs_conv_impl (List[List[type]]): List of convolution implementations for each ResidualBlock.
             dropout_p (float, optional): Dropout probability. Default is 0.5.
 
         Raises:
@@ -37,15 +36,14 @@ class Encoder(torch.nn.Module):
         """
         super().__init__()
         downs_list = []
-        for i in range(len(block_sizes)):
+        for i in range(len(downs_conv_impl)):
             down_i = ResidualBlock(
                 in_channels=in_channels_[i],
                 out_channels=out_channels_[i],
                 kernel_size= 3,
                 stride = 2,
                 dilation=dilations[i],
-                repeats=block_sizes[i],
-                conv2d_impl=downs_conv2d_impl[i]
+                conv_impl=downs_conv_impl[i]
             )
             down_i = torch.nn.Sequential(down_i,attention(out_channels_[i]))
             downs_list.append(down_i)
@@ -111,7 +109,7 @@ class Decoder(torch.nn.Module):
         up5 (ResidualBlock): The final upsampling ResidualBlock.
         dropout (torch.nn.Dropout2d): Dropout layer applied after each upsampling block.
     """
-    def __init__(self, up_in_channels, up_out_channels, up_block_sizes, ups_conv2d_impl,dropout_p=0.5):
+    def __init__(self, up_in_channels, up_out_channels, ups_conv_impl,dropout_p=0.5):
         """
         Initializes the Decoder module.
 
@@ -122,8 +120,7 @@ class Decoder(torch.nn.Module):
         Args:
             up_in_channels (List[int]): List of input channel sizes for each ResidualBlock in the decoder.
             up_out_channels (List[int]): List of output channel sizes for each ResidualBlock in the decoder.
-            up_block_sizes (List[int]): List indicating the number of repeats for each ResidualBlock.
-            ups_conv2d_impl (List[List[type]]): List of convolution implementations for each ResidualBlock.
+            ups_conv_impl (List[List[type]]): List of convolution implementations for each ResidualBlock.
             dropout_p (float, optional): Dropout probability. Default is 0.5.
 
         Raises:
@@ -132,15 +129,14 @@ class Decoder(torch.nn.Module):
         super().__init__()
         ups = []
         conv1x1s = []
-        for i in range(len(ups_conv2d_impl)):
+        for i in range(len(ups_conv_impl)):
             up_i = ResidualBlock(
                 in_channels=up_in_channels[i],
                 out_channels=up_out_channels[i],
                 kernel_size=3,
                 stride = 2,
                 dilation=1,
-                repeats=up_block_sizes[i],
-                conv2d_impl=ups_conv2d_impl[i]
+                conv_impl=ups_conv_impl[i]
             )
             up_i = torch.nn.Sequential(up_i,attention(up_out_channels[i]))
             conv1x1_i = torch.nn.Conv2d(up_out_channels[i]*2, up_out_channels[i], kernel_size=1)
@@ -249,7 +245,7 @@ class ResidualUnet(torch.nn.Module):
         if output_scale==1:
             self.scaler = nn.Identity()
 
-        downs_conv2d_impl = [
+        downs_conv_impl = [
             [nn.Conv2d]+[BSConvU]*(block_sizes[0]-1),#nn.Conv2d,
             [nn.Conv2d]+[BSConvU]*(block_sizes[1]-1),#nn.Conv2d,
             [nn.Conv2d]+[BSConvU]*(block_sizes[2]-1),#nn.Conv2d,
@@ -258,7 +254,7 @@ class ResidualUnet(torch.nn.Module):
         ]
 
         up_block_sizes = block_sizes[::-1]
-        ups_conv2d_impl = [
+        ups_conv_impl = [
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[0]-1),#nn.ConvTranspose2d,#
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[1]-1),#nn.ConvTranspose2d,#
             [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[2]-1),#nn.ConvTranspose2d,#
@@ -268,8 +264,8 @@ class ResidualUnet(torch.nn.Module):
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
         up_out_channels[-1]=out_channels
-        self.encoder = Encoder(in_channels_,out_channels_,dilations,block_sizes,downs_conv2d_impl)
-        self.decoder = Decoder(up_in_channels,up_out_channels,up_block_sizes,ups_conv2d_impl)
+        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl)
+        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl)
 
     def forward(self, x):
         """

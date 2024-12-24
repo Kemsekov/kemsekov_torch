@@ -10,8 +10,7 @@ class ResidualNetwork(torch.nn.Module):
             kernel_size= 3,
             stride = 2,
             dilation=1,
-            repeats=block_sizes[0],
-            conv2d_impl=conv_impl
+            conv_impl=[conv_impl]*block_sizes[0],
         )
         self.block1=torch.nn.Sequential(self.block1,SEModule(64),nn.Dropout2d(dropout_p))
         
@@ -21,8 +20,7 @@ class ResidualNetwork(torch.nn.Module):
             kernel_size=3,
             stride = 2,
             dilation= 1,
-            repeats=block_sizes[1],
-            conv2d_impl=conv_impl
+            conv_impl=[conv_impl]*block_sizes[1],
         )
         self.block2=torch.nn.Sequential(self.block2,SEModule(128),nn.Dropout2d(dropout_p))
         
@@ -32,23 +30,19 @@ class ResidualNetwork(torch.nn.Module):
             kernel_size=3,
             stride = 2,
             dilation=[1]*96+[2]*32,
-            repeats=block_sizes[2],
-            conv2d_impl=conv_impl
+            conv_impl=[conv_impl]*block_sizes[2],
         )
         self.block3=torch.nn.Sequential(self.block3,SEModule(128),nn.Dropout2d(dropout_p))
 
-        
         self.block4 = ResidualBlock(
             in_channels=128,
             out_channels=256,
             kernel_size=3,
             stride = 2,
             dilation=[1]*128+[2]*64+[3]*64,
-            repeats=block_sizes[3],
-            conv2d_impl=conv_impl
+            conv_impl=[conv_impl]*block_sizes[3],
         )
         self.block4=torch.nn.Sequential(self.block4,SEModule(256),nn.Dropout2d(dropout_p))
-        
         
         self.block5 = ResidualBlock(
             in_channels=256,
@@ -56,8 +50,7 @@ class ResidualNetwork(torch.nn.Module):
             kernel_size=3,
             stride = 2,
             dilation=[1]*256+[2]*128+[3]*128,
-            repeats=block_sizes[4],
-            conv2d_impl=conv_impl
+            conv_impl=[conv_impl]*block_sizes[4],
         )
         self.block5=torch.nn.Sequential(self.block5,SEModule(512),nn.Dropout2d(dropout_p))
         

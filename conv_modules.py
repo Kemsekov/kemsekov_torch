@@ -40,11 +40,11 @@ class SCSEModule(nn.Module):
 
     def forward(self, x):
         # Apply channel attention
-        cse_out = x * self.cSE(x)
+        cse_out = self.cSE(x)
         # Apply spatial attention
-        sse_out = x * self.sSE(x)
+        sse_out = self.sSE(x)
         # Combine the outputs
-        return cse_out + sse_out
+        return x * (cse_out + sse_out)
 
 class BSConvU(torch.nn.Sequential): 
     """
