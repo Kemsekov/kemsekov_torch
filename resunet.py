@@ -1,5 +1,6 @@
 from typing import List
 from residual import *
+from common_modules import Interpolate
 
 class Encoder(torch.nn.Module):
     """
@@ -237,30 +238,23 @@ class ResidualUnet(torch.nn.Module):
         dilations=[
             1,
             1,
-            [1]*96+[2]*32,
-            [1]*128+[2]*64+[3]*64,
-            [1]*256+[2]*128+[3]*128
+            1,
+            1,
+            # aspp block
+            [1]*96+[2]*96+[3]*64+[4]*64+[5]*64+[6]*64+[7]*64
         ]
-        self.scaler = nn.Upsample(scale_factor=output_scale)
+        self.scaler = Interpolate(scale_factor=output_scale)
         
         if output_scale==1:
             self.scaler = nn.Identity()
 
         downs_conv_impl = [
-            [nn.Conv2d]+[BSConvU]*(block_sizes[0]-1),#nn.Conv2d,
-            [nn.Conv2d]+[BSConvU]*(block_sizes[1]-1),#nn.Conv2d,
-            [nn.Conv2d]+[BSConvU]*(block_sizes[2]-1),#nn.Conv2d,
-            [nn.Conv2d]+[BSConvU]*(block_sizes[3]-1),#nn.Conv2d,
-            [nn.Conv2d]+[BSConvU]*(block_sizes[4]-1),#nn.Conv2d,
+            [nn.Conv2d]+[BSConvU]*(block_sizes[i]-1) for i in range(len(in_channels_))
         ]
 
         up_block_sizes = block_sizes[::-1]
         ups_conv_impl = [
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[0]-1),#nn.ConvTranspose2d,#
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[1]-1),#nn.ConvTranspose2d,#
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[2]-1),#nn.ConvTranspose2d,#
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[3]-1),#nn.ConvTranspose2d,#
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[4]-1),#
+            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[i]-1) for i in range(len(in_channels_))
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
