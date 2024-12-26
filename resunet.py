@@ -241,9 +241,9 @@ class ResidualUnet(torch.nn.Module):
             1,
             1,
             1,
-            1,
             # aspp block
-            [1]*96+[2]*96+[3]*64+[4]*64+[5]*64+[6]*64+[7]*64
+            [1]*64+[2]*64+[3]*64+[4]*64,
+            [1]*256+[2]*128+[3]*128,
         ]
         self.scaler = Interpolate(scale_factor=output_scale)
         
