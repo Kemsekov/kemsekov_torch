@@ -165,6 +165,7 @@ class Decoder(torch.nn.Module):
         Returns:
             torch.Tensor: The output tensor after the final upsampling block.
         """
+        x = self.dropout(x)
         # Upsampling path
         for i, (up,conv_1x1) in enumerate(zip(self.ups,self.up_1x1_convs)):
             x = up(x)
@@ -194,6 +195,7 @@ class Decoder(torch.nn.Module):
         Returns:
             torch.Tensor: The output tensor after the final upsampling block.
         """
+        x = self.dropout(x)
         # Upsampling path
         for up in self.ups:
             x = up(x)
