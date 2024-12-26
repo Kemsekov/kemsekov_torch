@@ -415,3 +415,22 @@ def load_last_checkpoint(model,base_path,log=True):
         print("loading",checkpoint)
     model = load_checkpoint_and_dispatch(model,checkpoint)
     return model
+        
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Subset
+
+def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_factor=2,random_state=123,startify=None):
+    # split dataset
+    train_idx, test_idx = train_test_split(
+        list(range(len(dataset))),
+        test_size=test_size,
+        stratify=startify,
+        random_state=random_state
+    )
+
+    train_data = Subset(dataset, train_idx)
+    test_data = Subset(dataset, test_idx)
+
+    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
+    test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
+    return train_data,test_data,train_loader, test_loader
