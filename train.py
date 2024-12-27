@@ -195,7 +195,7 @@ def train(
                         
                         loss_history = saved_state['loss_history']
                         test_loss_history = saved_state['test_loss_history']
-                        start_epoch = int(saved_state['epochs']) - 1
+                        start_epoch = int(saved_state['epochs'])
                         
                         train_metric_not_nan = [v for v in train_metric_history if not math.isnan(v)]
                         test_metric_not_nan = [v for v in test_metric_history if not math.isnan(v)]
