@@ -275,18 +275,18 @@ def train(
                         batch = cast_to_dtype(batch,mixed_precision)
                     with acc.autocast():
                         loss, batch_metric = compute_loss_and_metric(model,batch)
-                    metric += batch_metric
+                    metric = batch_metric + metric
                     test_loss += loss.item()
             
             test_loss /= len(test_loader)
             test_metric = metric / len(test_loader)          
             test_metric_history.append(test_metric)
             test_loss_history.append(test_loss)
-
+        test_metric=torch.tensor(test_metric)
         if acc.is_main_process:
             if train_metric!=0:
                 print(f'\tTrain {metric_name}: {train_metric:.4f}')
-            if is_testing and test_metric!=0:
+            if is_testing and torch.any(test_metric!=0):
                 print(f'\tTest  {metric_name}: {test_metric:.4f}')
             print(f'\tTrain Loss: {running_loss:.4f}')
             if is_testing:
@@ -331,13 +331,13 @@ def train(
             plt.close()
 
             results = {
-                "loss_history": [round(v,4) for v in loss_history],
-                "test_loss_history" : [round(v,4) for v in test_loss_history],
-                "train_metric_history" : [round(v,4) for v in train_metric_history],
-                "test_metric_history" : [round(v,4) for v in test_metric_history],
-                "train_time_history" : [round(v,4) for v in train_time_history],
-                "metric_name" : metric_name,
-                "epochs": epoch+1
+                "loss_history"          : torch.round(torch.tensor(loss_history),           decimals=4).tolist(),
+                "test_loss_history"     : torch.round(torch.tensor(test_loss_history),      decimals=4).tolist(),
+                "train_metric_history"  : torch.round(torch.tensor(train_metric_history),   decimals=4).tolist(),
+                "test_metric_history"   : torch.round(torch.tensor(test_metric_history),    decimals=4).tolist(),
+                "train_time_history"    : torch.round(torch.tensor(train_time_history),     decimals=4).tolist(),
+                "metric_name"           : metric_name,
+                "epochs"                : epoch+1
             }
 
             results = json.dumps(results)
