@@ -46,6 +46,35 @@ class SCSEModule(nn.Module):
         # Combine the outputs
         return torch.max(cse_out,sse_out)
 
+
+class SCSEModule1d(nn.Module):
+    """
+    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module.
+    """
+    def __init__(self, in_channels, reduction=16):
+        super(SCSEModule1d, self).__init__()
+        # Channel Squeeze and Excitation (cSE)
+        self.cSE = nn.Sequential(
+            nn.AdaptiveAvgPool1d(1),
+            nn.Conv1d(in_channels, in_channels // reduction, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv1d(in_channels // reduction, in_channels, kernel_size=1),
+            nn.Sigmoid()
+        )
+        # Spatial Squeeze and Excitation (sSE)
+        self.sSE = nn.Sequential(
+            nn.Conv1d(in_channels, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # Apply channel attention
+        cse_out = x*self.cSE(x)
+        # Apply spatial attention
+        sse_out = x*self.sSE(x)
+        # Combine the outputs
+        return torch.max(cse_out,sse_out)
+
 class BSConvU(torch.nn.Sequential): 
     """
     Blueprint Pointwise-Depthwise Convolution Block.
