@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 class SEModule(nn.Module):
     """
     Spatial squeeze & channel excitation attention module, as proposed in https://arxiv.org/abs/1709.01507.
@@ -75,9 +75,7 @@ class SCSEModule1d(nn.Module):
         # Combine the outputs
         return torch.max(cse_out,sse_out)
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+
 
 class SpatialTransformer(nn.Module):
     def __init__(self, in_channels,initial_transform_strength = 0.1):
