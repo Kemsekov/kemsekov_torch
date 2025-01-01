@@ -29,12 +29,14 @@ class Encoder(torch.nn.Module):
             dilations (List[List[int]]): List of dilation rates for each ResidualBlock.
             downs_conv_impl (List[List[type]]): List of convolution implementations for each ResidualBlock.
             dropout_p (float, optional): Dropout probability. Default is 0.5.
-            attention: tensor attention implementation
+            attention: tensor attention implementation, can be list to define attention layer-wise
 
         Raises:
             ValueError: If the lengths of input lists do not match.
         """
         super().__init__()
+        if not isinstance(attention,list):
+            attention=[attention]*len(downs_conv_impl)
         downs_list = []
         for i in range(len(downs_conv_impl)):
             down_i = ResidualBlock(
@@ -45,7 +47,7 @@ class Encoder(torch.nn.Module):
                 dilation=dilations[i],
                 conv_impl=downs_conv_impl[i]
             )
-            down_i = torch.nn.Sequential(down_i,attention(out_channels_[i]))
+            down_i = torch.nn.Sequential(down_i,attention[i](out_channels_[i]))
             downs_list.append(down_i)
         self.downs =        torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]
@@ -122,12 +124,14 @@ class Decoder(torch.nn.Module):
             up_out_channels (List[int]): List of output channel sizes for each ResidualBlock in the decoder.
             ups_conv_impl (List[List[type]]): List of convolution implementations for each ResidualBlock.
             dropout_p (float, optional): Dropout probability. Default is 0.5.
-            attention: tensor attention implementation
+            attention: tensor attention implementation, can be list to define attention layer-wise
 
         Raises:
             ValueError: If the lengths of input lists do not match.
         """
         super().__init__()
+        if not isinstance(attention,list):
+            attention=[attention]*len(ups_conv_impl)
         ups = []
         conv1x1s = []
         for i in range(len(ups_conv_impl)):
@@ -139,7 +143,7 @@ class Decoder(torch.nn.Module):
                 dilation=1,
                 conv_impl=ups_conv_impl[i]
             )
-            up_i = torch.nn.Sequential(up_i,attention(up_out_channels[i]))
+            up_i = torch.nn.Sequential(up_i,attention[i](up_out_channels[i]))
             conv1x1_i = torch.nn.Conv2d(up_out_channels[i]*2, up_out_channels[i], kernel_size=1)
 
             ups.append(up_i)
@@ -235,6 +239,7 @@ class ResidualUnet(torch.nn.Module):
         """
 
         super().__init__()
+        
         in_channels_ =  [in_channels,64, 96, 128, 256]
         out_channels_ = [64,         96,128, 256, 512]
         dilations=[
@@ -261,8 +266,13 @@ class ResidualUnet(torch.nn.Module):
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
         up_out_channels[-1]=out_channels
+        
+        attention_up=attention
+        if isinstance(attention,list):
+            attention_up = attention[::-1]
+        
         self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention)
-        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention)
+        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up)
 
     def forward(self, x):
         """

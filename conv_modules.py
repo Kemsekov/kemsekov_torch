@@ -75,6 +75,91 @@ class SCSEModule1d(nn.Module):
         # Combine the outputs
         return torch.max(cse_out,sse_out)
 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class SpatialTransformer(nn.Module):
+    def __init__(self, in_channels,initial_transform_strength = 0.1):
+        """
+        Initializes the SpatialTransformer module.
+
+        Args:
+            in_channels (int): The number of input channels in the input feature map.
+                This is used to configure the convolutional layers in the localization networks.
+            
+            initial_transform_strength (float, optional): A scaling factor for initializing the weights
+                of the affine transformation parameters. This determines how much the initial transformations
+                deviate from the identity transformation. Default is 0.1.
+
+        Attributes:
+            localizations (nn.ModuleList): A list of submodules that implement the localization networks 
+                for each scale in the spatial pyramid. Each localization network processes the input 
+                feature map at a different scale to extract spatial information.
+            
+            fc_loc (nn.Sequential): A fully connected network that takes the concatenated outputs from
+                the spatial pyramid and predicts the affine transformation parameters. It consists of:
+                - A linear layer that maps the concatenated features to 32 intermediate dimensions.
+                - A ReLU activation.
+                - A final linear layer that outputs 6 parameters for the affine transformation.
+
+        Notes:
+            - The affine transformation parameters are initialized to produce an identity transformation
+            with slight random perturbations controlled by `initial_transform_strength`.
+            - The spatial pyramid consists of downsampling scales `[1, 2, 4, 8]` to capture multi-scale
+            spatial features, making the model robust to transformations at different resolutions.
+
+        Example:
+            >>> stn = SpatialTransformer(in_channels=3, initial_transform_strength=0.05)
+            >>> input_tensor = torch.randn(1, 3, 64, 64)  # Batch size 1, 3 channels, 64x64 image
+            >>> output = stn(input_tensor)
+        """
+        super(SpatialTransformer, self).__init__()
+        # Localization network
+        
+        self.localizations = nn.ModuleList()
+        spacial_pyramid_scales = [1,4,8,16,32]
+        for scale in spacial_pyramid_scales:
+            localization = nn.Sequential(
+                nn.MaxPool2d(scale,padding=scale//2),
+                nn.Conv2d(in_channels, 8, kernel_size=5,stride=2,padding=2),
+                nn.ReLU(True),
+                nn.Conv2d(8, 16, kernel_size=5,stride=2,padding=2),
+                nn.ReLU(True),
+                nn.AdaptiveAvgPool2d(1)
+            )
+            self.localizations.append(localization)
+            
+        
+        # Fully connected layers to output affine parameters
+        self.fc_loc = nn.Sequential(
+            nn.Linear(16*len(spacial_pyramid_scales),32),
+            nn.ReLU(True),
+            nn.Linear(32, 6)
+        )
+        
+        # Initialize the weights/bias with identity transformation
+        self._initialize_weights(initial_transform_strength)
+
+    def _initialize_weights(self,initial_transform_strength):
+        # Initialize the weights of the last fully connected layer to zero
+        nn.init.normal_(self.fc_loc[-1].weight)
+        with torch.no_grad():
+            self.fc_loc[-1].weight*=initial_transform_strength
+        # Initialize the bias to produce the identity affine transformation
+        identity_bias = torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float)
+        self.fc_loc[-1].bias.data.copy_(identity_bias)
+
+    def forward(self, x):
+        xs = [torch.jit.fork(l,x) for l in self.localizations]
+        xs = [torch.jit.wait(l) for l in xs]
+        xs = torch.stack(xs,dim=1).flatten(1) # Flatten while preserving batch size
+        theta = self.fc_loc(xs) #[batch,6]
+        theta = theta.view(-1, 2, 3)
+        grid = F.affine_grid(theta, x.size())
+        x = F.grid_sample(x, grid, align_corners=False)
+        return x
+
 class BSConvU(torch.nn.Sequential): 
     """
     Blueprint Pointwise-Depthwise Convolution Block.
