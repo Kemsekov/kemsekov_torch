@@ -419,6 +419,9 @@ def load_last_checkpoint(model,base_path,log=True):
 
 
 def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_factor=2,random_state=123,startify=None):
+    """
+    returns train_dataset,test_dataset,train_loader, test_loader
+    """
     from sklearn.model_selection import train_test_split
     from torch.utils.data import DataLoader, Subset
     # split dataset
