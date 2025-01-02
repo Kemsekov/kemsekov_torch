@@ -124,7 +124,7 @@ class SpatialTransformer(nn.Module):
                 nn.ReLU(True),
                 nn.Conv2d(8, 16, kernel_size=5,stride=2,padding=2),
                 nn.ReLU(True),
-                nn.AdaptiveAvgPool2d(1)
+                nn.AdaptiveMaxPool2d(1)
             )
             self.localizations.append(localization)
             
