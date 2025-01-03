@@ -3,6 +3,7 @@ from typing import Literal
 import torch
 import torch.nn as nn
 from conv_modules import *
+from common_modules import *
 
 def gcd(a, b):
     """Calculate the Greatest Common Divisor of a and b.
@@ -93,8 +94,7 @@ class ResidualBlock(torch.nn.Module):
         else:
             batch_norm_impl=nn.Identity()
 
-        self._conv_x_correct(in_channels, out_channels, stride, batch_norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
-        # self._resize_x_correct(in_channels, out_channels, stride, batch_norm_impl, conv_impl)
+        self._resize_x_correct(in_channels, out_channels, stride, batch_norm_impl, conv_impl)
         
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels
@@ -161,67 +161,7 @@ class ResidualBlock(torch.nn.Module):
         scale = 1/stride
         if self._is_transpose_conv:
             scale=stride
-
-        # if we have different output tensor size, apply linear x_correction
-        # to make sure we can add it with output
-        if stride>1 or in_channels!=out_channels:
-            # there is many ways to linearly downsample x, but max pool with conv2d works best of all
-            self.x_correct = torch.nn.Upsample(scale_factor=scale)
-        else:
-            self.x_correct = torch.nn.Identity()
-        
-    def _conv_x_correct(self, in_channels, out_channels, stride, batch_norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
-        """
-        Initializes the residual correction module to adjust the input tensor for residual addition.
-
-        This method creates a convolutional layer (or a sequential module with batch normalization)
-        that transforms the input tensor `x` to match the shape of the output tensor, ensuring that
-        the residual connection can be added correctly.
-
-        Args:
-            in_channels (int): Number of input channels.
-            out_channels (int): Number of output channels.
-            stride (int): Stride used in the main convolutions.
-            batch_norm (bool): Whether to include batch normalization after the correction convolution.
-            conv_impl (list of type): List of convolution implementations used in the main block.
-
-        Notes:
-            - If `stride > 1` or `in_channels != out_channels`, a convolutional correction is applied.
-            - Uses `nn.Conv2d` or `nn.ConvTranspose2d` based on whether the block is a transposed convolution.
-        """
-        # compute x_size correction convolution arguments so we could do residual addition when we have changed
-        # number of channels or some stride
-        correct_x_ksize = 1 if stride==1 else (1+stride)//2 *2 +1
-        correct_x_dilation = 1
-        correct_x_padding= correct_x_ksize // 2
-        
-        # make cheap downscale
-        x_corr_kwargs=dict(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size = correct_x_ksize,
-            dilation=correct_x_dilation,
-            stride = stride,
-            padding = correct_x_padding,
-            groups=gcd(in_channels,out_channels)
-        )
-        x_conv_impl = x_corr_conv_impl
-        if self._is_transpose_conv:
-            x_conv_impl = x_corr_conv_impl_T
-            x_corr_kwargs['output_padding'] = stride - 1
-            x_corr_kwargs['groups'] = 1
-
-        # if we have different output tensor size, apply linear x_correction
-        # to make sure we can add it with output
-        if stride>1 or in_channels!=out_channels:
-            # there is many ways to linearly downsample x, but max pool with conv2d works best of all
-            self.x_correct = \
-                torch.nn.Sequential(
-                    x_conv_impl(**x_corr_kwargs),
-                    batch_norm_impl(out_channels)
-                )
-        else:
-            self.x_correct = torch.nn.Identity()
+        self.x_correct = UpscaleResize(in_channels,out_channels,scale)
 
     def forward(self, x):
         """
