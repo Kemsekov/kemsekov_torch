@@ -43,7 +43,7 @@ class UpscaleResize(nn.Module):
             self.channel_adjust = nn.Conv2d(in_channels=in_ch, out_channels=out_ch, kernel_size=1)
         
         # Store the scale factor for potential spatial resizing
-        self.scale_factor = scale_factor
+        self.scale_factor = float(scale_factor)
 
     def forward(self, x):
         # Apply spatial resizing only if scale_factor is not 1
