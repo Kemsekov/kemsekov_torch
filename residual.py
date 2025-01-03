@@ -93,7 +93,7 @@ class ResidualBlock(torch.nn.Module):
             batch_norm_impl=bn[dimensions-1]
         else:
             batch_norm_impl=nn.Identity()
-
+        self.dimensions=dimensions
         self._resize_x_correct(in_channels, out_channels, stride, batch_norm_impl, conv_impl)
         
         if not isinstance(dilation,list):
@@ -113,7 +113,7 @@ class ResidualBlock(torch.nn.Module):
         self.activation = activation()
         self.repeats = repeats
         self.conv_impl=conv_impl
-
+        
         # collapse same-shaped conv blocks to reduce computation resources
         out_channels_ = [1]
         kernel_sizes_ = [kernel_size[0]]
@@ -161,7 +161,7 @@ class ResidualBlock(torch.nn.Module):
         scale = 1/stride
         if self._is_transpose_conv:
             scale=stride
-        self.x_correct = UpscaleResize(in_channels,out_channels,scale)
+        self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions)
 
     def forward(self, x):
         """
