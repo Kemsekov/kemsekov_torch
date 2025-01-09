@@ -400,14 +400,7 @@ dtype_map = {
 }
 
 def load_best_checkpoint(model,base_path,log = True):
-    checkpoints = os.path.join(base_path,'checkpoints')
-    c = os.listdir(checkpoints)
-    best = sorted(c,key=lambda x: int(x.split('-')[-1]))[-1]
-    checkpoint = os.path.join(checkpoints,best,'state')
-    if log:
-        print("loading",checkpoint)
-    model = load_checkpoint_and_dispatch(model,checkpoint)
-    return model
+    return load_checkpoint(mode,base,-1,log)
 
 def load_last_checkpoint(model,base_path,log=True):
     checkpoint = os.path.join(base_path,'last','state')
@@ -417,6 +410,15 @@ def load_last_checkpoint(model,base_path,log=True):
     return model
         
 
+def load_checkpoint(model,base_path,checkpoint_index,log=True):
+    checkpoints = os.path.join(base_path,'checkpoints')
+    c = os.listdir(checkpoints)
+    best = sorted(c,key=lambda x: int(x.split('-')[-1]))[checkpoint_index]
+    checkpoint = os.path.join(checkpoints,best,'state')
+    if log:
+        print("loading",checkpoint)
+    model = load_checkpoint_and_dispatch(model,checkpoint)
+    return model
 
 def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_factor=2,random_state=123,startify=None):
     """
