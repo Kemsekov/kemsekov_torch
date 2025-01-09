@@ -220,7 +220,7 @@ class ResidualUnet(torch.nn.Module):
         decoder (Decoder): The Decoder module responsible for the upsampling path.
         scaler (torch.nn.Module): Module to scale the output tensor relative to the input tensor.
     """
-    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2],output_scale = 1, attention = SCSEModule):
+    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5):
         """
         Initializes the ResidualUnet.
 
@@ -271,8 +271,8 @@ class ResidualUnet(torch.nn.Module):
         if isinstance(attention,list):
             attention_up = attention[::-1]
         
-        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention)
-        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up)
+        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p)
+        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p)
 
     def forward(self, x):
         """
