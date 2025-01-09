@@ -400,7 +400,7 @@ dtype_map = {
 }
 
 def load_best_checkpoint(model,base_path,log = True):
-    return load_checkpoint(mode,base,-1,log)
+    return load_checkpoint(model,base,-1,log)
 
 def load_last_checkpoint(model,base_path,log=True):
     checkpoint = os.path.join(base_path,'last','state')
