@@ -49,7 +49,11 @@ class Encoder(torch.nn.Module):
             )
             down_i = torch.nn.Sequential(down_i,attention[i](out_channels_[i]))
             downs_list.append(down_i)
-        self.downs =        torch.nn.ModuleList(downs_list[:-1])
+        
+        # at input add batch normalization
+        downs_list[0]=torch.nn.Sequential(torch.nn.BatchNorm2d(in_channels_),downs_list[0])
+        
+        self.downs = torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]
         self.dropout = nn.Dropout2d(p=dropout_p)
     @torch.jit.export
