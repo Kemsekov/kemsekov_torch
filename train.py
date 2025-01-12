@@ -174,9 +174,9 @@ def train(
 
     loss_history = []
     test_loss_history = []
-    if on_epoch_end is None: on_epoch_end=torch.nn.Identity()
-    if on_train_batch_end is None: on_train_batch_end=torch.nn.Identity()
-    if on_test_batch_end is None: on_test_batch_end=torch.nn.Identity()
+    if on_epoch_end is None: on_epoch_end             = lambda x,y: None
+    if on_train_batch_end is None: on_train_batch_end = lambda x,y,w,z: None
+    if on_test_batch_end is None: on_test_batch_end   = lambda x,y,w,z: None
     
     acc = accelerator if accelerator is not None else Accelerator()
     if acc.is_main_process:
