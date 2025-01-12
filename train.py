@@ -24,7 +24,8 @@ def train(
         cast_batch_to_mixed_precision_dtype = False,
         scheduler = None,
         checkpoints_count = 5,
-        model_wrapper = None
+        model_wrapper = None,
+        on_epoch_end = None
     ):
     """
     Train and evaluate a model, saving checkpoints, plots, and metric history 
@@ -83,6 +84,9 @@ def train(
     
     model_wrapper: torch.nn.DataParallel, default=None
         How to wrap model.
+
+    on_epoch_end: callable
+        Method that is called on each epoch end
         
     Returns
     -------
@@ -162,7 +166,7 @@ def train(
 
     loss_history = []
     test_loss_history = []
-
+    if on_epoch_end is None: on_epoch_end=torch.nn.Identity()
     acc = accelerator if accelerator is not None else Accelerator()
     if acc.is_main_process:
       try:
@@ -364,7 +368,7 @@ def train(
                 if model_script is not None:
                     model_script=load_last_checkpoint(model_script,save_results_dir,log=False)
                     model_script.save(model_save_path)
-
+    on_epoch_end()
 
 def cast_to_dtype(inputs,dtype):
     """Casts tensors, lists and dicts tensors to given dtype"""
