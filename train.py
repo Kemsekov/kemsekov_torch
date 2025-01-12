@@ -25,7 +25,9 @@ def train(
         scheduler = None,
         checkpoints_count = 5,
         model_wrapper = None,
-        on_epoch_end = None
+        on_epoch_end = None,
+        on_train_batch_end = None,
+        on_test_batch_end = None
     ):
     """
     Train and evaluate a model, saving checkpoints, plots, and metric history 
@@ -85,9 +87,15 @@ def train(
     model_wrapper: torch.nn.DataParallel, default=None
         How to wrap model.
 
-    on_epoch_end: callable
-        Method that is called on each epoch end
-        
+    on_epoch_end: callable(int,torch.nn.Module)
+        Method that is called on each epoch end. Epoch index and model is passed to method
+
+    on_train_batch_end: callable(model,batch,loss,metric)
+        Method that is called on each train batch end. Model,batch,loss and metric is passed.
+    
+    on_test_batch_end: callable(model,batch,loss,metric)
+        Method that is called on each test batch end. Model,batch,loss and metric is passed.
+
     Returns
     -------
     None
@@ -167,6 +175,9 @@ def train(
     loss_history = []
     test_loss_history = []
     if on_epoch_end is None: on_epoch_end=torch.nn.Identity()
+    if on_train_batch_end is None: on_train_batch_end=torch.nn.Identity()
+    if on_test_batch_end is None: on_test_batch_end=torch.nn.Identity()
+    
     acc = accelerator if accelerator is not None else Accelerator()
     if acc.is_main_process:
       try:
@@ -256,6 +267,8 @@ def train(
                 metric += batch_metric
                 
                 pbar.set_postfix(loss=f"{batch_loss:.4f}", **{metric_name: f"{batch_metric:.4f}"})
+                
+                on_train_batch_end(model,batch,loss,batch_metric)
         running_time = time.time()-start
         train_time_history.append(running_time)
         running_loss /= len(train_loader)
@@ -281,11 +294,13 @@ def train(
                         loss, batch_metric = compute_loss_and_metric(model,batch)
                     metric = batch_metric + metric
                     test_loss += loss.item()
-            
+                    on_test_batch_end(model,batch,loss,batch_metric)
+
             test_loss /= len(test_loader)
             test_metric = metric / len(test_loader)          
             test_metric_history.append(test_metric)
             test_loss_history.append(test_loss)
+            
         test_metric=torch.tensor(test_metric)
         if acc.is_main_process:
             if train_metric!=0:
@@ -368,7 +383,7 @@ def train(
                 if model_script is not None:
                     model_script=load_last_checkpoint(model_script,save_results_dir,log=False)
                     model_script.save(model_save_path)
-    on_epoch_end()
+        on_epoch_end(epoch,model)
 
 def cast_to_dtype(inputs,dtype):
     """Casts tensors, lists and dicts tensors to given dtype"""
