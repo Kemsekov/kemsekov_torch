@@ -50,7 +50,7 @@ class ResidualBlock(torch.nn.Module):
         dilation = 1,                       # List of dilation values for each output channel. Can be an integer
         activation=torch.nn.ReLU,           # Activation function. Always pass constructor
         batch_norm = True,                  #add batch normalization
-        conv_impl = BSConvU,                #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d
+        conv_impl = nn.Conv2d,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
         dimensions : Literal[1,2,3] = 2
     ):
         """
@@ -86,7 +86,7 @@ class ResidualBlock(torch.nn.Module):
         
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
         
-        bn = [nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d]
+        bn = nn.SyncBatchNorm
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
         if batch_norm:
