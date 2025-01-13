@@ -20,7 +20,7 @@ class SEModule(nn.Module):
 
 class SCSEModule(nn.Module):
     """
-    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module.
+    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module for 2d inputs.
     """
     def __init__(self, in_channels, reduction=16):
         super(SCSEModule, self).__init__()
@@ -49,7 +49,7 @@ class SCSEModule(nn.Module):
 
 class SCSEModule1d(nn.Module):
     """
-    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module.
+    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module for 1d inputs.
     """
     def __init__(self, in_channels, reduction=16):
         super(SCSEModule1d, self).__init__()
@@ -75,6 +75,33 @@ class SCSEModule1d(nn.Module):
         # Combine the outputs
         return torch.max(cse_out,sse_out)
 
+class SCSEModule3d(nn.Module):
+    """
+    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module for 3D inputs.
+    """
+    def __init__(self, in_channels, reduction=16):
+        super(SCSEModule3d, self).__init__()
+        # Channel Squeeze and Excitation (cSE)
+        self.cSE = nn.Sequential(
+            nn.AdaptiveAvgPool3d(1),
+            nn.Conv3d(in_channels, in_channels // reduction, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv3d(in_channels // reduction, in_channels, kernel_size=1),
+            nn.Sigmoid()
+        )
+        # Spatial Squeeze and Excitation (sSE)
+        self.sSE = nn.Sequential(
+            nn.Conv3d(in_channels, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        # Apply channel attention
+        cse_out = x * self.cSE(x)
+        # Apply spatial attention
+        sse_out = x * self.sSE(x)
+        # Combine the outputs
+        return torch.max(cse_out, sse_out)
 
 
 class SpatialTransformer(nn.Module):
