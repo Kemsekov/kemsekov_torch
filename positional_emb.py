@@ -1,3 +1,4 @@
+from typing import Literal
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,6 +10,46 @@ def get_emb(sin_inp):
     emb = torch.stack((sin_inp.sin(), sin_inp.cos()), dim=-1)
     return torch.flatten(emb, -2, -1)
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, channels,dimension : Literal[1,2,3]=2, dtype_override = None):
+        """
+        :param channels: The last dimension of the tensor you want to apply pos emb to.
+        :param dimension: Spacial tensor dimensions
+        :param dtype_override: If set, overrides the dtype of the output embedding.
+        """
+        super().__init__()
+        assert dimension in [1,2,3], "dimension parameter must be one of [1,2,3]"
+        self.positional_encoding = [
+            PositionalEncoding1D(channels,dtype_override),
+            PositionalEncoding2D(channels,dtype_override),
+            PositionalEncoding3D(channels,dtype_override)][dimension-1]
+    def forward(self,tensor):
+        """
+        :param tensor: A Nd tensor of size (batch_size, ...N dimensions..., ch)
+        :return: Positional Encoding Matrix of size (batch_size, ...N dimensions..., ch)
+        """
+        return self.positional_encoding(tensor)
+
+class PositionalEncodingPermute(nn.Module):
+    def __init__(self, channels,dimension : Literal[1,2,3]=2, dtype_override = None):
+        """
+        Accepts (batchsize, ch, ...dimensions...)
+        :param channels: The last dimension of the tensor you want to apply pos emb to.
+        :param dimension: Spacial tensor dimensions
+        :param dtype_override: If set, overrides the dtype of the output embedding.
+        """
+        super().__init__()
+        assert dimension in [1,2,3], "dimension parameter must be one of [1,2,3]"
+        self.positional_encoding = [
+            PositionalEncodingPermute1D(channels,dtype_override),
+            PositionalEncodingPermute2D(channels,dtype_override),
+            PositionalEncodingPermute3D(channels,dtype_override)][dimension-1]
+    def forward(self,tensor):
+        """
+        :param tensor: A Nd tensor of size (batch_size, ch, ...N dimensions...)
+        :return: Positional Encoding Matrix of size (batch_size, ch, ...N dimensions...)
+        """
+        return self.positional_encoding(tensor)
 
 class PositionalEncoding1D(nn.Module):
     def __init__(self, channels, dtype_override=None):
@@ -24,7 +65,7 @@ class PositionalEncoding1D(nn.Module):
         self.channels = channels
         self.dtype_override = dtype_override
 
-    def forward(self, tensor : torch.Tensor):
+    def forward(self, tensor):
         """
         :param tensor: A 3d tensor of size (batch_size, x, ch)
         :return: Positional Encoding Matrix of size (batch_size, x, ch)
