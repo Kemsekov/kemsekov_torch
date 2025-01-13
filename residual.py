@@ -86,11 +86,10 @@ class ResidualBlock(torch.nn.Module):
         
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
         
-        bn = nn.SyncBatchNorm
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
         if batch_norm:
-            batch_norm_impl=bn[dimensions-1]
+            batch_norm_impl=nn.SyncBatchNorm
         else:
             batch_norm_impl=nn.Identity()
         self.dimensions=dimensions
