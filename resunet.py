@@ -51,7 +51,7 @@ class Encoder(torch.nn.Module):
             downs_list.append(down_i)
         
         # at input add batch normalization
-        downs_list[0]=torch.nn.Sequential(torch.nn.BatchNorm2d(in_channels_),downs_list[0])
+        downs_list[0]=torch.nn.Sequential(torch.nn.SyncBatchNorm(in_channels_[0]),downs_list[0])
         
         self.downs = torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]
@@ -292,6 +292,82 @@ class ResidualUnet(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after passing through the Residual U-Net.
         """
+        x,skip = self.encoder.forward_with_skip(x)
+        x=self.scaler(x)
+        skip = [self.scaler(i) for i in skip]
+        x = self.decoder.forward_with_skip(x,skip)
+        return x
+
+class LargeResidualUnet(torch.nn.Module):
+    """
+    Larger Residual U-Net architecture combining Encoder and Decoder modules.
+
+    Minimum input/output size is 256.
+
+    
+    The ResidualUnet integrates the Encoder and Decoder to form a U-shaped network with
+    skip connections. It supports flexible output scaling and allows customization of
+    block sizes and convolution implementations for both downsampling and upsampling paths.
+
+    Attributes:
+        encoder (Encoder): The Encoder module responsible for the downsampling path.
+        decoder (Decoder): The Decoder module responsible for the upsampling path.
+        scaler (torch.nn.Module): Module to scale the output tensor relative to the input tensor.
+    """
+    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5):
+        """
+        Initializes the ResidualUnet.
+
+        Constructs the Encoder and Decoder modules with specified configurations.
+        Sets up scaling of the output tensor based on the `output_scale` parameter.
+
+        Args:
+            in_channels (int, optional): Number of input channels. Default is 3.
+            out_channels (int, optional): Number of output channels. Default is 3.
+            block_sizes (List[int], optional): List indicating the number of repeats for each ResidualBlock.
+            output_scale (float, optional): Scaling factor for the output tensor. Must be a power of 2.
+            attention: tensor attention implementation
+            
+        Raises:
+            ValueError: If `output_scale` is not a positive power of 2.
+        """
+
+        super().__init__()
+        
+        in_channels_ =  [in_channels,64, 64, 128,128,192,256,512]
+        out_channels_ = [64,         64, 128,128,192,256,512,1024]
+        dilations=[
+            1,1,1,1,1,
+            # aspp block
+            [1]*128+[2]*64+[3]*64,
+            [1]*256+[2]*256,
+            [1]*512+[2]*512,
+        ]
+        self.scaler = Interpolate(scale_factor=output_scale)
+        
+        if output_scale==1:
+            self.scaler = nn.Identity()
+
+        downs_conv_impl = [
+            [nn.Conv2d]*block_sizes[i] for i in range(len(in_channels_))
+        ]
+
+        up_block_sizes = block_sizes[::-1]
+        ups_conv_impl = [
+            [nn.ConvTranspose2d]*up_block_sizes[i] for i in range(len(in_channels_))
+        ]
+        up_in_channels = out_channels_[::-1]
+        up_out_channels = in_channels_ [::-1]
+        up_out_channels[-1]=out_channels
+        
+        attention_up=attention
+        if isinstance(attention,list):
+            attention_up = attention[::-1]
+        
+        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p)
+        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p)
+
+    def forward(self, x):
         x,skip = self.encoder.forward_with_skip(x)
         x=self.scaler(x)
         skip = [self.scaler(i) for i in skip]
