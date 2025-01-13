@@ -11,45 +11,53 @@ def get_emb(sin_inp):
     return torch.flatten(emb, -2, -1)
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, channels,dimension : Literal[1,2,3]=2, dtype_override = None):
+    def __init__(self, channels, dtype_override = None):
         """
         :param channels: The last dimension of the tensor you want to apply pos emb to.
-        :param dimension: Spacial tensor dimensions
         :param dtype_override: If set, overrides the dtype of the output embedding.
         """
         super().__init__()
-        assert dimension in [1,2,3], "dimension parameter must be one of [1,2,3]"
-        self.positional_encoding = [
+        self.positional_encodings = nn.ModuleList([
             PositionalEncoding1D(channels,dtype_override),
             PositionalEncoding2D(channels,dtype_override),
-            PositionalEncoding3D(channels,dtype_override)][dimension-1]
+            PositionalEncoding3D(channels,dtype_override)
+        ])
     def forward(self,tensor):
         """
         :param tensor: A Nd tensor of size (batch_size, ...N dimensions..., ch)
         :return: Positional Encoding Matrix of size (batch_size, ...N dimensions..., ch)
         """
-        return self.positional_encoding(tensor)
+        ind = len(tensor.shape)-3
+        assert ind in [0,1,2], "tensor.shape must have from 1 to 3 spacial dimensions with shape (batch_size, ...N dimensions..., ch)"
+        
+        if ind == 0:return self.positional_encodings[0](tensor)
+        if ind == 1:return self.positional_encodings[1](tensor)
+        if ind == 2:return self.positional_encodings[2](tensor)
 
 class PositionalEncodingPermute(nn.Module):
-    def __init__(self, channels,dimension : Literal[1,2,3]=2, dtype_override = None):
+    def __init__(self, channels, dtype_override = None):
         """
         Accepts (batchsize, ch, ...dimensions...)
         :param channels: The last dimension of the tensor you want to apply pos emb to.
-        :param dimension: Spacial tensor dimensions
         :param dtype_override: If set, overrides the dtype of the output embedding.
         """
         super().__init__()
-        assert dimension in [1,2,3], "dimension parameter must be one of [1,2,3]"
-        self.positional_encoding = [
+        self.positional_encodings = nn.ModuleList([
             PositionalEncodingPermute1D(channels,dtype_override),
             PositionalEncodingPermute2D(channels,dtype_override),
-            PositionalEncodingPermute3D(channels,dtype_override)][dimension-1]
+            PositionalEncodingPermute3D(channels,dtype_override)
+        ])
     def forward(self,tensor):
         """
         :param tensor: A Nd tensor of size (batch_size, ch, ...N dimensions...)
         :return: Positional Encoding Matrix of size (batch_size, ch, ...N dimensions...)
         """
-        return self.positional_encoding(tensor)
+        ind = len(tensor.shape)-3
+        assert ind in [0,1,2], "tensor.shape must have from 1 to 3 spacial dimensions with shape (batchsize, ch, ...dimensions...)"
+        
+        if ind == 0:return self.positional_encodings[0](tensor)
+        if ind == 1:return self.positional_encodings[1](tensor)
+        if ind == 2:return self.positional_encodings[2](tensor)
 
 class PositionalEncoding1D(nn.Module):
     def __init__(self, channels, dtype_override=None):
