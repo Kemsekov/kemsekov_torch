@@ -1,3 +1,4 @@
+from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,12 +19,30 @@ class SEModule(nn.Module):
     def forward(self, x):
         return x * self.cSE(x)
 
+
 class SCSEModule(nn.Module):
     """
     Concurrent Spatial and Channel Squeeze & Excitation (scSE) module for 2d inputs.
     """
-    def __init__(self, in_channels, reduction=16):
+    def __init__(self, in_channels, reduction=16,dimensions : Literal[1,2,3]=2):
         super(SCSEModule, self).__init__()
+        
+        # Channel Squeeze and Excitation (cSE)
+        self.scse = [
+            SCSEModule1d,
+            SCSEModule2d,
+            SCSEModule3d][dimensions-1](in_channels,reduction)
+
+    def forward(self, x):
+        return self.scse(x)
+
+
+class SCSEModule2d(nn.Module):
+    """
+    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module for 2d inputs.
+    """
+    def __init__(self, in_channels, reduction=16):
+        super(SCSEModule2d, self).__init__()
         # Channel Squeeze and Excitation (cSE)
         self.cSE = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
