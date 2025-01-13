@@ -51,7 +51,7 @@ class Encoder(torch.nn.Module):
             downs_list.append(down_i)
         
         # at input add batch normalization
-        downs_list[0]=torch.nn.Sequential(torch.nn.SyncBatchNorm(in_channels_[0]),downs_list[0])
+        downs_list[0]=torch.nn.Sequential(torch.nn.BatchNorm2d(in_channels_[0]),downs_list[0])
         
         self.downs = torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]

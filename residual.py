@@ -89,7 +89,8 @@ class ResidualBlock(torch.nn.Module):
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
         if batch_norm:
-            batch_norm_impl=nn.SyncBatchNorm
+            # batch_norm_impl=nn.SyncBatchNorm
+            batch_norm_impl=[nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d][dimensions-1]
         else:
             batch_norm_impl=nn.Identity()
         self.dimensions=dimensions

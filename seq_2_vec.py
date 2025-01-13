@@ -44,16 +44,17 @@ class SeqToVec(nn.Module):
         avg_pool = [nn.AdaptiveAvgPool1d, nn.AdaptiveAvgPool2d, nn.AdaptiveAvgPool3d][dimensions - 1]
         max_pool = [nn.MaxPool1d, nn.MaxPool2d, nn.MaxPool3d][dimensions - 1]
         conv = [nn.Conv1d, nn.Conv2d, nn.Conv3d][dimensions - 1]
-
+        # bn = nn.SyncBatchNorm
+        bn = [nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d][dimensions-1]
         # Positional encoding module
         self.encoder = PositionalEncodingPermute(in_channels)
 
         # Input compression module
         self.compress_input = nn.Sequential(
-            nn.SyncBatchNorm(in_channels),
+            bn(in_channels),
             nn.ZeroPad2d((1, 0, 0, 1)),
             nn.Conv2d(in_channels, hidden_channels, kernel_size=2),
-            nn.SyncBatchNorm(hidden_channels),
+            bn(hidden_channels),
         )
 
         # Convolutional layers with residual blocks and squeeze-and-excitation modules
