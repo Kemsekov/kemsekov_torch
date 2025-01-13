@@ -53,7 +53,7 @@ class PositionalEncodingPermute(nn.Module):
         :return: Positional Encoding Matrix of size (batch_size, ch, ...N dimensions...)
         """
         ind = len(tensor.shape)-3
-        assert ind in [0,1,2], "tensor.shape must have from 1 to 3 spacial dimensions with shape (batchsize, ch, ...dimensions...)"
+        assert ind in [0,1,2], "tensor.shape must have from 1 to 3 spacial dimensions with shape (batchsize, ch, ...N dimensions...)"
         
         if ind == 0:return self.positional_encodings[0](tensor)
         if ind == 1:return self.positional_encodings[1](tensor)
