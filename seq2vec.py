@@ -6,9 +6,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class SeqToVec(nn.Module):
+class Seq2Vec(nn.Module):
     """
-    SeqToVec is a neural network module designed to process input sequences of varying dimensions (1D, 2D, or 3D) and produce a fixed-size output vector. It incorporates positional encoding, residual blocks, squeeze-and-excitation modules, and multi-scale feature extraction to effectively capture both local and global information from the input sequence.
+    Seq2Vec is a neural network module designed to process input sequences of varying dimensions (1D, 2D, or 3D) and produce a fixed-size output vector. It incorporates positional encoding, residual blocks, squeeze-and-excitation modules, and multi-scale feature extraction to effectively capture both local and global information from the input sequence.
 
     Attributes:
         encoder (nn.Module): Positional encoding module to inject positional information into the input.
