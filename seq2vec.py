@@ -148,8 +148,8 @@ class Seq2Vec(nn.Module):
         for b in self.multiscale_aspp:
             v = b(aspp_results[-1])
             aspp_results.append(v)
-        for v in aspp_results:
-            print(v.shape)
+        # for v in aspp_results:
+        #     print(v.shape)
         aspp_results = [self.aspp_pool(v) for v in aspp_results]
         aspp_results=torch.concat(aspp_results,dim=-1)
         # Apply final convolutional layer
