@@ -253,7 +253,8 @@ def train(
 
                 with acc.autocast():
                     loss, batch_metric = compute_loss_and_metric(model,batch)
-
+                if isinstance(batch_metric,torch.Tensor):
+                    batch_metric = batch_metric.detach().cpu()
                 acc.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
@@ -292,6 +293,8 @@ def train(
                         batch = cast_to_dtype(batch,mixed_precision)
                     with acc.autocast():
                         loss, batch_metric = compute_loss_and_metric(model,batch)
+                    if isinstance(batch_metric,torch.Tensor):
+                        batch_metric = batch_metric.detach().cpu()
                     metric = batch_metric + metric
                     test_loss += loss.item()
                     on_test_batch_end(model,batch,loss,batch_metric)
