@@ -11,16 +11,20 @@ def get_emb(sin_inp):
     return torch.flatten(emb, -2, -1)
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, channels, dtype_override = None):
+    """
+    (batch_size, ...N dimensions..., ch)
+    """
+    def __init__(self, channels, dtype_override = None,freq=10000):
         """
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         :param dtype_override: If set, overrides the dtype of the output embedding.
+        :param freq: Embedding frequency
         """
         super().__init__()
         self.positional_encodings = nn.ModuleList([
-            PositionalEncoding1D(channels,dtype_override),
-            PositionalEncoding2D(channels,dtype_override),
-            PositionalEncoding3D(channels,dtype_override)
+            PositionalEncoding1D(channels,dtype_override,freq),
+            PositionalEncoding2D(channels,dtype_override,freq),
+            PositionalEncoding3D(channels,dtype_override,freq)
         ])
     def forward(self,tensor):
         """
@@ -35,17 +39,21 @@ class PositionalEncoding(nn.Module):
         if ind == 2:return self.positional_encodings[2](tensor)
 
 class PositionalEncodingPermute(nn.Module):
-    def __init__(self, channels, dtype_override = None):
+    """
+    (batch_size, ch, ...N dimensions...)
+    """
+    def __init__(self, channels, dtype_override = None,freq=10000):
         """
         Accepts (batchsize, ch, ...dimensions...)
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         :param dtype_override: If set, overrides the dtype of the output embedding.
+        :param freq: Embedding frequency
         """
         super().__init__()
         self.positional_encodings = nn.ModuleList([
-            PositionalEncodingPermute1D(channels,dtype_override),
-            PositionalEncodingPermute2D(channels,dtype_override),
-            PositionalEncodingPermute3D(channels,dtype_override)
+            PositionalEncodingPermute1D(channels,dtype_override,freq),
+            PositionalEncodingPermute2D(channels,dtype_override,freq),
+            PositionalEncodingPermute3D(channels,dtype_override,freq)
         ])
     def forward(self,tensor):
         """
@@ -60,7 +68,7 @@ class PositionalEncodingPermute(nn.Module):
         if ind == 2:return self.positional_encodings[2](tensor)
 
 class PositionalEncoding1D(nn.Module):
-    def __init__(self, channels, dtype_override=None):
+    def __init__(self, channels, dtype_override=None,freq=10000):
         """
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         :param dtype_override: If set, overrides the dtype of the output embedding.
@@ -68,7 +76,7 @@ class PositionalEncoding1D(nn.Module):
         super(PositionalEncoding1D, self).__init__()
         self.org_channels = channels
         channels = int(np.ceil(channels / 2) * 2)
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
+        inv_freq = 1.0 / (freq ** (torch.arange(0, channels, 2).float() / channels))
         self.register_buffer("inv_freq", inv_freq)
         self.channels = channels
         self.dtype_override = dtype_override
@@ -97,12 +105,12 @@ class PositionalEncoding1D(nn.Module):
 
 
 class PositionalEncodingPermute1D(nn.Module):
-    def __init__(self, channels, dtype_override=None):
+    def __init__(self, channels, dtype_override=None,freq=10000):
         """
         Accepts (batchsize, ch, x) instead of (batchsize, x, ch)
         """
         super(PositionalEncodingPermute1D, self).__init__()
-        self.penc = PositionalEncoding1D(channels, dtype_override)
+        self.penc = PositionalEncoding1D(channels, dtype_override,freq)
 
     def forward(self, tensor):
         tensor = tensor.permute(0, 2, 1)
@@ -116,7 +124,7 @@ class PositionalEncodingPermute1D(nn.Module):
 
 
 class PositionalEncoding2D(nn.Module):
-    def __init__(self, channels, dtype_override=None):
+    def __init__(self, channels, dtype_override=None,freq=10000):
         """
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         :param dtype_override: If set, overrides the dtype of the output embedding.
@@ -124,7 +132,7 @@ class PositionalEncoding2D(nn.Module):
         super(PositionalEncoding2D, self).__init__()
         self.org_channels = channels
         channels = int(np.ceil(channels / 4) * 2)
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
+        inv_freq = 1.0 / (freq ** (torch.arange(0, channels, 2).float() / channels))
         self.register_buffer("inv_freq", inv_freq)
         self.dtype_override = dtype_override
         self.channels = channels
@@ -158,12 +166,12 @@ class PositionalEncoding2D(nn.Module):
 
 
 class PositionalEncodingPermute2D(nn.Module):
-    def __init__(self, channels, dtype_override=None):
+    def __init__(self, channels, dtype_override=None,freq=10000):
         """
         Accepts (batchsize, ch, x, y) instead of (batchsize, x, y, ch)
         """
         super(PositionalEncodingPermute2D, self).__init__()
-        self.penc = PositionalEncoding2D(channels, dtype_override)
+        self.penc = PositionalEncoding2D(channels, dtype_override,freq)
 
     def forward(self, tensor):
         tensor = tensor.permute(0, 2, 3, 1)
@@ -176,7 +184,7 @@ class PositionalEncodingPermute2D(nn.Module):
 
 
 class PositionalEncoding3D(nn.Module):
-    def __init__(self, channels, dtype_override=None):
+    def __init__(self, channels, dtype_override=None,freq=10000):
         """
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         :param dtype_override: If set, overrides the dtype of the output embedding.
@@ -186,7 +194,7 @@ class PositionalEncoding3D(nn.Module):
         channels = int(np.ceil(channels / 6) * 2)
         if channels % 2:
             channels += 1
-        inv_freq = 1.0 / (10000 ** (torch.arange(0, channels, 2).float() / channels))
+        inv_freq = 1.0 / (freq ** (torch.arange(0, channels, 2).float() / channels))
         self.register_buffer("inv_freq", inv_freq)
         self.dtype_override = dtype_override
         self.channels = channels
@@ -224,12 +232,12 @@ class PositionalEncoding3D(nn.Module):
 
 
 class PositionalEncodingPermute3D(nn.Module):
-    def __init__(self, channels, dtype_override=None):
+    def __init__(self, channels, dtype_override=None,freq=10000):
         """
         Accepts (batchsize, ch, x, y, z) instead of (batchsize, x, y, z, ch)
         """
         super(PositionalEncodingPermute3D, self).__init__()
-        self.penc = PositionalEncoding3D(channels, dtype_override)
+        self.penc = PositionalEncoding3D(channels, dtype_override,freq)
 
     def forward(self, tensor):
         tensor = tensor.permute(0, 2, 3, 4, 1)

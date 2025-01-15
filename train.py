@@ -438,13 +438,13 @@ def load_checkpoint(model,base_path,checkpoint_index,log=True):
         print("loading",checkpoint)
     model = load_checkpoint_and_dispatch(model,checkpoint)
     return model
-
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader, Subset
 def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_factor=2,random_state=123,startify=None):
     """
     returns train_dataset,test_dataset,train_loader, test_loader
     """
-    from sklearn.model_selection import train_test_split
-    from torch.utils.data import DataLoader, Subset
+
     # split dataset
     train_idx, test_idx = train_test_split(
         list(range(len(dataset))),
@@ -459,3 +459,48 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
     test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
     return train_data,test_data,train_loader, test_loader
+
+class EpochSplittedDataloader:
+    def __init__(self, dataset, batch_size, num_parts, shuffle=False, **dataloader_kwargs):
+        """
+        A wrapper around dataset to split a dataset into multiple parts for training across epochs.
+        So you can split dataset into 3 parts, and it will iterate over full dataset in three epochs.
+        
+        Args:
+            dataset (Dataset): PyTorch dataset.
+            batch_size (int): Number of samples per batch.
+            num_parts (int): Number of parts to split the dataset into.
+            shuffle (bool): Whether to shuffle indices for each part.
+            **dataloader_kwargs: Additional arguments for the DataLoader.
+        """
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.num_parts = num_parts
+        self.shuffle = shuffle
+        self.dataloader_kwargs = dataloader_kwargs
+        
+        # Create indices for the dataset
+        self.indices = list(range(len(self.dataset)))
+        
+        # Shuffle indices if required
+        if self.shuffle:
+            torch.manual_seed(42)  # For reproducibility
+            self.indices = torch.randperm(len(self.dataset)).tolist()
+        
+        # Split indices into parts
+        self.split_indices = torch.chunk(torch.tensor(self.indices), self.num_parts)
+        self.current_part = 0
+
+    def __iter__(self):
+        """Return the DataLoader for the current part."""
+        current_indices = self.split_indices[self.current_part].tolist()
+        subset = Subset(self.dataset, current_indices)
+        dataloader = DataLoader(subset, batch_size=self.batch_size, **self.dataloader_kwargs)
+        self.current_part = (self.current_part + 1) % self.num_parts  # Move to the next part for the next epoch
+        return iter(dataloader)
+
+    def __len__(self):
+        """Return the number of batches in the current part."""
+        current_indices = self.split_indices[self.current_part]
+        return len(current_indices) // self.batch_size + int(len(current_indices) % self.batch_size > 0)
+
