@@ -25,6 +25,7 @@ class Video2Class(nn.Sequential):
         block_size = 2
         model = [
             Transpose(1,2),
+            nn.BatchNorm3d(in_channels),
             ResidualBlock(
                 in_channels=in_channels,
                 out_channels=64,
@@ -64,7 +65,6 @@ class Video2Class(nn.Sequential):
             ),
             nn.MaxPool3d((1,2,2)),
             SCSEModule(512,dimensions=3),
-            
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(2),
             Transpose(),
