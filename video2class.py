@@ -1,4 +1,5 @@
 from kemsekov_torch.residual import ResidualBlock
+from kemsekov_torch.conv_modules import SCSEModule
 import torch.nn as nn
 
 class Transpose(nn.Module):
@@ -32,6 +33,7 @@ class Video2Class(nn.Sequential):
                 dimensions=3
             ),
             nn.MaxPool3d((1,2,2)),
+            SCSEModule(64,dimensions=3),
             ResidualBlock(
                 in_channels=64,
                 out_channels=128,
@@ -41,6 +43,7 @@ class Video2Class(nn.Sequential):
                 dimensions=3
             ),
             nn.MaxPool3d((1,2,2)),
+            SCSEModule(128,dimensions=3),
             ResidualBlock(
                 in_channels=128,
                 out_channels=256,
@@ -50,6 +53,7 @@ class Video2Class(nn.Sequential):
                 dimensions=3
             ),
             nn.MaxPool3d((1,2,2)),
+            SCSEModule(256,dimensions=3),
             ResidualBlock(
                 in_channels=256,
                 out_channels=512,
@@ -58,6 +62,9 @@ class Video2Class(nn.Sequential):
                 dilation=[1]*256+[2]*256,
                 dimensions=3
             ),
+            nn.MaxPool3d((1,2,2)),
+            SCSEModule(512,dimensions=3),
+            
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(2),
             Transpose(),
