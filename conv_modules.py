@@ -206,7 +206,7 @@ class SpatialTransformer(nn.Module):
         theta = self.fc_loc(xs) #[batch,6]
         theta = theta.view(-1, 2, 3)
         grid = F.affine_grid(theta, x.size())
-        x = F.grid_sample(x, grid, align_corners=False)
+        x = F.grid_sample(x, grid, align_corners=True)
         return x
 
 class BSConvU(torch.nn.Sequential): 

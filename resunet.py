@@ -1,5 +1,6 @@
 from typing import List
 from residual import *
+from conv_modules import *
 from common_modules import Interpolate
 
 class Encoder(torch.nn.Module):
