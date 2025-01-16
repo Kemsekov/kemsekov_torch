@@ -2,6 +2,8 @@ from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from residual import *
+
 class SEModule(nn.Module):
     """
     Spatial squeeze & channel excitation attention module, as proposed in https://arxiv.org/abs/1709.01507.
@@ -121,8 +123,6 @@ class SCSEModule3d(nn.Module):
         sse_out = x * self.sSE(x)
         # Combine the outputs
         return torch.max(cse_out, sse_out)
-
-
 class SpatialTransformer(nn.Module):
     def __init__(self, in_channels,initial_transform_strength = 0.1):
         """
@@ -162,24 +162,27 @@ class SpatialTransformer(nn.Module):
         # Localization network
         
         self.localizations = nn.ModuleList()
-        spacial_pyramid_scales = [1,4,8,16,32]
-        for scale in spacial_pyramid_scales:
+        spacial_pyramid_scales = [1,2,2,2]
+        channels = [4,8,16,32]
+        in_c = [in_channels]+channels[:-1]
+        for inc,c,scale in zip(in_c,channels,spacial_pyramid_scales):
             localization = nn.Sequential(
                 nn.MaxPool2d(scale,padding=scale//2),
-                nn.Conv2d(in_channels, 8, kernel_size=5,stride=2,padding=2),
-                nn.ReLU(True),
-                nn.Conv2d(8, 16, kernel_size=5,stride=2,padding=2),
-                nn.ReLU(True),
-                nn.AdaptiveMaxPool2d(1)
+                ResidualBlock(
+                    in_channels=inc,
+                    out_channels=c,
+                    kernel_size=3,
+                    conv_impl=[nn.Conv2d]*2
+                ),
             )
             self.localizations.append(localization)
             
         
         # Fully connected layers to output affine parameters
         self.fc_loc = nn.Sequential(
-            nn.Linear(16*len(spacial_pyramid_scales),32),
+            nn.Linear(sum(channels),64),
             nn.ReLU(True),
-            nn.Linear(32, 6)
+            nn.Linear(64, 6)
         )
         
         # Initialize the weights/bias with identity transformation
@@ -195,9 +198,11 @@ class SpatialTransformer(nn.Module):
         self.fc_loc[-1].bias.data.copy_(identity_bias)
 
     def forward(self, x):
-        xs = [torch.jit.fork(l,x) for l in self.localizations]
-        xs = [torch.jit.wait(l) for l in xs]
-        xs = torch.stack(xs,dim=1).flatten(1) # Flatten while preserving batch size
+        loc = [x]
+        for l in self.localizations:
+            loc.append(l(loc[-1]))
+        loc = [F.adaptive_avg_pool2d(v,(1,1)) for v in loc[1:]]
+        xs = torch.concat(loc,dim=1).flatten(1) # Flatten while preserving batch size
         theta = self.fc_loc(xs) #[batch,6]
         theta = theta.view(-1, 2, 3)
         grid = F.affine_grid(theta, x.size())
