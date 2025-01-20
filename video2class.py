@@ -11,7 +11,7 @@ class Transpose(nn.Module):
         return x.transpose(self.dim1,self.dim2)
 
 class Video2Class(nn.Sequential):
-    def __init__(self,in_channels = 3,num_classes = 3):
+    def __init__(self,in_channels = 3,num_classes = 3,dropout_p=0.1,block_size=2):
         """
         accepts tensor:
             batch, images_count,image_channels, width, height
@@ -35,6 +35,7 @@ class Video2Class(nn.Sequential):
             ),
             nn.MaxPool3d((1,2,2)),
             SCSEModule(64,dimensions=3),
+            nn.Dropout3d(dropout_p),
             ResidualBlock(
                 in_channels=64,
                 out_channels=128,
@@ -45,6 +46,7 @@ class Video2Class(nn.Sequential):
             ),
             nn.MaxPool3d((1,2,2)),
             SCSEModule(128,dimensions=3),
+            nn.Dropout3d(dropout_p),
             ResidualBlock(
                 in_channels=128,
                 out_channels=256,
@@ -55,6 +57,7 @@ class Video2Class(nn.Sequential):
             ),
             nn.MaxPool3d((1,2,2)),
             SCSEModule(256,dimensions=3),
+            nn.Dropout3d(dropout_p),
             ResidualBlock(
                 in_channels=256,
                 out_channels=512,
