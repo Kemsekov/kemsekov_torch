@@ -1,5 +1,6 @@
 from torchvision.ops import DeformConv2d
 import torch.nn as nn
+import torch
 
 # drop-in replacement for ordinary conv
 class Conv2dDeform(nn.Module):
