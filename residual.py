@@ -141,7 +141,6 @@ class ResidualBlock(torch.nn.Module):
                     out_channels=out_channels_[i],
                     kernel_size=kernel_sizes_[i],
                     padding=(kernel_sizes_[i] + (kernel_sizes_[i] - 1) * (dilations_[i] - 1)) // 2,
-                    padding_mode="zeros",
                     dilation=dilations_[i],
                     stride=stride_
                 )
