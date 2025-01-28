@@ -4,7 +4,7 @@ import torch.nn as nn
 # drop-in replacement for ordinary conv
 class Conv2dDeform(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
-        super(DeformableConvNet, self).__init__()
+        super(Conv2dDeform, self).__init__()
         offset_out_ch = 2 * kernel_size * kernel_size
         mask_out_ch = kernel_size * kernel_size
         self.offset_conv = nn.Conv2d(in_channels, offset_out_ch, kernel_size=kernel_size, stride=stride, padding=padding)
