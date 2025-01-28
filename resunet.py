@@ -211,7 +211,8 @@ class Decoder(torch.nn.Module):
             x=self.dropout(x)
         x = self.up5(x)
         return x
-    
+
+
 class ResidualUnet(torch.nn.Module):
     """
     Residual U-Net architecture combining Encoder and Decoder modules.
@@ -244,7 +245,7 @@ class ResidualUnet(torch.nn.Module):
         """
 
         super().__init__()
-        
+        output_scale=float(output_scale)
         in_channels_ =  [in_channels,64, 96, 128, 256]
         out_channels_ = [64,         96,128, 256, 512]
         dilations=[
@@ -255,7 +256,6 @@ class ResidualUnet(torch.nn.Module):
             [1]*64+[2]*64+[3]*64+[4]*64,
             [1]*256+[2]*128+[3]*128,
         ]
-        self.scaler = Interpolate(scale_factor=output_scale)
         
         if output_scale==1:
             self.scaler = nn.Identity()
@@ -279,6 +279,26 @@ class ResidualUnet(torch.nn.Module):
         self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p)
         self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p)
 
+        
+        self.scaler = Interpolate(scale_factor=output_scale)
+
+        # transform that is applied to skip connection before it is passed to decoder
+        self.connectors = nn.ModuleList([
+            nn.Sequential(
+                ResidualBlock(
+                    in_channels=ch,
+                    out_channels=ch,
+                    kernel_size= 3,
+                    stride = 1,
+                    # apply deformable convolution to improve model ability
+                    # to model complex geometric transformations
+                    conv_impl=Conv2dDeform
+                ),
+                # scale output
+                Interpolate(scale_factor=output_scale)
+            ) for ch in out_channels_[:-1]
+        ])
+            
     def forward(self, x):
         """
         Forward pass through the Residual U-Net.
@@ -295,7 +315,11 @@ class ResidualUnet(torch.nn.Module):
         """
         x,skip = self.encoder.forward_with_skip(x)
         x=self.scaler(x)
-        skip = [self.scaler(i) for i in skip]
+
+        skip = [torch.jit.fork(t,skip[i]) for i,t in enumerate(self.connectors)]
+        
+        skip = [torch.jit.wait(s) for s in skip]
+        
         x = self.decoder.forward_with_skip(x,skip)
         return x
 
@@ -334,7 +358,8 @@ class LargeResidualUnet(torch.nn.Module):
         """
 
         super().__init__()
-        
+
+        output_scale = float(output_scale)
         in_channels_ =  [in_channels,64, 64, 128,128,192,256,512]
         out_channels_ = [64,         64, 128,128,192,256,512,1024]
         dilations=[
@@ -344,7 +369,7 @@ class LargeResidualUnet(torch.nn.Module):
             [1]*256+[2]*256,
             [1]*512+[2]*512,
         ]
-        self.scaler = Interpolate(scale_factor=output_scale)
+        
         
         if output_scale==1:
             self.scaler = nn.Identity()
@@ -368,9 +393,46 @@ class LargeResidualUnet(torch.nn.Module):
         self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p)
         self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p)
 
+        
+        self.scaler = Interpolate(scale_factor=output_scale)
+
+        # transform that is applied to skip connection before it is passed to decoder
+        self.connectors = nn.ModuleList([
+            nn.Sequential(
+                ResidualBlock(
+                    in_channels=ch,
+                    out_channels=ch,
+                    kernel_size= 3,
+                    stride = 1,
+                    # apply deformable convolution to improve model ability
+                    # to model complex geometric transformations
+                    conv_impl=Conv2dDeform
+                ),
+                # scale output
+                Interpolate(scale_factor=output_scale)
+            ) for ch in out_channels_[:-1]
+        ])
+
     def forward(self, x):
+        """
+        Forward pass through the Residual U-Net.
+
+        This method processes the input tensor through the Encoder to obtain feature maps and
+        skip connections, applies scaling if necessary, and then processes through the Decoder
+        using the skip connections to reconstruct the output tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, in_channels, height, width).
+
+        Returns:
+            torch.Tensor: Output tensor after passing through the Residual U-Net.
+        """
         x,skip = self.encoder.forward_with_skip(x)
         x=self.scaler(x)
-        skip = [self.scaler(i) for i in skip]
+
+        skip = [torch.jit.fork(t,skip[i]) for i,t in enumerate(self.connectors)]
+        
+        skip = [torch.jit.wait(s) for s in skip]
+        
         x = self.decoder.forward_with_skip(x,skip)
         return x
