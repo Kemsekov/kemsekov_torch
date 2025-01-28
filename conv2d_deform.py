@@ -10,7 +10,7 @@ class Conv2dDeform(nn.Module):
         mask_out_ch = kernel_size * kernel_size
         self.offset_conv = nn.Conv2d(in_channels, offset_out_ch, kernel_size=kernel_size, stride=stride, padding=padding,padding_mode=padding_mode,dilation=dilation)
         self.mask_conv = nn.Conv2d(in_channels, mask_out_ch, kernel_size=kernel_size, stride=stride, padding=padding,padding_mode=padding_mode,dilation=dilation)
-        self.deform_conv = DeformConv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding)
+        self.deform_conv = DeformConv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding,dilation=dilation)
         if kernel_size//2 == padding and stride==1:
             self.x_res = nn.Conv2d(in_channels,out_channels,kernel_size=1)
         else:
