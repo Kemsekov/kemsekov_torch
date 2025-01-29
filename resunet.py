@@ -2,6 +2,7 @@ from typing import List
 from residual import *
 from conv_modules import *
 from common_modules import Interpolate
+from deform_conv_v3 import DeformConv2d
 
 class Encoder(torch.nn.Module):
     """
@@ -292,7 +293,7 @@ class ResidualUnet(torch.nn.Module):
                     stride = 1,
                     # apply deformable convolution to improve model ability
                     # to model complex geometric transformations
-                    conv_impl=Conv2dDeform
+                    conv_impl=DeformConv2d
                 ),
                 # scale output
                 Interpolate(scale_factor=output_scale)
@@ -406,7 +407,7 @@ class LargeResidualUnet(torch.nn.Module):
                     stride = 1,
                     # apply deformable convolution to improve model ability
                     # to model complex geometric transformations
-                    conv_impl=Conv2dDeform
+                    conv_impl=DeformConv2d
                 ),
                 # scale output
                 Interpolate(scale_factor=output_scale)
