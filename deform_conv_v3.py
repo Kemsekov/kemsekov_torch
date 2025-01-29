@@ -23,6 +23,9 @@ class DeformConv2d(nn.Module):
         self.stride = stride
         self.dilation=dilation
         self.adaptive_d= adaptive_d
+        
+        #useless thing
+        self._sum = 0.0
 
         self.zero_padding = nn.ZeroPad2d(padding)
         self.conv = nn.Conv2d(inc, outc, kernel_size=kernel_size, stride=kernel_size, bias=bias,padding_mode=padding_mode)
@@ -56,15 +59,12 @@ class DeformConv2d(nn.Module):
         # print(["NONE" if v is None else v.shape for v in grad_input],["NONE" if v is None else v.shape for v in grad_output])
         grad_input = (grad_input[i] * 0.1 for i in range(len(grad_input)))
         grad_output = (grad_output[i] * 0.1 for i in range(len(grad_output)))
-
     def forward(self, x):
         offset = self.p_conv(x)
         dtype = offset.data.type()
         ks = self.kernel_size
         N = offset.size(1) // 2
-        is_adaptive = self.adaptive_d
         
-        x_cam = x
         # (b, 2N, h, w)
         ad_base = self.ad_conv(x)
         ad_base = 1-torch.sigmoid(ad_base)
@@ -73,7 +73,6 @@ class DeformConv2d(nn.Module):
         ad_m = (ad_base - 0.5)*2 
         ad_m = ad_m.repeat(1,self.kernel_size,1,1)*self.dilation
         p = self._get_p(offset, dtype,ad)
-     
 
         m = torch.sigmoid(self.m_conv(x))
 
@@ -97,12 +96,21 @@ class DeformConv2d(nn.Module):
         floor_p = p - (p - torch.floor(p))
         p = p*(1-mask) + floor_p*mask
         p = torch.cat([torch.clamp(p[..., :N], 0, x.size(2)-1), torch.clamp(p[..., N:], 0, x.size(3)-1)], dim=-1)
-
+        slice_p = p[..., :N]
+        slice_p_b = p[..., N:]
+        
         # bilinear kernel (b, h, w, N)
-        g_lt = (1 + (q_lt[..., :N].type_as(p) - p[..., :N])) * (1 + (q_lt[..., N:].type_as(p) - p[..., N:]))
-        g_rb = (1 - (q_rb[..., :N].type_as(p) - p[..., :N])) * (1 - (q_rb[..., N:].type_as(p) - p[..., N:]))
-        g_lb = (1 + (q_lb[..., :N].type_as(p) - p[..., :N])) * (1 - (q_lb[..., N:].type_as(p) - p[..., N:]))
-        g_rt = (1 - (q_rt[..., :N].type_as(p) - p[..., :N])) * (1 + (q_rt[..., N:].type_as(p) - p[..., N:]))
+        qlt_slice1,qlt_slice2   = q_lt[..., :N].type_as(p) - slice_p, (q_lt[..., N:].type_as(p) - slice_p_b)
+        q_rb_slice1,q_rb_slice2 = q_rb[..., :N].type_as(p) - slice_p, (q_rb[..., N:].type_as(p) - slice_p_b)
+        q_lb_slice1,q_lb_slice2 = q_lb[..., :N].type_as(p) - slice_p, (q_lb[..., N:].type_as(p) - slice_p_b)
+        q_rt_slice1,q_rt_slice2 = q_rt[..., :N].type_as(p) - slice_p, (q_rt[..., N:].type_as(p) - slice_p_b)
+
+        # print(q_rt_slice1.shape==q_rt_slice2.shape)
+
+        g_lt = (1 + qlt_slice1)  * (1 + qlt_slice2)
+        g_rb = (1 - q_rb_slice1) * (1 - q_rb_slice2)
+        g_lb = (1 + q_lb_slice1) * (1 - q_lb_slice2)
+        g_rt = (1 - q_rt_slice1) * (1 + q_rt_slice2)
 
         # (b, c, h, w, N)
         x_q_lt = self._get_x_q(x, q_lt, N)
@@ -115,29 +123,26 @@ class DeformConv2d(nn.Module):
                    g_rb.unsqueeze(dim=1) * x_q_rb + \
                    g_lb.unsqueeze(dim=1) * x_q_lb + \
                    g_rt.unsqueeze(dim=1) * x_q_rt
-
-        # modulation
-        #s_relation = torch.abs(self.s_dilation_full.view(-1,1))
-        #s_relation_metrix = torch.mul(s_relation,s_relation.permute(1,0))+1
         
         m = m*ad_m
         
         m = m.contiguous().permute(0, 2, 3, 1)
-        #m = torch.mul(m,s_relation_metrix)
         m = m.unsqueeze(dim=1)
         m = torch.cat([m for _ in range(x_offset.size(1))], dim=1)
         x_offset *= m
 
         x_offset = self._reshape_x_offset(x_offset, ks)
         out = self.conv(x_offset)
-
+        
+        # --------------------------------------------------
+        # i have no idea why torch breaks when i remove this useless agg value
+        # useless thing
+        agg = torch.mean(qlt_slice1+q_rb_slice1+q_lb_slice1+q_rt_slice1)*1e-20
+        self._sum = 0.0
+        self._sum+=float(agg.item())
+        # --------------------------------------------------
+        
         return out
-
-
-        #if self.modulation:
-        #    return out
-        #else:
-        #    return out
 
     def _get_p_n(self, N : int, dtype):
         #st=torch.cat([s_dilation,torch.zeros(1).cuda(),torch.flip(-s_dilation,dims=[0])],dim=0).type(dtype)
