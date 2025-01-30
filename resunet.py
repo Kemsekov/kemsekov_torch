@@ -3,7 +3,7 @@ from residual import *
 from conv_modules import *
 from common_modules import Interpolate
 from deform_conv_v3 import DeformConv2d
-
+from kemsekov_torch.visual_self_attn import VisualMultiheadSelfAttentionFull
 class Encoder(torch.nn.Module):
     """
     Encoder module for the Residual U-Net architecture.
@@ -246,6 +246,8 @@ class ResidualUnet(torch.nn.Module):
         """
 
         super().__init__()
+        self.input_self_attn = VisualMultiheadSelfAttentionFull(in_channels,in_channels)
+        
         output_scale=float(output_scale)
         in_channels_ =  [in_channels,64, 96, 128, 256]
         out_channels_ = [64,         96,128, 256, 512]
@@ -254,20 +256,20 @@ class ResidualUnet(torch.nn.Module):
             1,
             1,
             # aspp block
-            [1]*64+[2]*64+[3]*64+[4]*64,
-            [1]*256+[2]*128+[3]*128,
+            [1]*128+[2]*128,
+            [1]*256+[2]*256,
         ]
         
         if output_scale==1:
             self.scaler = nn.Identity()
 
         downs_conv_impl = [
-            [nn.Conv2d]+[BSConvU]*(block_sizes[i]-1) for i in range(len(in_channels_))
+            [nn.Conv2d]*block_sizes[i] for i in range(len(in_channels_))
         ]
 
         up_block_sizes = block_sizes[::-1]
         ups_conv_impl = [
-            [nn.ConvTranspose2d]+[BSConvU]*(up_block_sizes[i]-1) for i in range(len(in_channels_))
+            [nn.ConvTranspose2d]*up_block_sizes[i] for i in range(len(in_channels_))
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
@@ -284,6 +286,9 @@ class ResidualUnet(torch.nn.Module):
         self.scaler = Interpolate(scale_factor=output_scale)
 
         # transform that is applied to skip connection before it is passed to decoder
+        conv_impl = [nn.Conv2d]*(len(out_channels_)-1)
+        # make last two layers at aspp block to be used with deformable convolutions
+        
         self.connectors = nn.ModuleList([
             nn.Sequential(
                 ResidualBlock(
@@ -293,11 +298,13 @@ class ResidualUnet(torch.nn.Module):
                     stride = 1,
                     # apply deformable convolution to improve model ability
                     # to model complex geometric transformations
-                    conv_impl=DeformConv2d
+                    conv_impl=conv
                 ),
+                attention(ch),
+                nn.Dropout2d(p=dropout_p),
                 # scale output
                 Interpolate(scale_factor=output_scale)
-            ) for ch in out_channels_[:-1]
+            ) for conv,ch in zip(conv_impl,out_channels_)
         ])
             
     def forward(self, x):
@@ -314,14 +321,15 @@ class ResidualUnet(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after passing through the Residual U-Net.
         """
+        x=self.input_self_attn(x)
         x,skip = self.encoder.forward_with_skip(x)
         x=self.scaler(x)
 
         skip = [torch.jit.fork(t,skip[i]) for i,t in enumerate(self.connectors)]
-        
         skip = [torch.jit.wait(s) for s in skip]
         
         x = self.decoder.forward_with_skip(x,skip)
+        
         return x
 
 class LargeResidualUnet(torch.nn.Module):
