@@ -68,9 +68,10 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         self.QBN = nn.BatchNorm1d(v_q_dim)
         self.KBN = nn.BatchNorm1d(v_q_dim)
         self.VBN = nn.BatchNorm1d(chunk_dim_size)
-        
-        self.x_residual = nn.Conv2d(in_channels,out_channels,kernel_size=1)
-        
+        if in_channels!=out_channels:
+            self.x_residual = nn.Conv2d(in_channels,out_channels,kernel_size=1)
+        else:
+            self.x_residual = nn.Identity()
         
     def forward(self,x):
         # split image into patches of self.patch_size * self.patch_size
@@ -112,9 +113,11 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         chunks_shape[-3]=self.out_channels
         # resize output to original chunks
         out = out_flat.view(chunks_shape)
+        out_im=unchunk_2d(out)
         
-        # get image from chunks
-        out = unchunk_2d(out)+self.x_residual(x)
+        # make weighted sum of transformed image and original
+        # to make it simpler for model to learn at the start
+        out = (0.2)*out_im+(0.8)*self.x_residual(x)
         
         return out
         
