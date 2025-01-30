@@ -16,6 +16,7 @@ class PositionalEncoding(nn.Module):
     """
     def __init__(self, channels, dtype_override = None,freq=10000):
         """
+        (batch_size, ...N dimensions..., ch)
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         :param dtype_override: If set, overrides the dtype of the output embedding.
         :param freq: Embedding frequency

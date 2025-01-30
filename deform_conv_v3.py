@@ -1,17 +1,20 @@
-from typing import Optional, Type
-from torch.autograd import Variable, Function
 import torch
 from torch import nn
-import numpy as np
-from torch.autograd import Variable
 
+# initializes module last layer weight
+def init_last_layer_weight(module : nn.Module,const):
+    reverse_subm = list(module.children())[::-1] + [module]
+    for m in reverse_subm:
+        if hasattr(m,'weight') and isinstance(m.weight,nn.parameter.Parameter):
+            nn.init.constant_(m.weight,const)
+            break
 class DeformConv2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, stride=1,dilation=2,bias=None,padding_mode='zeros'):
+    def __init__(self, in_channels, out_channels, kernel_size=3, padding=1, stride=1,dilation=2,bias=None,padding_mode='zeros',conv2d_impl = nn.Conv2d):
         """
         Args:
             modulation (bool, optional): If True, Modulated Defomable Convolution (Deformable ConvNets v2).
         """
-        super(DeformConv2d, self).__init__()
+        super().__init__()
         modulation=True
         adaptive_d=True
         
@@ -28,26 +31,24 @@ class DeformConv2d(nn.Module):
         self._sum = 0.0
 
         self.zero_padding = nn.ZeroPad2d(padding)
-        self.conv = nn.Conv2d(inc, outc, kernel_size=kernel_size, stride=kernel_size, bias=bias,padding_mode=padding_mode)
-        #self.conv_weight_m = torch.Tensor([outc,inc,kernel_size,kernel_size], requires_grad=False).cuda()
-        #self.s_dilation= Variable(torch.ones([int((self.kernel_size-1)/2)]).cuda(),requires_grad=True).floor()
-       
+        self.conv = conv2d_impl(inc, outc, kernel_size=kernel_size, stride=kernel_size, bias=bias,padding_mode=padding_mode)
 
-        self.p_conv = nn.Conv2d(inc, 2*kernel_size*kernel_size, kernel_size=3, padding=1, stride=stride,padding_mode=padding_mode)
-        nn.init.constant_(self.p_conv.weight, 0)
+        self.p_conv = conv2d_impl(inc, 2*kernel_size*kernel_size, kernel_size=3, padding=1, stride=stride,padding_mode=padding_mode)
+
+        init_last_layer_weight(self.p_conv, 0)
         self.p_conv.register_backward_hook(self._set_lr)
 
         self.modulation = modulation
         if modulation:
-            self.m_conv = nn.Conv2d(inc, kernel_size*kernel_size, kernel_size=3, padding=1, stride=stride,padding_mode=padding_mode)
-            nn.init.constant_(self.m_conv.weight, 0.5)
+            self.m_conv = conv2d_impl(inc, kernel_size*kernel_size, kernel_size=3, padding=1, stride=stride,padding_mode=padding_mode)
+            init_last_layer_weight(self.m_conv, 0.5)
             self.m_conv.register_backward_hook(self._set_lr)
         else:
             self.m_conv=torch.nn.Identity()
             
         if self.adaptive_d:
-            self.ad_conv = nn.Conv2d(inc,kernel_size,kernel_size=3,padding=1,stride=stride,padding_mode=padding_mode)
-            nn.init.constant_(self.ad_conv.weight,1)
+            self.ad_conv = conv2d_impl(inc,kernel_size,kernel_size=3,padding=1,stride=stride,padding_mode=padding_mode)
+            init_last_layer_weight(self.ad_conv,1)
             self.ad_conv.register_backward_hook(self._set_lr)
         else:
             self.ad_conv=torch.nn.Identity()
@@ -59,6 +60,7 @@ class DeformConv2d(nn.Module):
         # print(["NONE" if v is None else v.shape for v in grad_input],["NONE" if v is None else v.shape for v in grad_output])
         grad_input = (grad_input[i] * 0.1 for i in range(len(grad_input)))
         grad_output = (grad_output[i] * 0.1 for i in range(len(grad_output)))
+        
     def forward(self, x):
         offset = self.p_conv(x)
         dtype = offset.data.type()
