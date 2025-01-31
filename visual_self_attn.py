@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from kemsekov_torch.positional_emb import PositionalEncoding
+from kemsekov_torch.positional_emb import PositionalEncoding, PositionalEncodingPermute
 import torch.nn.functional as F
 
 def chunk_2d(input, dims: tuple[int,int]=(-1, -2), chunk_sizes: tuple[int,int]=(8, 8)):
@@ -77,7 +77,8 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         
         self.out_final = nn.Conv2d(out_channels*num_heads,out_channels,3,padding=1)
         
-        self.QK_pos_enc = PositionalEncoding(v_q_dim)
+        # self.QK_pos_enc = PositionalEncoding(v_q_dim)
+        self.inp_pos_enc = PositionalEncodingPermute(in_channels)
         
         self.QBN = nn.BatchNorm1d(v_q_dim)
         self.KBN = nn.BatchNorm1d(v_q_dim)
@@ -89,11 +90,13 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
             self.x_residual = nn.Identity()
         
     def forward(self,x):
-        # split image into patches of self.patch_size * self.patch_size
-        Q = self.Q(x)
-        K = self.K(x)
-        V = self.V(x)
+        # add positional encoding to input image
+        x_pos = self.inp_pos_enc(x)+x
+        Q = self.Q(x_pos)
+        K = self.K(x_pos)
+        V = self.V(x_pos)
         
+        # split image into patches of self.patch_size * self.patch_size
         x_chunks = unfold_2d(x,patch_size=self.patch_size)
         Q_chunks = unfold_2d(Q,patch_size=self.patch_size).flatten(-3)
         K_chunks = unfold_2d(K,patch_size=self.patch_size).flatten(-3)
@@ -111,10 +114,11 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         # K_chunks = K_chunks+QK_pos_enc
         # V_chunks = V_chunks+V_pos_enc
         
-        x_flat = x_chunks.view(B,CHX*CHY,x_chunks.shape[-1])
         Q_flat = Q_chunks.view(B,CHX*CHY,D)
         K_flat = K_chunks.view(B,CHX*CHY,D)
         V_flat = V_chunks.view(B,CHX*CHY,V_chunks.shape[-1])
+        
+        # x_flat = x_chunks.view(B,CHX*CHY,x_chunks.shape[-1])
         # V_flat = self.V(x_flat)
         
         Q_flat = self.QBN(Q_flat.view(-1,Q_flat.shape[-1])).view(Q_flat.shape)
