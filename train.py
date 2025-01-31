@@ -375,6 +375,7 @@ def train(
                 checkpoints_dir_with_epoch=os.path.join(checkpoints_dir,f"epoch-{epoch+1}")
                 # for each improvement save training state and model
                 # copy current saved state from last to checkpoint
+                print(f"saved epoch-{epoch+1}")
                 shutil.copytree(save_last_dir, checkpoints_dir_with_epoch,dirs_exist_ok=True)
                 # update base model
                 if model_script is not None:
