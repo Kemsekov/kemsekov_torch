@@ -284,7 +284,13 @@ def train(
             test_loss /= len(test_loader)
             test_loss_history.append(round(test_loss,5))
             test_metric = update_metric(test_loader, best_test_metric, test_metric_history, metric)
-            
+        
+        metrics = train_metric.keys()
+        for d in [train_metric_history,test_metric_history,best_test_metric,best_train_metric]:
+            for m in list(d):
+                if m not in metrics:
+                    d.pop(m)
+        
         if acc.is_main_process:
             table_data = []
             loss_row = ["loss",round(running_loss,5)]
@@ -344,7 +350,7 @@ def train(
                 "test_loss_history"     : test_loss_history,
                 "train_metric_history"  : train_metric_history,
                 "test_metric_history"   : test_metric_history,
-                "train_time_history"    : train_time_history,
+                "train_time_history"    : [round(v,3) for v in train_time_history],
                 "epochs"                : epoch+1
             }
 
@@ -355,8 +361,8 @@ def train(
         # Save state if all test metric improves or if test metric is same but train metric improved
         # note, metric always must suggest that the larger it is, the better model is performing
         test_improvements = (test_metric is not None) and all([test_metric[m]>best_test_metric[m] for m in best_test_metric])
-        train_improvements = all([train_metric[m]>best_train_metric[m] for m in best_train_metric])
         test_same_as_best = (test_metric is None) or all([test_metric[m]==best_test_metric[m] for m in best_test_metric])
+        train_improvements = all([train_metric[m]>best_train_metric[m] for m in best_train_metric])
         
         if test_improvements or (test_same_as_best and train_improvements):
             best_test_metric = test_metric
