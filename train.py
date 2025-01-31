@@ -358,8 +358,8 @@ def train(
         # Save state if all test metric improves or if test metric is same but train metric improved
         # note, metric always must suggest that the larger it is, the better model is performing
         
-        test_improvements = (test_metric is not None) and sum([test_metric[m]>=best_test_metric[m] for m in best_test_metric])/len(best_test_metric.keys())>=0.5
-        train_improvements = sum([train_metric[m]>best_train_metric[m] for m in best_train_metric])/len(best_train_metric.keys())>=0.5
+        test_improvements = (test_metric is not None) and all([test_metric[m]>=best_test_metric[m] for m in best_test_metric])
+        train_improvements = all([train_metric[m]>best_train_metric[m] for m in best_train_metric])
         
         if test_improvements or (not is_testing and train_improvements):
             best_test_metric = test_metric
@@ -371,6 +371,7 @@ def train(
                     for c in checkpoints[:-checkpoints_count+1]:
                         c_dir = os.path.join(checkpoints_dir,c)
                         shutil.rmtree(c_dir,ignore_errors=True)
+                        print('rm',c_dir)
                 
                 checkpoints_dir_with_epoch=os.path.join(checkpoints_dir,f"epoch-{epoch+1}")
                 # for each improvement save training state and model
