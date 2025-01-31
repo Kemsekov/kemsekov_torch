@@ -385,7 +385,7 @@ def train(
 def save_plot_metric_history(plot_dir, train_metric_history,test_metric_history,source):
     metrics_count = len(train_metric_history.keys())
     
-    plt.figure(figsize=(5*metrics_count,5))
+    plt.figure(figsize=(6*metrics_count,6))
     for i,metric_name in enumerate(train_metric_history):
         plt.subplot(1,metrics_count,i+1)
         plt.plot(train_metric_history[metric_name], label='train')
