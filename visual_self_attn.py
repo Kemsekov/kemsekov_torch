@@ -50,9 +50,9 @@ def unfold_2d(input, patch_size : int =32):
 class VisualMultiheadSelfAttentionFull(nn.Module):
     def __init__(self,in_channels,out_channels,num_heads=8,patch_size=16,v_q_dim = 512,dropout_p=0.1):
         super().__init__()
-        self.out_channels=out_channels
         self.patch_size=patch_size
-        chunk_dim_size = patch_size*patch_size*out_channels
+        self.V_out_channels=out_channels*num_heads
+        chunk_dim_size = patch_size*patch_size*self.V_out_channels
         
         self.V_pos_enc = PositionalEncoding(chunk_dim_size)
         self.attn = torch.nn.MultiheadAttention(num_heads=num_heads,embed_dim=chunk_dim_size,vdim=v_q_dim,kdim=v_q_dim,dropout=dropout_p)
@@ -62,24 +62,27 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         
         self.Q = nn.Sequential(
             nn.Conv2d(in_channels,out_ch,kernel_size=3,padding=1),
+            nn.ReLU()
         )
         
         self.K = nn.Sequential(
             nn.Conv2d(in_channels,out_ch,kernel_size=3,padding=1),
+            nn.ReLU()
         )
-        
-        # chunk_dim_size_in = patch_size*patch_size*in_channels
-        # self.V = nn.Linear(chunk_dim_size_in,chunk_dim_size)
         
         self.V = nn.Sequential(
-            nn.Conv2d(in_channels,out_channels,kernel_size=3,padding=1),
+            nn.Conv2d(in_channels,out_channels*num_heads,kernel_size=3,padding=1),
+            nn.ReLU()
         )
+        
+        self.out_final = nn.Conv2d(out_channels*num_heads,out_channels,3,padding=1)
         
         self.QK_pos_enc = PositionalEncoding(v_q_dim)
         
-        # self.QBN = nn.BatchNorm1d(v_q_dim)
-        # self.KBN = nn.BatchNorm1d(v_q_dim)
-        # self.VBN = nn.BatchNorm1d(chunk_dim_size)
+        self.QBN = nn.BatchNorm1d(v_q_dim)
+        self.KBN = nn.BatchNorm1d(v_q_dim)
+        self.VBN = nn.BatchNorm1d(chunk_dim_size)
+        
         if in_channels!=out_channels:
             self.x_residual = nn.Conv2d(in_channels,out_channels,kernel_size=1)
         else:
@@ -114,21 +117,23 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         V_flat = V_chunks.view(B,CHX*CHY,V_chunks.shape[-1])
         # V_flat = self.V(x_flat)
         
-        # Q_flat = self.QBN(Q_flat.view(-1,Q_flat.shape[-1])).view(Q_flat.shape)
-        # K_flat = self.KBN(K_flat.view(-1,K_flat.shape[-1])).view(K_flat.shape)
-        # V_flat = self.VBN(V_flat.view(-1,V_flat.shape[-1])).view(V_flat.shape)
+        Q_flat = self.QBN(Q_flat.view(-1,Q_flat.shape[-1])).view(Q_flat.shape)
+        K_flat = self.KBN(K_flat.view(-1,K_flat.shape[-1])).view(K_flat.shape)
+        V_flat = self.VBN(V_flat.view(-1,V_flat.shape[-1])).view(V_flat.shape)
+        
         # compute self-attention of input image
         out_flat,b = self.attn(V_flat,Q_flat,K_flat)
         
         chunks_shape = list(chunks_shape)
-        chunks_shape[-3]=self.out_channels
+        chunks_shape[-3]=self.V_out_channels
         # resize output to original chunks
         out = out_flat.view(chunks_shape)
         out_im=unchunk_2d(out)
         
         # make weighted sum of transformed image and original
         # to make it simpler for model to learn at the start
-        out = out_im+self.x_residual(x)
+        
+        out = self.out_final(out_im)+self.x_residual(x)
         
         return out
         
