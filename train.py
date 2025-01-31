@@ -331,10 +331,7 @@ def train(
             plt.close()
 
             # Metric plot
-            save_plot_metric_history(plot_dir, train_metric_history,'train')
-            
-            if is_testing:
-                save_plot_metric_history(plot_dir, test_metric_history,'test')
+            save_plot_metric_history(plot_dir, train_metric_history,test_metric_history if is_testing else None,'train')
             
             # time plot
             plt.figure()
@@ -385,19 +382,22 @@ def train(
                     model_script.save(model_save_path)
         on_epoch_end(epoch,model)
 
-def save_plot_metric_history(plot_dir, metric_history,source):
-    metrics_count = len(metric_history.keys())
+def save_plot_metric_history(plot_dir, train_metric_history,test_metric_history,source):
+    metrics_count = len(train_metric_history.keys())
     
     plt.figure(figsize=(5*metrics_count,5))
-    for i,metric_name in enumerate(metric_history):
+    for i,metric_name in enumerate(train_metric_history):
         plt.subplot(1,metrics_count,i+1)
-        plt.plot(metric_history[metric_name], label=metric_name)
+        plt.plot(train_metric_history[metric_name], label='train')
+        if test_metric_history is not None:
+            plt.plot(test_metric_history[metric_name], label='test')
+        
         plt.xlabel("Epoch")
         plt.ylabel('Metric value')
         plt.title(f"{metric_name}")
-    plt.legend()
-    plt.suptitle(f'{source} metrics')
-    plt.savefig(os.path.join(plot_dir, f"{source}_metric.png"))
+        plt.legend()
+    plt.suptitle(f'Metrics')
+    plt.savefig(os.path.join(plot_dir, f"metrics.png"))
     plt.close()
 
 def update_metric(train_loader, best_train_metric, train_metric_history, metric):
