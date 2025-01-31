@@ -52,7 +52,6 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         super().__init__()
         self.out_channels=out_channels
         self.patch_size=patch_size
-        chunk_dim_size_in = patch_size*patch_size*in_channels
         chunk_dim_size = patch_size*patch_size*out_channels
         
         self.V_pos_enc = PositionalEncoding(chunk_dim_size)
@@ -60,10 +59,22 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         self.v_q_dim=v_q_dim
         
         out_ch = v_q_dim//patch_size//patch_size
-        self.Q = nn.Conv2d(in_channels,out_ch,kernel_size=3,padding=1)
-        self.K = nn.Conv2d(in_channels,out_ch,kernel_size=3,padding=1)
+        
+        self.Q = nn.Sequential(
+            nn.Conv2d(in_channels,out_ch,kernel_size=3,padding=1),
+        )
+        
+        self.K = nn.Sequential(
+            nn.Conv2d(in_channels,out_ch,kernel_size=3,padding=1),
+        )
+        
+        # chunk_dim_size_in = patch_size*patch_size*in_channels
         # self.V = nn.Linear(chunk_dim_size_in,chunk_dim_size)
-        self.V = nn.Conv2d(in_channels,out_channels,kernel_size=3,padding=1)
+        
+        self.V = nn.Sequential(
+            nn.Conv2d(in_channels,out_channels,kernel_size=3,padding=1),
+        )
+        
         self.QK_pos_enc = PositionalEncoding(v_q_dim)
         
         # self.QBN = nn.BatchNorm1d(v_q_dim)
@@ -89,7 +100,6 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         x_chunks=x_chunks.flatten(-3)
         
         B,CHX,CHY,D = Q_chunks.shape
-
         # add spatial position encoding
 
         # QK_pos_enc = self.QK_pos_enc(Q_chunks)

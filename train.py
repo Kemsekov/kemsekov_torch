@@ -8,6 +8,7 @@ import math
 import shutil
 import time
 from accelerate import load_checkpoint_and_dispatch
+import tabulate
 
 def train(
         model,
@@ -15,7 +16,6 @@ def train(
         test_loader,
         optimizer,
         compute_loss_and_metric,
-        metric_name,
         save_results_dir,
         load_checkpoint_dir = None,
         num_epochs = 10,
@@ -30,8 +30,7 @@ def train(
         on_test_batch_end = None
     ):
     """
-    Train and evaluate a model, saving checkpoints, plots, and metric history 
-    during the training process.
+    Train and evaluate a model, saving checkpoints, plots, and metric history during the training process.
 
     Parameters
     ----------
@@ -42,76 +41,71 @@ def train(
         DataLoader for the training dataset, providing batched data.
 
     test_loader : torch.utils.data.DataLoader or None
-        DataLoader for the test dataset, providing batched data. If None, the 
-        testing step is skipped.
+        DataLoader for the test dataset, providing batched data. If None, the testing step is skipped.
 
     optimizer : torch.optim.Optimizer
         Optimizer for updating model weights.
 
     compute_loss_and_metric : Callable
-        A function that computes the loss and performance metric for each batch. 
-        It should accept `model` and `batch` as input and return a tuple of 
-        `(loss, metric)`.
-
-    metric_name : str
-        Name of the evaluation metric used (e.g., "accuracy"), for logging and plot titles.
+        A function that computes the loss and performance metric for each batch. It should accept `model,batch`
+        as input and return a tuple of `(loss, metric)`, where `metric` is a dictionary like `{'r2': 0.1, 'iou': 0.4, ...}`.
 
     save_results_dir : str
         Directory to save model checkpoints, metric plots, and training history.
 
     load_checkpoint_dir : str, optional
-        Directory path for loading a saved training checkpoint, if available.
+        Directory path for loading a saved training checkpoint, if available. Default is None.
 
-    num_epochs : int
-        Number of epochs for training.
+    num_epochs : int, optional
+        Number of epochs for training. Default is 10.
 
     accelerator : accelerate.Accelerator, optional
-        An instance of `Accelerator` from the `accelerate` library for distributed 
-        training and mixed-precision optimizations. If None, a default instance 
-        will be created.
+        An instance of `Accelerator` from the `accelerate` library for distributed training and mixed-precision
+        optimizations. If None, a default instance will be created. Default is None.
 
-    tie_weights : bool, default=False
-        If True, calls `model.tie_weights()` at the start of training, useful for 
-        models with shared weights.
+    tie_weights : bool, optional
+        If True, calls `model.tie_weights()` at the start of training, useful for models with shared weights.
+        Default is False.
 
-    cast_batch_to_mixed_precision_dtype : bool, default=False
-        If True, explicitly casts input batches to the model’s mixed-precision data type 
-        to ensure compatibility with mixed-precision training.
+    cast_batch_to_mixed_precision_dtype : bool, optional
+        If True, explicitly casts input batches to the model's mixed-precision data type to ensure compatibility
+        with mixed-precision training. Default is False.
 
     scheduler : optional
-        Learning rate scheduler to update during the training loop.
-    
-    checkpoints_count: int, default=3
-        How many last best checkpoints to save
-    
-    model_wrapper: torch.nn.DataParallel, default=None
-        How to wrap model.
+        Learning rate scheduler to update during the training loop. Default is None.
 
-    on_epoch_end: callable(int,torch.nn.Module)
-        Method that is called on each epoch end. Epoch index and model is passed to method
+    checkpoints_count : int, optional
+        Number of last best checkpoints to save. Default is 5.
 
-    on_train_batch_end: callable(model,batch,loss,metric)
-        Method that is called on each train batch end. Model,batch,loss and metric is passed.
-    
-    on_test_batch_end: callable(model,batch,loss,metric)
-        Method that is called on each test batch end. Model,batch,loss and metric is passed.
+    model_wrapper : torch.nn.DataParallel, optional
+        Wrapper for the model (e.g., for multi-GPU training). Default is None.
+
+    on_epoch_end : Callable(int, torch.nn.Module), optional
+        Method that is called at the end of each epoch. The epoch index and model are passed to this method.
+        Default is None.
+
+    on_train_batch_end : Callable(model, batch, loss, metric), optional
+        Method that is called at the end of each training batch. The model, batch, loss, and metric are passed
+        to this method. Default is None.
+
+    on_test_batch_end : Callable(model, batch, loss, metric), optional
+        Method that is called at the end of each test batch. The model, batch, loss, and metric are passed to
+        this method. Default is None.
 
     Returns
     -------
     None
-        Saves model checkpoints and training performance plots in `save_results_dir`.
+        Saves model checkpoints, training performance plots, and metric history in `save_results_dir`.
 
     Notes
     -----
-    - Creates a directory structure under `save_results_dir` to store model checkpoints, 
-      loss, and metric plots.
+    - Creates a directory structure under `save_results_dir` to store model checkpoints, loss, and metric plots.
     - Supports mixed-precision and distributed training through `accelerator`.
-    - Checkpoints the best model based on the test metric; if the test metric matches 
-      the best score, it also considers the training metric for improvement.
-    - Generates plots for loss and metric history at the end of training, saving them as 
-      "loss_history.png" and "{metric_name}_history.png" in the plot directory.
-    - Periodically saves the training state and model in `checkpoints` based on 
-      performance improvement.
+    - Checkpoints the best model based on the test metric; if the test metric matches the best score, it also
+      considers the training metric for improvement.
+    - Generates plots for loss and metric history at the end of training, saving them as "loss_history.png" and
+      "{metric_name}_history.png" in the plot directory.
+    - Periodically saves the training state and model in `checkpoints` based on performance improvement.
 
     Example
     -------
@@ -121,7 +115,6 @@ def train(
     >>>     test_loader=test_loader,
     >>>     optimizer=optimizer,
     >>>     compute_loss_and_metric=compute_loss_and_metric,
-    >>>     metric_name="accuracy",
     >>>     save_results_dir="runs",
     >>>     load_checkpoint_dir="runs/checkpoints/epoch-10",
     >>>     num_epochs=10,
@@ -131,25 +124,17 @@ def train(
 
     Procedure
     ---------
-    1. **Prepare Model and Data:** The model, data loaders, optimizer, and scheduler are 
-       prepared with the `accelerator`.
-
-    2. **Checkpoint Loading (Optional):** If `load_checkpoint_dir` is specified, attempts 
-       to load training state and metric history. Adjusts the starting epoch and the 
-       best observed metric based on the checkpointed values.
-
+    1. **Prepare Model and Data:** The model, data loaders, optimizer, and scheduler are prepared with the `accelerator`.
+    2. **Checkpoint Loading (Optional):** If `load_checkpoint_dir` is specified, attempts to load training state and
+       metric history. Adjusts the starting epoch and the best observed metric based on the checkpointed values.
     3. **Epoch Training Loop:** For each epoch, loops over batches in `train_loader`.
-       - If `cast_batch_to_mixed_precision_dtype` is True, casts inputs to the specified 
-         dtype.
+       - If `cast_batch_to_mixed_precision_dtype` is True, casts inputs to the specified dtype.
        - Computes loss and metric for each batch, backpropagates, and updates weights.
        - Accumulates batch loss and metric to compute the epoch's averages.
-
-    4. **Evaluation:** After each epoch, evaluates the model on `test_loader` if provided. 
-       Calculates the test metric and loss, appending them to the history.
-
-    5. **Checkpointing and Plotting:** Saves the model checkpoint if the test metric 
-       improves. At the end of training, generates and saves loss and metric plots 
-       in the `plots` folder.
+    4. **Evaluation:** After each epoch, evaluates the model on `test_loader` if provided. Calculates the test metric
+       and loss, appending them to the history.
+    5. **Checkpointing and Plotting:** Saves the model checkpoint if the test metric improves. At the end of training,
+       generates and saves loss and metric plots in the `plots` folder.
     """
 
     
@@ -165,15 +150,17 @@ def train(
     os.makedirs(state_dir, exist_ok=True)
     os.makedirs(checkpoints_dir, exist_ok=True)
 
-    best_train_metric = -1e10
-    best_test_metric = -1e10
-    train_metric_history = []   
+    best_train_metric = {}
+    best_test_metric = {}
+    train_metric_history = {}
+    test_metric_history = {}
+    
     train_time_history = []   
-    test_metric_history = []
     start_epoch=0
 
     loss_history = []
     test_loss_history = []
+    
     if on_epoch_end is None: on_epoch_end             = lambda x,y: None
     if on_train_batch_end is None: on_train_batch_end = lambda x,y,w,z: None
     if on_test_batch_end is None: on_test_batch_end   = lambda x,y,w,z: None
@@ -202,22 +189,21 @@ def train(
             if os.path.exists(load_report_path):
                 with open(load_report_path,'r') as f:
                     saved_state = json.loads(f.read())
-                    if saved_state['metric_name']==metric_name:
-                        train_metric_history = saved_state['train_metric_history']
-                        test_metric_history = saved_state['test_metric_history']
-                        if "train_time_history" in saved_state.keys():
-                            train_time_history = saved_state['train_time_history']
-                        
-                        loss_history = saved_state['loss_history']
-                        test_loss_history = saved_state['test_loss_history']
-                        start_epoch = int(saved_state['epochs'])
-                        
-                        train_metric_not_nan = [v for v in train_metric_history if not math.isnan(v)]
-                        test_metric_not_nan = [v for v in test_metric_history if not math.isnan(v)]
-                        if len(train_metric_not_nan)>0:
-                            best_train_metric = max(train_metric_not_nan)
-                        if len(test_metric_not_nan)>0:
-                            best_test_metric = max(test_metric_not_nan)
+                    if "train_time_history" in saved_state.keys():
+                        train_time_history = saved_state['train_time_history']
+                    
+                    loss_history = saved_state['loss_history']
+                    test_loss_history = saved_state['test_loss_history']
+                    start_epoch = int(saved_state['epochs'])
+                    
+                    #train_metric_history is dict like {'r2':0.5,'iou':0.2,'f1':0.6 ... }
+                    train_metric_history = saved_state['train_metric_history']
+                    test_metric_history = saved_state['test_metric_history']
+                    
+                    # from each metric history metric get best metrics
+                    load_best_metric_from_history(best_train_metric, train_metric_history)
+                    load_best_metric_from_history(best_test_metric, test_metric_history)
+                   
         except Exception as e:
             print("Failed to load state with error",e)
             print("Ignoring state loading...")
@@ -237,9 +223,8 @@ def train(
             print(f'\nEpoch {epoch+1}/{num_epochs}')
         # Training
         running_loss = 0.0
-        metric = 0
+        metric = {}
         optimizer.zero_grad()  # Reset gradients before accumulation
-        train_metric = 0.0
         pbar = tqdm(train_loader,desc=f"train {acc.process_index}")
         start = time.time()
         
@@ -253,8 +238,9 @@ def train(
 
                 with acc.autocast():
                     loss, batch_metric = compute_loss_and_metric(model,batch)
-                if isinstance(batch_metric,torch.Tensor):
-                    batch_metric = batch_metric.detach().cpu()
+                
+                add_batch_metric(metric, batch_metric)
+                        
                 acc.backward(loss)
                 optimizer.step()
                 optimizer.zero_grad()
@@ -265,29 +251,24 @@ def train(
                 batch_loss = loss.item()
                 
                 running_loss += batch_loss
-                metric += batch_metric
                 
-                pbar.set_postfix(loss=f"{batch_loss:.4f}", **{metric_name: f"{batch_metric:.4f}"})
+                pbar.set_postfix(loss=f"{batch_loss:.4f}", **{name: f"{batch_metric[name]:.4f}" for name in batch_metric})
                 
                 on_train_batch_end(model,batch,loss,batch_metric)
         running_time = time.time()-start
         train_time_history.append(running_time)
         running_loss /= len(train_loader)
-        train_metric = metric / len(train_loader)
-        train_metric_history.append(train_metric)
-        loss_history.append(running_loss)
+        loss_history.append(round(running_loss,5))
         
-        # update train metric we see improvements
-        if train_metric>best_train_metric:
-            best_train_metric = train_metric
+        train_metric = update_metric(train_loader, best_train_metric, train_metric_history, metric)
 
         # Evaluation on test set
-        test_metric = 0.0
         test_loss = 0.0
+        test_metric = None
         if is_testing:
             model.eval()
             with torch.no_grad():
-                metric = 0
+                metric = {}
                 for batch in test_loader:
                     if cast_batch_to_mixed_precision_dtype:
                         batch = cast_to_dtype(batch,mixed_precision)
@@ -295,24 +276,36 @@ def train(
                         loss, batch_metric = compute_loss_and_metric(model,batch)
                     if isinstance(batch_metric,torch.Tensor):
                         batch_metric = batch_metric.detach().cpu()
-                    metric = batch_metric + metric
+                    add_batch_metric(metric, batch_metric)
+                    
                     test_loss += loss.item()
                     on_test_batch_end(model,batch,loss,batch_metric)
 
             test_loss /= len(test_loader)
-            test_metric = metric / len(test_loader)          
-            test_metric_history.append(test_metric)
-            test_loss_history.append(test_loss)
+            test_loss_history.append(round(test_loss,5))
+            test_metric = update_metric(test_loader, best_test_metric, test_metric_history, metric)
             
-        test_metric=torch.tensor(test_metric)
         if acc.is_main_process:
-            if train_metric!=0:
-                print(f'\tTrain {metric_name}: {train_metric:.4f}')
-            if is_testing and torch.any(test_metric!=0):
-                print(f'\tTest  {metric_name}: {test_metric:.4f}')
-            print(f'\tTrain Loss: {running_loss:.4f}')
+            table_data = []
+            loss_row = ["loss",round(running_loss,5)]
+            if is_testing: 
+                loss_row.append(round(test_loss,5))
+            table_data.append(loss_row)
+            for name in train_metric:
+                row = [name, f'{train_metric[name]:.4f}']
+                if is_testing:
+                    row.append(f'{test_metric[name]:.4f}')
+                table_data.append(row)
+            
+ 
+            # Define the headers
+            headers = ['', 'Train']
             if is_testing:
-                print(f'\tTest  Loss: {test_loss:.4f}')
+                headers.append('Test')
+
+            # Print the table
+            print(tabulate.tabulate(table_data, headers=headers, tablefmt='pretty'))
+
                
         acc.save_state(state_dir)
         
@@ -332,16 +325,10 @@ def train(
             plt.close()
 
             # Metric plot
-            plt.figure()
-            plt.plot(train_metric_history, label=f"Train {metric_name}")
+            save_plot_metric_history(plot_dir, train_metric_history,'train')
+            
             if is_testing:
-                plt.plot(test_metric_history, label=f"Test {metric_name}")
-            plt.title(f"{metric_name} History")
-            plt.xlabel("Epoch")
-            plt.ylabel(metric_name)
-            plt.legend()
-            plt.savefig(os.path.join(plot_dir, f"{metric_name}_history.png"))
-            plt.close()
+                save_plot_metric_history(plot_dir, test_metric_history,'test')
             
             # time plot
             plt.figure()
@@ -353,21 +340,25 @@ def train(
             plt.close()
 
             results = {
-                "loss_history"          : torch.round(torch.tensor(loss_history),           decimals=4).tolist(),
-                "test_loss_history"     : torch.round(torch.tensor(test_loss_history),      decimals=4).tolist(),
-                "train_metric_history"  : torch.round(torch.tensor(train_metric_history),   decimals=4).tolist(),
-                "test_metric_history"   : torch.round(torch.tensor(test_metric_history),    decimals=4).tolist(),
-                "train_time_history"    : torch.round(torch.tensor(train_time_history),     decimals=4).tolist(),
-                "metric_name"           : metric_name,
+                "loss_history"          : loss_history,
+                "test_loss_history"     : test_loss_history,
+                "train_metric_history"  : train_metric_history,
+                "test_metric_history"   : test_metric_history,
+                "train_time_history"    : train_time_history,
                 "epochs"                : epoch+1
             }
 
             results = json.dumps(results)
             with open(report_path,'w') as f:
                 f.write(results) 
-        # Save state if test metric improves or if test metric is same but train metric improved
+            
+        # Save state if all test metric improves or if test metric is same but train metric improved
         # note, metric always must suggest that the larger it is, the better model is performing
-        if test_metric > best_test_metric or (test_metric==best_test_metric and train_metric>=best_train_metric):
+        test_improvements = (test_metric is not None) and all([test_metric[m]>best_test_metric[m] for m in best_test_metric])
+        train_improvements = all([train_metric[m]>best_train_metric[m] for m in best_train_metric])
+        test_same_as_best = (test_metric is None) or all([test_metric[m]==best_test_metric[m] for m in best_test_metric])
+        
+        if test_improvements or (test_same_as_best and train_improvements):
             best_test_metric = test_metric
             if acc.is_main_process:
                 # keep total count of saved checkpoints constant
@@ -387,6 +378,51 @@ def train(
                     model_script=load_last_checkpoint(model_script,save_results_dir,log=False)
                     model_script.save(model_save_path)
         on_epoch_end(epoch,model)
+
+def save_plot_metric_history(plot_dir, metric_history,source):
+    metrics_count = len(metric_history.keys())
+    
+    plt.figure(figsize=(5*metrics_count,5))
+    for i,metric_name in enumerate(metric_history):
+        plt.subplot(1,metrics_count,i+1)
+        plt.plot(metric_history[metric_name], label=metric_name)
+        plt.xlabel("Epoch")
+        plt.ylabel('Metric value')
+        plt.title(f"{metric_name}")
+    plt.legend()
+    plt.suptitle(f'{source} metrics')
+    plt.savefig(os.path.join(plot_dir, f"{source}_metric.png"))
+    plt.close()
+
+def update_metric(train_loader, best_train_metric, train_metric_history, metric):
+    train_metric =  {name : metric[name]/ len(train_loader) for name in metric}
+    for m in train_metric:
+        if m not in train_metric_history.keys():
+            train_metric_history[m]=[]
+        if m not in best_train_metric:
+            best_train_metric[m]=-1e10
+        train_metric_history[m].append(round(train_metric[m],5))
+            # update train metric we see improvements
+        if train_metric[m]>best_train_metric[m]:
+            best_train_metric[m]=train_metric[m]
+    return train_metric
+
+def add_batch_metric(metric, batch_metric):
+    for m in batch_metric:
+        metric_val = batch_metric[m]
+        if isinstance(metric_val,torch.Tensor):
+            batch_metric[m] = metric_val.detach().cpu()
+        if m not in metric.keys():
+            metric[m]=0
+        metric[m] += batch_metric[m]
+
+def load_best_metric_from_history(best_train_metric, train_metric_history):
+    for metric_name in train_metric_history:
+        metric_history = train_metric_history[metric_name]
+        best_train_metric[metric_name] = -1e-10
+        non_nan = [v for v in metric_history if not math.isnan(v)]
+        if len(non_nan)>0:
+            best_train_metric[metric_name] = max(non_nan)
 
 def cast_to_dtype(inputs,dtype):
     """Casts tensors, lists and dicts tensors to given dtype"""

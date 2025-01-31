@@ -246,7 +246,7 @@ class ResidualUnet(torch.nn.Module):
         """
 
         super().__init__()
-        self.input_self_attn = VisualMultiheadSelfAttentionFull(in_channels,in_channels)
+        # self.input_self_attn = VisualMultiheadSelfAttentionFull(in_channels,in_channels)
         
         output_scale=float(output_scale)
         in_channels_ =  [in_channels,64, 96, 128, 256]
@@ -321,7 +321,7 @@ class ResidualUnet(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor after passing through the Residual U-Net.
         """
-        x=self.input_self_attn(x)
+        # x=self.input_self_attn(x)
         x,skip = self.encoder.forward_with_skip(x)
         x=self.scaler(x)
 
