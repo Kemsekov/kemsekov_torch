@@ -366,7 +366,7 @@ def train(
             if acc.is_main_process:
                 # keep total count of saved checkpoints constant
                 checkpoints = os.listdir(checkpoints_dir)
-                checkpoints=sorted(checkpoints)
+                checkpoints=sorted(checkpoints,key=lambda x: int(x.split('-')[-1]))
                 if len(checkpoints)>=checkpoints_count:
                     for c in checkpoints[:-checkpoints_count+1]:
                         c_dir = os.path.join(checkpoints_dir,c)
