@@ -27,7 +27,7 @@ class PositionalEncoding(nn.Module):
             PositionalEncoding2D(channels,dtype_override,freq),
             PositionalEncoding3D(channels,dtype_override,freq)
         ])
-    def forward(self,tensor):
+    def forward(self,tensor : torch.Tensor):
         """
         :param tensor: A Nd tensor of size (batch_size, ...N dimensions..., ch)
         :return: Positional Encoding Matrix of size (batch_size, ...N dimensions..., ch)
@@ -38,6 +38,7 @@ class PositionalEncoding(nn.Module):
         if ind == 0:return self.positional_encodings[0](tensor)
         if ind == 1:return self.positional_encodings[1](tensor)
         if ind == 2:return self.positional_encodings[2](tensor)
+        raise RuntimeError("error")
 
 class PositionalEncodingPermute(nn.Module):
     """
@@ -56,7 +57,7 @@ class PositionalEncodingPermute(nn.Module):
             PositionalEncodingPermute2D(channels,dtype_override,freq),
             PositionalEncodingPermute3D(channels,dtype_override,freq)
         ])
-    def forward(self,tensor):
+    def forward(self,tensor : torch.Tensor) -> torch.Tensor:
         """
         :param tensor: A Nd tensor of size (batch_size, ch, ...N dimensions...)
         :return: Positional Encoding Matrix of size (batch_size, ch, ...N dimensions...)
@@ -67,6 +68,7 @@ class PositionalEncodingPermute(nn.Module):
         if ind == 0:return self.positional_encodings[0](tensor)
         if ind == 1:return self.positional_encodings[1](tensor)
         if ind == 2:return self.positional_encodings[2](tensor)
+        raise RuntimeError("error")
 
 class PositionalEncoding1D(nn.Module):
     def __init__(self, channels, dtype_override=None,freq=10000):
@@ -82,7 +84,7 @@ class PositionalEncoding1D(nn.Module):
         self.channels = channels
         self.dtype_override = dtype_override
 
-    def forward(self, tensor):
+    def forward(self, tensor : torch.Tensor) -> torch.Tensor:
         """
         :param tensor: A 3d tensor of size (batch_size, x, ch)
         :return: Positional Encoding Matrix of size (batch_size, x, ch)
@@ -113,7 +115,7 @@ class PositionalEncodingPermute1D(nn.Module):
         super(PositionalEncodingPermute1D, self).__init__()
         self.penc = PositionalEncoding1D(channels, dtype_override,freq)
 
-    def forward(self, tensor):
+    def forward(self, tensor : torch.Tensor) -> torch.Tensor:
         tensor = tensor.permute(0, 2, 1)
         enc = self.penc(tensor)
         return enc.permute(0, 2, 1)
@@ -138,7 +140,7 @@ class PositionalEncoding2D(nn.Module):
         self.dtype_override = dtype_override
         self.channels = channels
 
-    def forward(self, tensor):
+    def forward(self, tensor : torch.Tensor) -> torch.Tensor:
         """
         :param tensor: A 4d tensor of size (batch_size, x, y, ch)
         :return: Positional Encoding Matrix of size (batch_size, x, y, ch)
@@ -174,7 +176,7 @@ class PositionalEncodingPermute2D(nn.Module):
         super(PositionalEncodingPermute2D, self).__init__()
         self.penc = PositionalEncoding2D(channels, dtype_override,freq)
 
-    def forward(self, tensor):
+    def forward(self, tensor : torch.Tensor) -> torch.Tensor:
         tensor = tensor.permute(0, 2, 3, 1)
         enc = self.penc(tensor)
         return enc.permute(0, 3, 1, 2)
@@ -200,7 +202,7 @@ class PositionalEncoding3D(nn.Module):
         self.dtype_override = dtype_override
         self.channels = channels
 
-    def forward(self, tensor):
+    def forward(self, tensor : torch.Tensor) -> torch.Tensor:
         """
         :param tensor: A 5d tensor of size (batch_size, x, y, z, ch)
         :return: Positional Encoding Matrix of size (batch_size, x, y, z, ch)
@@ -240,7 +242,7 @@ class PositionalEncodingPermute3D(nn.Module):
         super(PositionalEncodingPermute3D, self).__init__()
         self.penc = PositionalEncoding3D(channels, dtype_override,freq)
 
-    def forward(self, tensor):
+    def forward(self, tensor : torch.Tensor) -> torch.Tensor:
         tensor = tensor.permute(0, 2, 3, 4, 1)
         enc = self.penc(tensor)
         return enc.permute(0, 4, 1, 2, 3)

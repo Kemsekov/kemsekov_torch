@@ -89,9 +89,10 @@ class VisualMultiheadSelfAttentionFull(nn.Module):
         else:
             self.x_residual = nn.Identity()
         
-    def forward(self,x):
+    def forward(self,x : torch.Tensor):
         # add positional encoding to input image
         x_pos = self.inp_pos_enc(x)+x
+        
         Q = self.Q(x_pos)
         K = self.K(x_pos)
         V = self.V(x_pos)
