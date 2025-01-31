@@ -360,11 +360,10 @@ def train(
             
         # Save state if all test metric improves or if test metric is same but train metric improved
         # note, metric always must suggest that the larger it is, the better model is performing
-        test_improvements = (test_metric is not None) and all([test_metric[m]>best_test_metric[m] for m in best_test_metric])
-        test_same_as_best = (test_metric is None) or all([test_metric[m]==best_test_metric[m] for m in best_test_metric])
+        test_improvements = (test_metric is not None) and all([test_metric[m]>=best_test_metric[m] for m in best_test_metric])
         train_improvements = all([train_metric[m]>best_train_metric[m] for m in best_train_metric])
         
-        if test_improvements or (test_same_as_best and train_improvements):
+        if test_improvements or (not is_testing and train_improvements):
             best_test_metric = test_metric
             if acc.is_main_process:
                 # keep total count of saved checkpoints constant
