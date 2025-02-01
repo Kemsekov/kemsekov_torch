@@ -49,7 +49,8 @@ class ResidualBlock(torch.nn.Module):
         activation=torch.nn.ReLU,           # Activation function. Always pass constructor
         batch_norm = True,                  #add batch normalization
         conv_impl = nn.Conv2d,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
-        dimensions : Literal[1,2,3] = 2
+        dimensions : Literal[1,2,3] = 2,
+        pad = 0
     ):
         """
         Initializes the ResidualBlock.
@@ -75,13 +76,14 @@ class ResidualBlock(torch.nn.Module):
                 Can be a single type (e.g., `BSConvU`, `nn.Conv2d`, `nn.ConvTranspose2d`) applied to all repeats, 
                 or a list of types with length equal to `repeats`, specifying the convolution implementation for each repeat. 
                 Default is `BSConvU`.
+            pad (int, optional): additional padding for convolutions
         """
         super().__init__()
 
         if not isinstance(conv_impl,list):
             conv_impl=[conv_impl]
         repeats=len(conv_impl)
-        
+        self.added_pad = pad
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
         self.is_batch_norm = batch_norm
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
@@ -142,6 +144,7 @@ class ResidualBlock(torch.nn.Module):
             # and on further repeats just make same-shaped transformations
             in_ch = in_channels if v==0 else out_channels
             stride_ = stride if v==0 else 1
+            added_pad = pad if v==0 else 0
 
             # only at first layer do dilations
             dil = dilations_ if v==0 else [1]*len(out_channels_without_dilation)
@@ -155,7 +158,7 @@ class ResidualBlock(torch.nn.Module):
                     in_channels=in_ch,
                     out_channels=outc[i],
                     kernel_size=ksizes[i],
-                    padding=(ksizes[i] + (ksizes[i] - 1) * (dil[i] - 1)) // 2,
+                    padding=(ksizes[i] + (ksizes[i] - 1) * (dil[i] - 1)) // 2+added_pad,
                     padding_mode="zeros",
                     dilation=dil[i],
                     stride=stride_
@@ -181,7 +184,7 @@ class ResidualBlock(torch.nn.Module):
     def _conv_x_correct(self, in_channels, out_channels, stride, batch_norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
         # number of channels or some stride
-        correct_x_ksize = 1 if stride==1 else (1+stride)//2 *2 +1
+        correct_x_ksize = 1 if stride==1 and self.added_pad==0 else (1+stride)//2 *2 +1
         correct_x_dilation = 1
         correct_x_padding= correct_x_ksize // 2
         
@@ -192,7 +195,7 @@ class ResidualBlock(torch.nn.Module):
             kernel_size = correct_x_ksize,
             dilation=correct_x_dilation,
             stride = stride,
-            padding = correct_x_padding,
+            padding = correct_x_padding+self.added_pad,
             groups=gcd(in_channels,out_channels)
         )
         x_conv_impl = x_corr_conv_impl
@@ -202,7 +205,7 @@ class ResidualBlock(torch.nn.Module):
             x_corr_kwargs['groups'] = 1
         # if we have different output tensor size, apply linear x_correction
         # to make sure we can add it with output
-        if stride>1 or in_channels!=out_channels:
+        if stride>1 or in_channels!=out_channels or self.added_pad!=0:
             # there is many ways to linearly downsample x, but max pool with conv2d works best of all
             self.x_correct = \
                 torch.nn.Sequential(
@@ -271,5 +274,6 @@ class ResidualBlock(torch.nn.Module):
             activation = self._activation_func,
             batch_norm = self.is_batch_norm,
             conv_impl = conv_impl,
-            dimensions=self.dimensions
+            dimensions=self.dimensions,
+            pad=self.added_pad
         )
