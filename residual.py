@@ -232,8 +232,7 @@ class ResidualBlock(torch.nn.Module):
         # Apply each convolution with different dilations to the input and concatenate.
         out_v = x
      
-        # to speed up parallel computations, make sure to fork all independent convolution computations
-        x_corr = torch.jit.fork(self.x_correct, x)
+        prev = self.x_correct(x)
 
         for convs,norm in zip(self.convs,self.batch_norms):
             # Fork to parallelize each convolution operation
@@ -241,13 +240,10 @@ class ResidualBlock(torch.nn.Module):
             # Wait for all operations to complete and collect the results
             results = [torch.jit.wait(future) for future in futures]
             out_v = torch.cat(results, dim=1)
+            out_v = self.activation(out_v)+prev
             out_v = norm(out_v)
-            out_v = self.activation(out_v)
-         
-        x=torch.jit.wait(x_corr)
-        # always add x as it was putted-in (without activation applied)
-        # so we can get best gradient information flow as x only changed in linear operation (or not changed at all)
-        out_v = out_v + x
+            prev = out_v
+        
         return out_v
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
     def transpose(self):
