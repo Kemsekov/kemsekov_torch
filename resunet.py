@@ -3,7 +3,7 @@ from residual import *
 from conv_modules import *
 from common_modules import Interpolate
 from deform_conv_v3 import DeformConv2d
-from kemsekov_torch.visual_self_attn import VisualMultiheadSelfAttentionFull
+from kemsekov_torch.pixelwise_visual_self_attn import VisualMultiheadSelfAttentionFull
 class Encoder(torch.nn.Module):
     """
     Encoder module for the Residual U-Net architecture.
