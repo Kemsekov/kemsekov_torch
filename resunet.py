@@ -255,8 +255,8 @@ class ResidualUnet(torch.nn.Module):
             1,
             1,
             # aspp block
-            [1]*128+[2]*128,
-            [1]*256+[2]*256,
+            [1]*160+[2]*64+[3]*32,
+            [1]*320+[2]*128+[3]*64,
         ]
         
         if output_scale==1:
@@ -268,7 +268,7 @@ class ResidualUnet(torch.nn.Module):
 
         up_block_sizes = block_sizes[::-1]
         ups_conv_impl = [
-            [nn.ConvTranspose2d]*up_block_sizes[i] for i in range(len(in_channels_))
+            [nn.ConvTranspose2d]+[nn.Conv2d]*(up_block_sizes[i]-1) for i in range(len(in_channels_))
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
@@ -374,8 +374,8 @@ class LargeResidualUnet(torch.nn.Module):
             1,1,1,1,1,
             # aspp block
             [1]*128+[2]*64+[3]*64,
-            [1]*256+[2]*256,
-            [1]*512+[2]*512,
+            [1]*320+[2]*128+[3]*64,
+            [1]*640+[2]*256+[3]*128,
         ]
         
         
@@ -388,7 +388,7 @@ class LargeResidualUnet(torch.nn.Module):
 
         up_block_sizes = block_sizes[::-1]
         ups_conv_impl = [
-            [nn.ConvTranspose2d]*up_block_sizes[i] for i in range(len(in_channels_))
+            [nn.ConvTranspose2d]+[nn.Conv2d]*(up_block_sizes[i]-1) for i in range(len(in_channels_))
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]

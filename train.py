@@ -402,6 +402,7 @@ def save_plot_metric_history(plot_dir, train_metric_history,test_metric_history,
     plt.close()
 
 def update_metric(train_loader, best_train_metric, train_metric_history, metric):
+    
     train_metric =  {name : metric[name]/ len(train_loader) for name in metric}
     for m in train_metric:
         if m not in train_metric_history.keys():
@@ -418,7 +419,7 @@ def add_batch_metric(metric, batch_metric):
     for m in batch_metric:
         metric_val = batch_metric[m]
         if isinstance(metric_val,torch.Tensor):
-            batch_metric[m] = metric_val.detach().cpu()
+            batch_metric[m] = metric_val.detach().cpu().numpy()
         if m not in metric.keys():
             metric[m]=0
         metric[m] += batch_metric[m]
