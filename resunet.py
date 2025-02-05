@@ -287,7 +287,6 @@ class ResidualUnet(torch.nn.Module):
 
         # transform that is applied to skip connection before it is passed to decoder
         conv_impl = [nn.Conv2d]*(len(out_channels_)-1)
-        # make last two layers at aspp block to be used with deformable convolutions
         
         self.connectors = nn.ModuleList([
             nn.Sequential(
@@ -296,8 +295,6 @@ class ResidualUnet(torch.nn.Module):
                     out_channels=ch,
                     kernel_size= 3,
                     stride = 1,
-                    # apply deformable convolution to improve model ability
-                    # to model complex geometric transformations
                     conv_impl=conv
                 ),
                 attention(ch),
@@ -413,8 +410,6 @@ class LargeResidualUnet(torch.nn.Module):
                     out_channels=ch,
                     kernel_size= 3,
                     stride = 1,
-                    # apply deformable convolution to improve model ability
-                    # to model complex geometric transformations
                     conv_impl=nn.Conv2d
                 ),
                 attention(ch),
