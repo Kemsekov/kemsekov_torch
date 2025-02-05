@@ -202,7 +202,7 @@ class ResidualBlock(torch.nn.Module):
         if self._is_transpose_conv:
             x_conv_impl = x_corr_conv_impl_T
             x_corr_kwargs['output_padding'] = stride - 1
-            x_corr_kwargs['groups'] = 1
+        
         # if we have different output tensor size, apply linear x_correction
         # to make sure we can add it with output
         if stride>1 or in_channels!=out_channels or self.added_pad!=0:
