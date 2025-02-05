@@ -151,7 +151,9 @@ class VisualMultiheadSelfAttentionPixelwise(nn.Module):
             dropout=dropout_p,
             batch_first=True
         )
+        # these ResidualBlock are equal to nn.Conv2d(in_channels,out_channels,kernel_size=3,padding=1)
 
+        self.combine_x_and_pos = ResidualBlock(1+in_channels*2,in_channels,kernel_size=1)
         self.Q = ResidualBlock(in_channels,out_channels)
         self.K = ResidualBlock(in_channels,out_channels)
         self.V = ResidualBlock(in_channels,out_channels)
@@ -164,8 +166,14 @@ class VisualMultiheadSelfAttentionPixelwise(nn.Module):
             self.x_residual = nn.Identity()
         
     def forward(self,x : torch.Tensor):
-        x_res = self.x_residual(x)
-        x = self.inp_pos_enc(x)+x
+        X = torch.linspace(-1,1,x.shape[-1]).to(x.device)
+        Y = torch.linspace(-1,1,x.shape[-2]).to(x.device)
+        XY = torch.outer(X,Y)[None,None,:][[0]*x.shape[0]]
+        # x_res = self.x_residual(x)
+        pos = self.inp_pos_enc(x)
+        combined = torch.concat([x,pos,XY],dim=1)
+        x = self.combine_x_and_pos(combined)
+        
         # add positional encoding to input image
         Q = self.Q(x).flatten(2).transpose(-1,-2)
         K = self.K(x).flatten(2).transpose(-1,-2)
@@ -181,5 +189,5 @@ class VisualMultiheadSelfAttentionPixelwise(nn.Module):
         out_flat,b = self.attn(V,Q,K)
         out = out_flat.transpose(-1,-2).view(out_shape)
         
-        return out+x_res
+        return out
         

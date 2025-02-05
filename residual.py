@@ -147,9 +147,9 @@ class ResidualBlock(torch.nn.Module):
             added_pad = pad if v==0 else 0
 
             # only at first layer do dilations
-            dil = dilations_ if v==0 else [1]*len(out_channels_without_dilation)
-            outc = out_channels_ if v==0 else out_channels_without_dilation
-            ksizes = kernel_sizes_ if v==0 else kernel_sizes_without_dilation
+            dil = dilations_# if v==0 else [1]*len(out_channels_without_dilation)
+            outc = out_channels_# if v==0 else out_channels_without_dilation
+            ksizes = kernel_sizes_# if v==0 else kernel_sizes_without_dilation
             
             # Store the conv layers for each output channel with different dilations.
             convs_ = []

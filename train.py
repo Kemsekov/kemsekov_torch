@@ -14,9 +14,9 @@ def train(
         model,
         train_loader,
         test_loader,
-        optimizer,
         compute_loss_and_metric,
-        save_results_dir,
+        save_results_dir="runs/train",
+        optimizer = None,
         load_checkpoint_dir = None,
         num_epochs = 10,
         accelerator : Accelerator = None,
@@ -137,7 +137,9 @@ def train(
        generates and saves loss and metric plots in the `plots` folder.
     """
 
-    
+    if optimizer is None:
+        optimizer = torch.optim.AdamW(model.parameters())
+        
     save_last_dir = os.path.join(save_results_dir,"last")
     plot_dir = os.path.join(save_last_dir, "plots")
     report_path = os.path.join(save_last_dir,"report.json")
