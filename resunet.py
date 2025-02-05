@@ -255,8 +255,9 @@ class ResidualUnet(torch.nn.Module):
             1,
             1,
             # aspp block
-            [1]*128+[2]*64+[3]*64,
-            [1]*256+[2]*128+[3]*64+[4]*64,
+            [1]*128+[2]*64+[4]*64,
+            [1]*256+[2]*128+[4]*128,
+            # 1,1
         ]
         
         if output_scale==1:
@@ -373,9 +374,9 @@ class LargeResidualUnet(torch.nn.Module):
         dilations=[
             1,1,1,1,1,
             # aspp block
-            [1]*128+[2]*64+[3]*64,
-            [1]*320+[2]*128+[3]*64,
-            [1]*640+[2]*256+[3]*128,
+            [1]*128+[2]*64+[4]*64,
+            [1]*256+[2]*128+[4]*128,
+            [1]*512+[2]*256+[4]*256,
         ]
         
         
@@ -414,8 +415,10 @@ class LargeResidualUnet(torch.nn.Module):
                     stride = 1,
                     # apply deformable convolution to improve model ability
                     # to model complex geometric transformations
-                    conv_impl=DeformConv2d
+                    conv_impl=nn.Conv2d
                 ),
+                attention(ch),
+                nn.Dropout2d(p=dropout_p),
                 # scale output
                 Interpolate(scale_factor=output_scale)
             ) for ch in out_channels_[:-1]
