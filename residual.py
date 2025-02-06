@@ -198,10 +198,12 @@ class ResidualBlock(torch.nn.Module):
             padding = correct_x_padding+self.added_pad,
             groups=gcd(in_channels,out_channels)
         )
+        
         x_conv_impl = x_corr_conv_impl
         if self._is_transpose_conv:
             x_conv_impl = x_corr_conv_impl_T
             x_corr_kwargs['output_padding'] = stride - 1
+            x_corr_kwargs['groups'] = 1
         
         # if we have different output tensor size, apply linear x_correction
         # to make sure we can add it with output
