@@ -1,117 +1,97 @@
 import torch
-from torch.nn import Parameter
-from torch.nn.functional import normalize
-import torch
-from torch.nn import Parameter
-from torch.nn.functional import normalize
+import torch.nn as nn
+import torch.nn.functional as F
 
-class BidirectionalSpectralNorm:
-    """
-    Applies bidirectional spectral normalization to a given module's weight parameter.
-    This implementation normalizes the weight matrix during both forward and backward passes.
-    """
-
-    def __init__(self, module, name='weight', n_power_iterations=1, eps=1e-12):
+class BidirectionalSpectralNorm(nn.Module):
+    def __init__(self, module, name='weight', n_power_iterations=1, eps=1e-12, scale=1.0):
         """
-        Initializes the BidirectionalSpectralNorm.
-
+        Wrap a module (e.g. nn.Conv2d) with bidirectional spectral normalization.
+        This computes the spectral norm on the weight tensor viewed in two ways:
+          (1) as (out_channels, in_channels * kernel_width * kernel_height)
+          (2) as (in_channels, out_channels * kernel_width * kernel_height)
+        and then averages the two estimates.
         Args:
-            module (nn.Module): The module to which spectral normalization is applied.
-            name (str): The name of the weight parameter to normalize.
-            n_power_iterations (int): Number of power iterations for spectral norm approximation.
-            eps (float): Small value to prevent division by zero during normalization.
+            module (nn.Module): the module to wrap.
+            name (str): name of the weight parameter (default: 'weight').
+            n_power_iterations (int): number of power iterations (default: 1).
+            eps (float): small epsilon for numerical stability.
+            scale (float): extra scaling factor.
         """
+        super(BidirectionalSpectralNorm, self).__init__()
         self.module = module
         self.name = name
         self.n_power_iterations = n_power_iterations
         self.eps = eps
-        if not self._has_params():
-            self._initialize_params()
-        self._register_backward_hook()
+        self.scale = scale
 
-    def _initialize_params(self):
-        """
-        Initializes the parameters required for spectral normalization.
-        """
+        if not self._made_params():
+            self._make_params()
+
+    def _made_params(self):
+        try:
+            getattr(self.module, self.name + '_orig')
+            getattr(self.module, self.name + '_u')
+            getattr(self.module, self.name + '_v')
+            getattr(self.module, self.name + '_u2')
+            getattr(self.module, self.name + '_v2')
+            return True
+        except AttributeError:
+            return False
+
+    def _make_params(self):
         weight = getattr(self.module, self.name)
-        height = weight.size(0)
-        width = weight.view(height, -1).size(1)
+        # Register the original weight as a parameter under a new name
+        self.module.register_parameter(self.name + '_orig', nn.Parameter(weight.data))
+        # Remove the original weight parameter so that we can override it as a plain tensor
+        del self.module._parameters[self.name]
 
-        u = normalize(weight.new_empty(height).normal_(0, 1), dim=0, eps=self.eps)
-        v = normalize(weight.new_empty(width).normal_(0, 1), dim=0, eps=self.eps)
-
-        self.module.register_parameter(self.name + '_orig', Parameter(weight.data))
+        # For first reshaping: (out_channels, in_channels * kernel_width * kernel_height)
+        out_channels = weight.size(0)
+        weight_mat1 = weight.view(out_channels, -1)
+        # Initialize u and v for weight_mat1
+        u = F.normalize(weight.new_empty(out_channels).normal_(0, 1), dim=0, eps=self.eps)
+        v = F.normalize(weight.new_empty(weight_mat1.size(1)).normal_(0, 1), dim=0, eps=self.eps)
         self.module.register_buffer(self.name + '_u', u)
         self.module.register_buffer(self.name + '_v', v)
 
-    def _has_params(self):
-        """
-        Checks if the necessary parameters for spectral normalization exist.
-
-        Returns:
-            bool: True if parameters exist, False otherwise.
-        """
-        return hasattr(self.module, self.name + '_u') and hasattr(self.module, self.name + '_v')
+        # For second reshaping: (in_channels, out_channels * kernel_width * kernel_height)
+        in_channels = weight.size(1)
+        weight_mat2 = weight.view(in_channels, -1)
+        u2 = F.normalize(weight.new_empty(in_channels).normal_(0, 1), dim=0, eps=self.eps)
+        v2 = F.normalize(weight.new_empty(weight_mat2.size(1)).normal_(0, 1), dim=0, eps=self.eps)
+        self.module.register_buffer(self.name + '_u2', u2)
+        self.module.register_buffer(self.name + '_v2', v2)
 
     def _update_u_v(self):
-        """
-        Updates the 'u' and 'v' vectors used for spectral normalization.
-        """
+        # Retrieve the original weight
         weight = getattr(self.module, self.name + '_orig')
-        height = weight.size(0)
-        weight_mat = weight.view(height, -1)
+        out_channels, in_channels, k_w, k_h = weight.shape
 
+        # First reshaping: (out_channels, in_channels * k_w * k_h)
+        weight_mat1 = weight.view(out_channels, -1)
         u = getattr(self.module, self.name + '_u')
         v = getattr(self.module, self.name + '_v')
-
         for _ in range(self.n_power_iterations):
-            v = normalize(torch.matmul(weight_mat.t(), u), dim=0, eps=self.eps)
-            u = normalize(torch.matmul(weight_mat, v), dim=0, eps=self.eps)
+            v = F.normalize(torch.mv(weight_mat1.t(), u), dim=0, eps=self.eps)
+            u = F.normalize(torch.mv(weight_mat1, v), dim=0, eps=self.eps)
+        sigma1 = torch.dot(u, torch.mv(weight_mat1, v))
 
-        sigma = torch.dot(u, torch.matmul(weight_mat, v))
-        weight_sn = weight / sigma
-        setattr(self.module, self.name, weight_sn)
+        # Second reshaping: (in_channels, out_channels * k_w * k_h)
+        weight_mat2 = weight.view(in_channels, -1)
+        u2 = getattr(self.module, self.name + '_u2')
+        v2 = getattr(self.module, self.name + '_v2')
+        for _ in range(self.n_power_iterations):
+            v2 = F.normalize(torch.mv(weight_mat2.t(), u2), dim=0, eps=self.eps)
+            u2 = F.normalize(torch.mv(weight_mat2, v2), dim=0, eps=self.eps)
+        sigma2 = torch.dot(u2, torch.mv(weight_mat2, v2))
 
-    def _register_backward_hook(self):
-        """
-        Registers a backward hook to adjust gradients during backpropagation.
-        """
-        def backward_hook(module, grad_input, grad_output):
-            if not self.module.training:
-                return grad_input  # No modification during evaluation
+        # Average the two spectral norms
+        sigma = (sigma1 + sigma2) / 2.0
+        # Compute normalized weight with scaling factor
+        normalized_weight = self.scale * weight / (sigma + self.eps)
+        # Update the module's weight attribute (as a plain tensor)
+        setattr(self.module, self.name, normalized_weight)
 
-            weight = getattr(module, self.name + '_orig')
-            height = weight.size(0)
-            weight_mat = weight.view(height, -1)
-
-            u = getattr(module, self.name + '_u')
-            v = getattr(module, self.name + '_v')
-
-            for _ in range(self.n_power_iterations):
-                v = normalize(torch.matmul(weight_mat.t(), u), dim=0, eps=self.eps)
-                u = normalize(torch.matmul(weight_mat, v), dim=0, eps=self.eps)
-
-            sigma = torch.dot(u, torch.matmul(weight_mat, v))
-            print(grad_input)
-            grad_input = tuple(g / sigma if g is not None else None for g in grad_input)
-            return grad_input
-
-        self.module.register_full_backward_hook(backward_hook)
-
-    def __call__(self, *args):
-        """
-        Updates the spectral normalization parameters and performs the forward pass.
-
-        Args:
-            *args: Arguments to pass to the module's forward method.
-
-        Returns:
-            The output of the module's forward pass.
-        """
-        if self.module.training:
-            self._update_u_v()
-        return self.module(*args)
-
-def apply_bidirectional_spectral_norm(module, name='weight', n_power_iterations=1, eps=1e-12):
-    BidirectionalSpectralNorm(module, name, n_power_iterations, eps)
-    return module
+    def forward(self, *args, **kwargs):
+        self._update_u_v()
+        return self.module.forward(*args, **kwargs)
