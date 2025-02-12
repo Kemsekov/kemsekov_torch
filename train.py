@@ -21,6 +21,11 @@ def train(
         num_epochs = 10,
         accelerator : Accelerator = None,
         tie_weights=False, 
+        # can be 'any' means on any metric improve save checkpoint
+        # can be 'all' means on all metric improves save checkpoint
+        # can be ['r2','iou',...] list of metrics which all is required to improve
+        # in order to new checkpoint to be saved
+        save_checkpoint_on_metric_improve = 'any',
         cast_batch_to_mixed_precision_dtype = False,
         scheduler = None,
         checkpoints_count = 5,
@@ -67,6 +72,13 @@ def train(
         If True, calls `model.tie_weights()` at the start of training, useful for models with shared weights.
         Default is False.
 
+    save_checkpoint_on_metric_improve: 'any', 'all', list[metric_name]
+        When `'any'` a checkpoint will be saved when any of the specified metrics improve. If one or more metrics show improvement, a new checkpoint will be saved.
+        
+        When `'all'` a checkpoint will be saved only if all of the specified metrics improve. Every metric listed in the save_checkpoint_on_metric_improve list must improve for the checkpoint to be saved.
+        
+        When `list[metric_name]` the checkpoint will only be saved if all the metrics in the list show improvement. For each specified metric in the list, its value must increase in order to save a new checkpoint.
+    
     cast_batch_to_mixed_precision_dtype : bool, optional
         If True, explicitly casts input batches to the model's mixed-precision data type to ensure compatibility
         with mixed-precision training. Default is False.
@@ -356,13 +368,20 @@ def train(
             results = json.dumps(results)
             with open(report_path,'w') as f:
                 f.write(results) 
-            
-        # Save state if all test metric improves or if test metric is same but train metric improved
-        # note, metric always must suggest that the larger it is, the better model is performing
-        
-        test_improvements = (test_metric is not None) and all([test_metric[m]>=best_test_metric[m] for m in best_test_metric])
-        train_improvements = all([train_metric[m]>best_train_metric[m] for m in best_train_metric])
-        
+
+        # Check if the test metric improves based on the specified condition
+        test_improvements = (test_metric is not None) and (
+            (save_checkpoint_on_metric_improve == 'any' and any(test_metric[m] >= best_test_metric.get(m, -1e10) for m in test_metric)) or
+            (save_checkpoint_on_metric_improve == 'all' and all(test_metric[m] >= best_test_metric.get(m, -1e10) for m in test_metric)) or
+            (isinstance(save_checkpoint_on_metric_improve, list) and all(test_metric.get(m, -1e10) >= best_test_metric.get(m, -1e10) for m in save_checkpoint_on_metric_improve))
+        )
+
+        # Check if the train metric improves, using similar logic to `test_improvements`
+        train_improvements = (train_metric is not None) and (
+            (save_checkpoint_on_metric_improve == 'any' and any(train_metric[m] > best_train_metric.get(m, -1e10) for m in train_metric)) or
+            (save_checkpoint_on_metric_improve == 'all' and all(train_metric[m] > best_train_metric.get(m, -1e10) for m in train_metric)) or
+            (isinstance(save_checkpoint_on_metric_improve, list) and all(train_metric.get(m, -1e10) > best_train_metric.get(m, -1e10) for m in save_checkpoint_on_metric_improve))
+        )
         if test_improvements or (not is_testing and train_improvements):
             best_test_metric = test_metric
             if acc.is_main_process:
