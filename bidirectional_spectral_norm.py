@@ -92,6 +92,6 @@ class BidirectionalSpectralNorm(nn.Module):
         # Update the module's weight attribute (as a plain tensor)
         setattr(self.module, self.name, normalized_weight)
 
-    def forward(self, *args, **kwargs):
+    def forward(self, x):
         self._update_u_v()
-        return self.module.forward(*args, **kwargs)
+        return self.module.forward(x)

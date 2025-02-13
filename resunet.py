@@ -214,13 +214,11 @@ class Decoder(torch.nn.Module):
         x = self.up5(x)
         return x
 
-
 class ResidualUnet(torch.nn.Module):
     """
     Residual U-Net architecture combining Encoder and Decoder modules.
 
     Minimum input/output size is 32.
-
 
     The ResidualUnet integrates the Encoder and Decoder to form a U-shaped network with
     skip connections. It supports flexible output scaling and allows customization of
@@ -231,7 +229,17 @@ class ResidualUnet(torch.nn.Module):
         decoder (Decoder): The Decoder module responsible for the upsampling path.
         scaler (torch.nn.Module): Module to scale the output tensor relative to the input tensor.
     """
-    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5,normalization : Literal['batch','instance',None] = 'batch'):
+    def __init__(
+        self,
+        in_channels=3, 
+        out_channels = 3, 
+        block_sizes=[2,2,2,2,2],
+        output_scale = 1, 
+        attention = SCSEModule,
+        dropout_p=0.5,
+        normalization : Literal['batch','instance',None] = 'batch',
+        conv_class_wrapper = lambda x: x
+        ):
         """
         Initializes the ResidualUnet.
 
@@ -263,19 +271,21 @@ class ResidualUnet(torch.nn.Module):
             # aspp block
             [1]*128+[2]*64+[4]*64,
             [1]*256+[2]*128+[4]*128,
-            # 1,1
         ]
         
         if output_scale==1:
             self.scaler = nn.Identity()
-
+        
+        conv2d = conv_class_wrapper(nn.Conv2d)
+        conv2dTranspose = conv_class_wrapper(nn.ConvTranspose2d)
+        
         downs_conv_impl = [
-            [nn.Conv2d]*block_sizes[i] for i in range(len(in_channels_))
+            [conv2d]*block_sizes[i] for i in range(len(in_channels_))
         ]
 
         up_block_sizes = block_sizes[::-1]
         ups_conv_impl = [
-            [nn.ConvTranspose2d]+[nn.Conv2d]*(up_block_sizes[i]-1) for i in range(len(in_channels_))
+            [conv2dTranspose]+[conv2d]*(up_block_sizes[i]-1) for i in range(len(in_channels_))
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
@@ -285,14 +295,29 @@ class ResidualUnet(torch.nn.Module):
         if isinstance(attention,list):
             attention_up = attention[::-1]
         
-        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p,normalization=normalization)
-        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p,normalization=normalization)
-
+        self.encoder = Encoder(
+            in_channels_,
+            out_channels_,
+            dilations,
+            downs_conv_impl,
+            attention=attention,
+            dropout_p=dropout_p,
+            normalization=normalization
+        )
         
+        self.decoder = Decoder(
+            up_in_channels,
+            up_out_channels,
+            ups_conv_impl,
+            attention=attention_up,
+            dropout_p=dropout_p,
+            normalization=normalization
+        )
+
         self.scaler = Interpolate(scale_factor=output_scale)
 
         # transform that is applied to skip connection before it is passed to decoder
-        conv_impl = [nn.Conv2d]*(len(out_channels_)-1)
+        conv_impl = [conv2d]*(len(out_channels_)-1)
         
         self.connectors = nn.ModuleList([
             nn.Sequential(
@@ -346,7 +371,16 @@ class LargeResidualUnet(torch.nn.Module):
         decoder (Decoder): The Decoder module responsible for the upsampling path.
         scaler (torch.nn.Module): Module to scale the output tensor relative to the input tensor.
     """
-    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5,normalization : Literal['batch','instance',None] = 'batch'):
+    def __init__(
+        self,
+        in_channels=3, 
+        out_channels = 3, 
+        block_sizes=[2,2,2,2,2,2,2,2],
+        output_scale = 1, 
+        attention = SCSEModule,
+        dropout_p=0.5,
+        normalization : Literal['batch','instance',None] = 'batch',
+        conv_class_wrapper = lambda x: x):
         """
         Initializes the LargeResidualUnet.
 
@@ -377,17 +411,18 @@ class LargeResidualUnet(torch.nn.Module):
             [1]*512+[2]*256+[4]*256,
         ]
         
-        
         if output_scale==1:
             self.scaler = nn.Identity()
-
+        conv2d = conv_class_wrapper(nn.Conv2d)
+        conv2dTranspose = conv_class_wrapper(nn.ConvTranspose2d)
+        
         downs_conv_impl = [
-            [nn.Conv2d]*block_sizes[i] for i in range(len(in_channels_))
+            [conv2d]*block_sizes[i] for i in range(len(in_channels_))
         ]
 
         up_block_sizes = block_sizes[::-1]
         ups_conv_impl = [
-            [nn.ConvTranspose2d]+[nn.Conv2d]*(up_block_sizes[i]-1) for i in range(len(in_channels_))
+            [conv2dTranspose]+[conv2d]*(up_block_sizes[i]-1) for i in range(len(in_channels_))
         ]
         up_in_channels = out_channels_[::-1]
         up_out_channels = in_channels_ [::-1]
@@ -410,7 +445,7 @@ class LargeResidualUnet(torch.nn.Module):
                     out_channels=ch,
                     kernel_size= 3,
                     stride = 1,
-                    conv_impl=nn.Conv2d
+                    conv_impl=conv2d
                 ),
                 attention(ch),
                 nn.Dropout2d(p=dropout_p),
