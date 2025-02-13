@@ -21,10 +21,6 @@ def train(
         num_epochs = 10,
         accelerator : Accelerator = None,
         tie_weights=False, 
-        # can be 'any' means on any metric improve save checkpoint
-        # can be 'all' means on all metric improves save checkpoint
-        # can be ['r2','iou',...] list of metrics which all is required to improve
-        # in order to new checkpoint to be saved
         save_checkpoint_on_metric_improve = 'any',
         cast_batch_to_mixed_precision_dtype = False,
         scheduler = None,

@@ -17,7 +17,7 @@ class Encoder(torch.nn.Module):
         dropout (torch.nn.Dropout2d): Dropout layer applied after each downsampling block.
     """
 
-    def __init__(self, in_channels_, out_channels_, dilations, downs_conv_impl,dropout_p=0.5,attention = SCSEModule):
+    def __init__(self, in_channels_, out_channels_, dilations, downs_conv_impl,dropout_p=0.5,attention = SCSEModule,normalization : Literal['batch','instance',None] = 'batch'):
         """
         Initializes the Encoder module.
 
@@ -46,13 +46,14 @@ class Encoder(torch.nn.Module):
                 kernel_size= 3,
                 stride = 2,
                 dilation=dilations[i],
+                normalization=normalization,
                 conv_impl=downs_conv_impl[i]
             )
             down_i = torch.nn.Sequential(down_i,attention[i](out_channels_[i]))
             downs_list.append(down_i)
         
         # at input add batch normalization
-        downs_list[0]=torch.nn.Sequential(torch.nn.BatchNorm2d(in_channels_[0]),downs_list[0])
+        downs_list[0]=torch.nn.Sequential(get_normalization_from_name(2,normalization)(in_channels_[0]),downs_list[0])
         
         self.downs = torch.nn.ModuleList(downs_list[:-1])
         self.down5 = downs_list[-1]
@@ -116,7 +117,7 @@ class Decoder(torch.nn.Module):
         up5 (ResidualBlock): The final upsampling ResidualBlock.
         dropout (torch.nn.Dropout2d): Dropout layer applied after each upsampling block.
     """
-    def __init__(self, up_in_channels, up_out_channels, ups_conv_impl,dropout_p=0.5,attention = SCSEModule):
+    def __init__(self, up_in_channels, up_out_channels, ups_conv_impl,dropout_p=0.5,attention = SCSEModule,normalization : Literal['batch','instance',None] = 'batch'):
         """
         Initializes the Decoder module.
 
@@ -146,6 +147,7 @@ class Decoder(torch.nn.Module):
                 kernel_size=3,
                 stride = 2,
                 dilation=1,
+                normalization=normalization,
                 conv_impl=ups_conv_impl[i]
             )
             up_i = torch.nn.Sequential(up_i,attention[i](up_out_channels[i]))
@@ -226,7 +228,7 @@ class ResidualUnet(torch.nn.Module):
         decoder (Decoder): The Decoder module responsible for the upsampling path.
         scaler (torch.nn.Module): Module to scale the output tensor relative to the input tensor.
     """
-    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5):
+    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5,normalization : Literal['batch','instance',None] = 'batch'):
         """
         Initializes the ResidualUnet.
 
@@ -239,6 +241,7 @@ class ResidualUnet(torch.nn.Module):
             block_sizes (List[int], optional): List indicating the number of repeats for each ResidualBlock.
             output_scale (float, optional): Scaling factor for the output tensor. Must be a power of 2.
             attention: tensor attention implementation
+            normalization: what normalization to use when working with data
             
         Raises:
             ValueError: If `output_scale` is not a positive power of 2.
@@ -279,8 +282,8 @@ class ResidualUnet(torch.nn.Module):
         if isinstance(attention,list):
             attention_up = attention[::-1]
         
-        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p)
-        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p)
+        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p,normalization=normalization)
+        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p,normalization=normalization)
 
         
         self.scaler = Interpolate(scale_factor=output_scale)
@@ -345,7 +348,7 @@ class LargeResidualUnet(torch.nn.Module):
         decoder (Decoder): The Decoder module responsible for the upsampling path.
         scaler (torch.nn.Module): Module to scale the output tensor relative to the input tensor.
     """
-    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5):
+    def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5,normalization : Literal['batch','instance',None] = 'batch'):
         """
         Initializes the ResidualUnet.
 
@@ -396,10 +399,9 @@ class LargeResidualUnet(torch.nn.Module):
         if isinstance(attention,list):
             attention_up = attention[::-1]
         
-        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p)
-        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p)
+        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p,normalization=normalization)
+        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p,normalization=normalization)
 
-        
         self.scaler = Interpolate(scale_factor=output_scale)
 
         # transform that is applied to skip connection before it is passed to decoder

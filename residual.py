@@ -47,7 +47,7 @@ class ResidualBlock(torch.nn.Module):
         stride = 1,                         # stride to use, will reduce/increase output size(dependent on conv2d impl) as multiple of itself
         dilation = 1,                       # List of dilation values for each output channel. Can be an integer
         activation=torch.nn.ReLU,           # Activation function. Always pass constructor
-        batch_norm = True,                  #add batch normalization
+        normalization : Literal['batch','instance',None] = 'batch',#which normalization to use
         conv_impl = nn.Conv2d,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
         dimensions : Literal[1,2,3] = 2,
         pad = 0
@@ -55,7 +55,7 @@ class ResidualBlock(torch.nn.Module):
         """
         Initializes the ResidualBlock.
 
-        This method sets up the residual block's convolutional layers, batch normalization layers, 
+        This method sets up the residual block's convolutional layers, add normalization layers, 
         and residual correction to ensure input-output compatibility for residual addition.
 
         The residual connection is adjusted using a separate convolution (`x_correct`) if there's a change
@@ -71,7 +71,7 @@ class ResidualBlock(torch.nn.Module):
             stride (int, optional): Stride for the convolutions, used to modify output spatial dimensions. Default is 1.
             dilation (int or list of int, optional): Dilation rates for the convolutions. If a list is provided, it should match the number of kernel sizes. Default is 1.
             activation (type, optional): Constructor for the activation function to use (e.g., `torch.nn.ReLU`). Default is `torch.nn.ReLU`.
-            batch_norm (bool, optional): If True, includes BatchNorm after each convolution. Default is True.
+            normalization: [`'batch'`,`'instance'`,`None`] which normalization to use
             conv_impl (type or list of type, optional): Convolution implementation class to use. 
                 Can be a single type (e.g., `BSConvU`, `nn.Conv2d`, `nn.ConvTranspose2d`) applied to all repeats, 
                 or a list of types with length equal to `repeats`, specifying the convolution implementation for each repeat. 
@@ -85,16 +85,14 @@ class ResidualBlock(torch.nn.Module):
         repeats=len(conv_impl)
         self.added_pad = pad
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
-        self.is_batch_norm = batch_norm
+        self.normalization = normalization
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
-        if batch_norm:
-            # batch_norm_impl=nn.SyncBatchNorm
-            batch_norm_impl=[nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d][dimensions-1]
-        else:
-            batch_norm_impl=nn.Identity()
+        
+        norm_impl = get_normalization_from_name(dimensions,normalization)
+        
         self.dimensions=dimensions
-        self._conv_x_correct(in_channels, out_channels, stride, batch_norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
+        self._conv_x_correct(in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
         
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels
@@ -138,7 +136,7 @@ class ResidualBlock(torch.nn.Module):
                 kernel_sizes_without_dilation.append(c_size)
         
         self.convs = []
-        self.batch_norms = []
+        self.norms = []
         for v in range(repeats):
             # on first repeat block make sure to cast input tensor to output shape
             # and on further repeats just make same-shaped transformations
@@ -170,18 +168,19 @@ class ResidualBlock(torch.nn.Module):
             conv = torch.nn.ModuleList(convs_)
             self.convs.append(conv)
             
-            #optionally add batch normalization
-            self.batch_norms.append(batch_norm_impl(out_channels))
+            #optionally add normalization
+            self.norms.append(norm_impl(out_channels))
             
         self.convs = torch.nn.ModuleList(self.convs)
-        self.batch_norms = torch.nn.ModuleList(self.batch_norms)
-    def _resize_x_correct(self, in_channels, out_channels, stride, batch_norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
+        self.norms = torch.nn.ModuleList(self.norms)
+
+    def _resize_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         scale = 1/stride
         if self._is_transpose_conv:
             scale=stride
         self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions)
     
-    def _conv_x_correct(self, in_channels, out_channels, stride, batch_norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
+    def _conv_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
         # number of channels or some stride
         correct_x_ksize = 1 if stride==1 and self.added_pad==0 else (1+stride)//2 *2 +1
@@ -212,7 +211,7 @@ class ResidualBlock(torch.nn.Module):
             self.x_correct = \
                 torch.nn.Sequential(
                     x_conv_impl(**x_corr_kwargs),
-                    batch_norm_impl(out_channels)
+                    norm_impl(out_channels)
                 )
         else:
             self.x_correct = torch.nn.Identity()
@@ -236,14 +235,14 @@ class ResidualBlock(torch.nn.Module):
      
         prev = self.x_correct(x)
 
-        for convs,norm in zip(self.convs,self.batch_norms):
+        for convs,norm in zip(self.convs,self.norms):
             # Fork to parallelize each convolution operation
             futures = [torch.jit.fork(conv, out_v) for conv in convs]
             # Wait for all operations to complete and collect the results
             results = [torch.jit.wait(future) for future in futures]
             out_v = torch.cat(results, dim=1)
-            out_v = self.activation(out_v)+prev
             out_v = norm(out_v)
+            out_v = self.activation(out_v)+prev
             prev = out_v
         
         return out_v
@@ -270,8 +269,20 @@ class ResidualBlock(torch.nn.Module):
             stride = self.stride,
             dilation = self.dilation,
             activation = self._activation_func,
-            batch_norm = self.is_batch_norm,
+            normalization=self.normalization,
             conv_impl = conv_impl,
             dimensions=self.dimensions,
             pad=self.added_pad
         )
+
+def get_normalization_from_name(dimensions,normalization:Literal['batch','instance',None]):
+    """Get normalization for given dimensions from it's name"""
+    assert normalization in ['batch','instance',None], "normalization parameter must be one of 'batch','instance' or None"
+    norm_type = {
+            "batch":[nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d][dimensions-1],
+            "instance":[nn.InstanceNorm1d,nn.InstanceNorm2d,nn.InstanceNorm3d][dimensions-1],
+        }
+    if normalization is None:
+        return nn.Identity
+    
+    return norm_type[normalization]
