@@ -219,6 +219,9 @@ class ResidualUnet(torch.nn.Module):
     """
     Residual U-Net architecture combining Encoder and Decoder modules.
 
+    Minimum input/output size is 32.
+
+
     The ResidualUnet integrates the Encoder and Decoder to form a U-shaped network with
     skip connections. It supports flexible output scaling and allows customization of
     block sizes and convolution implementations for both downsampling and upsampling paths.
@@ -336,12 +339,7 @@ class LargeResidualUnet(torch.nn.Module):
     """
     Larger Residual U-Net architecture combining Encoder and Decoder modules.
 
-    Minimum input/output size is 256.
-
-    
-    The ResidualUnet integrates the Encoder and Decoder to form a U-shaped network with
-    skip connections. It supports flexible output scaling and allows customization of
-    block sizes and convolution implementations for both downsampling and upsampling paths.
+    Minimum input/output size is 512.
 
     Attributes:
         encoder (Encoder): The Encoder module responsible for the downsampling path.
@@ -350,7 +348,7 @@ class LargeResidualUnet(torch.nn.Module):
     """
     def __init__(self,in_channels=3, out_channels = 3, block_sizes=[2,2,2,2,2,2,2,2],output_scale = 1, attention = SCSEModule,dropout_p=0.5,normalization : Literal['batch','instance',None] = 'batch'):
         """
-        Initializes the ResidualUnet.
+        Initializes the LargeResidualUnet.
 
         Constructs the Encoder and Decoder modules with specified configurations.
         Sets up scaling of the output tensor based on the `output_scale` parameter.
