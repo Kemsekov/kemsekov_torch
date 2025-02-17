@@ -51,8 +51,8 @@ class HPB(nn.Module):
         dim_head = 32,
         heads = 8,
         ff_mult = 4,
-        attn_height_top_k = 16,
-        attn_width_top_k = 16,
+        attn_height_top_k = -1,
+        attn_width_top_k = -1,
         attn_dropout = 0.,
         ff_dropout = 0.
     ):
@@ -138,7 +138,6 @@ class DPSA(nn.Module):
         
         if width_top_k==-1:
             width_top_k=int(math.ceil(math.sqrt(width)))
-            
         x = self.norm(x)
 
         q, k, v = self.to_qkv(x).chunk(3, dim = 1)
