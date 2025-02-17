@@ -155,14 +155,18 @@ class DPSA(nn.Module):
 
         # C is hidden dimension
         
+        # use abs for queries to get relative importance
+        q_abs = torch.abs(q)
+        
         if need_width_select_and_rank or need_height_select_and_rank:
-            # sum over height and width
-            q_probe = reduce(q, 'b c height width -> b c', 'sum')
+            # sum over abs of height and width
+            q_probe = reduce(q_abs, 'b c height width -> b c', 'sum')
 
         # gather along height, then width
         if need_height_select_and_rank:
+            k_abs = torch.abs(k)
             # sum over width
-            k_height = reduce(k, 'b c height width -> b height c', 'sum')
+            k_height = reduce(k_abs, 'b c height width -> b height c', 'sum')
 
             score_r = einsum('b c, b h c -> b h', q_probe, k_height)
             top_h_indices = score_r.topk(k = height_top_k, dim = -1).indices
@@ -172,8 +176,9 @@ class DPSA(nn.Module):
             k, v = map(lambda t: torch.gather(t, dim=2, index=top_h_indices), (k, v)) # then gather along width
         
         if need_width_select_and_rank:
+            k_abs = torch.abs(k)
             # sum over height
-            k_width = reduce(k, 'b c height width -> b c width', 'sum')
+            k_width = reduce(k_abs, 'b c height width -> b c width', 'sum')
 
             score_c = einsum('bh, bcw -> bw', q_probe, k_width)
 
