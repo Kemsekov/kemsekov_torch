@@ -2,7 +2,7 @@ from typing import List
 from residual import *
 from conv_modules import *
 from common_modules import Interpolate
-from deform_conv_v3 import DeformConv2d
+from ittr import HPB
 class Encoder(torch.nn.Module):
     """
     Encoder module for the Residual U-Net architecture.
@@ -326,10 +326,12 @@ class ResidualUnet(torch.nn.Module):
                     out_channels=ch,
                     kernel_size= 3,
                     stride = 1,
-                    conv_impl=conv
+                    conv_impl=conv,
+                    normalization=normalization
                 ),
                 attention(ch),
                 nn.Dropout2d(p=dropout_p),
+                # HPB(ch,ch,attn_dropout=dropout_p,ff_dropout=dropout_p),
                 # scale output
                 Interpolate(scale_factor=output_scale)
             ) for conv,ch in zip(conv_impl,out_channels_)
@@ -432,8 +434,23 @@ class LargeResidualUnet(torch.nn.Module):
         if isinstance(attention,list):
             attention_up = attention[::-1]
         
-        self.encoder = Encoder(in_channels_,out_channels_,dilations,downs_conv_impl,attention=attention,dropout_p=dropout_p,normalization=normalization)
-        self.decoder = Decoder(up_in_channels,up_out_channels,ups_conv_impl,attention=attention_up,dropout_p=dropout_p,normalization=normalization)
+        self.encoder = Encoder(
+            in_channels_,
+            out_channels_,
+            dilations,
+            downs_conv_impl,
+            attention=attention,
+            dropout_p=dropout_p,
+            normalization=normalization
+        )
+        self.decoder = Decoder(
+            up_in_channels,
+            up_out_channels,
+            ups_conv_impl,
+            attention=attention_up,
+            dropout_p=dropout_p,
+            normalization=normalization
+        )
 
         self.scaler = Interpolate(scale_factor=output_scale)
 
@@ -445,7 +462,8 @@ class LargeResidualUnet(torch.nn.Module):
                     out_channels=ch,
                     kernel_size= 3,
                     stride = 1,
-                    conv_impl=conv2d
+                    conv_impl=conv2d,
+                    normalization=normalization
                 ),
                 attention(ch),
                 nn.Dropout2d(p=dropout_p),
