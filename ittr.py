@@ -7,6 +7,8 @@ import torch.nn.functional as F
 from torch import nn, einsum
 from einops.layers.torch import Reduce, Rearrange
 
+from kemsekov_torch.residual import get_normalization_from_name
+
 # helper functions
 
 def exists(val):
@@ -54,7 +56,8 @@ class HPB(nn.Module):
         attn_height_top_k = -1,
         attn_width_top_k = -1,
         attn_dropout = 0.,
-        ff_dropout = 0.
+        ff_dropout = 0.,
+        normalization='instance'
     ):
         super().__init__()
 
@@ -71,20 +74,20 @@ class HPB(nn.Module):
         self.attn_parallel_combine_out = nn.Conv2d(dim * 2, dim, 1)
 
         ff_inner_dim = dim * ff_mult
-
+        norm = get_normalization_from_name(2,normalization)
         self.ff = nn.Sequential(
             nn.Conv2d(dim, ff_inner_dim, 1),
-            nn.InstanceNorm2d(ff_inner_dim),
+            norm(ff_inner_dim),
             nn.GELU(),
             nn.Dropout(ff_dropout),
             Residual(nn.Sequential(
                 nn.Conv2d(ff_inner_dim, ff_inner_dim, 3, padding = 1, groups = ff_inner_dim),
-                nn.InstanceNorm2d(ff_inner_dim),
+                norm(ff_inner_dim),
                 nn.GELU(),
                 nn.Dropout(ff_dropout)
             )),
             nn.Conv2d(ff_inner_dim, dim, 1),
-            nn.InstanceNorm2d(ff_inner_dim)
+            norm(dim)
         )
 
     def forward(self, x):

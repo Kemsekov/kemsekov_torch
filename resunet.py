@@ -318,7 +318,7 @@ class ResidualUnet(torch.nn.Module):
 
         # transform that is applied to skip connection before it is passed to decoder
         conv_impl = [conv2d]*(len(out_channels_)-1)
-        
+        out_channels_ = out_channels_[:len(conv_impl)]
         self.connectors = nn.ModuleList([
             nn.Sequential(
                 ResidualBlock(
@@ -336,6 +336,21 @@ class ResidualUnet(torch.nn.Module):
                 Interpolate(scale_factor=output_scale)
             ) for conv,ch in zip(conv_impl,out_channels_)
         ])
+        
+        # add HPB blocks at the end
+        for i in [-1,-2]:
+            self.connectors[i]=\
+                nn.Sequential(
+                    HPB(
+                        out_channels_[i],
+                        out_channels_[i],
+                        attn_dropout=dropout_p,
+                        ff_dropout=dropout_p,
+                        normalization=normalization
+                    ),
+                    attention(out_channels_[i]),
+                    Interpolate(scale_factor=output_scale)
+                )
             
     def forward(self, x):
         """
