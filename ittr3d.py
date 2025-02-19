@@ -94,10 +94,10 @@ class DPSA3d(nn.Module):
         # Normalize queries and keys (cosine similarity attention)
         q = F.normalize(q, dim=1)
         k = F.normalize(k, dim=1)
+        q_abs = torch.abs(q)
         
         # --- Prune keys and values along depth ---
         if depth_top_k < D:
-            q_abs = torch.abs(q)
             q_probe_d = q_abs.sum(dim=(3,4))  # (b*heads, dim_head, D)
             k_abs = torch.abs(k)
             k_d = k_abs.sum(dim=(3,4)).permute(0,2,1)  # (b*heads, D, dim_head)
@@ -111,7 +111,6 @@ class DPSA3d(nn.Module):
 
         # --- Prune keys and values along height ---
         if height_top_k < H:
-            q_abs = torch.abs(q)
             q_probe_h = q_abs.sum(dim=(2,4))  # (b*heads, dim_head, H)
             k_abs = torch.abs(k)
             k_h = k_abs.sum(dim=(2,4)).permute(0,2,1)  # (b*heads, H, dim_head)
@@ -125,7 +124,6 @@ class DPSA3d(nn.Module):
 
         # --- Prune keys and values along width ---
         if width_top_k < W:
-            q_abs = torch.abs(q)
             q_probe_w = q_abs.sum(dim=(2,3))  # (b*heads, dim_head, W)
             k_abs = torch.abs(k)
             k_w = k_abs.sum(dim=(2,3)).permute(0,2,1)  # (b*heads, W, dim_head)
