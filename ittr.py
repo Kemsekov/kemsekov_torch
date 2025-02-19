@@ -74,7 +74,9 @@ class HPB(nn.Module):
         self.attn_parallel_combine_out = nn.Conv2d(dim * 2, dim, 1)
 
         ff_inner_dim = dim * ff_mult
-        norm = get_normalization_from_name(2,normalization)
+        
+        # this method returns normalization implementation based on dimensions and normalization type
+        norm = get_normalization_from_name(dimensions=2,normalization=normalization)
         self.ff = nn.Sequential(
             nn.Conv2d(dim, ff_inner_dim, 1),
             norm(ff_inner_dim),
@@ -101,7 +103,6 @@ class HPB(nn.Module):
 
 class DPSA(nn.Module):
     """ Dual-pruned Self-attention Block """
-
     def __init__(
         self,
         dim,

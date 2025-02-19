@@ -277,11 +277,14 @@ class ResidualBlock(torch.nn.Module):
 
 def get_normalization_from_name(dimensions,normalization:Literal['batch','instance',None]):
     """Get normalization for given dimensions from it's name"""
-    assert normalization in ['batch','instance',None], "normalization parameter must be one of 'batch','instance' or None"
+    allowed = ['batch','instance','group',None]
+    assert normalization in allowed, f"normalization parameter must be one of {allowed}"
     norm_type = {
             "batch":[nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d][dimensions-1],
             "instance":[nn.InstanceNorm1d,nn.InstanceNorm2d,nn.InstanceNorm3d][dimensions-1],
+            "group": lambda ch: nn.GroupNorm(ch//8,ch)
         }
+    
     if normalization is None:
         return nn.Identity
     
