@@ -73,18 +73,19 @@ class HPB(nn.Module):
         
         # this method returns normalization implementation based on dimensions and normalization type
         norm = get_normalization_from_name(dimensions=2,normalization=normalization)
+        f_inner = out_dim*4
         self.ff = nn.Sequential(
-            nn.Conv2d(out_dim, out_dim, 1),
-            norm(out_dim),
+            nn.Conv2d(out_dim, f_inner, 1),
+            norm(f_inner),
             nn.GELU(),
             nn.Dropout(ff_dropout),
             Residual(nn.Sequential(
-                nn.Conv2d(out_dim, out_dim, 3, padding = 1, groups = out_dim),
-                norm(out_dim),
+                nn.Conv2d(f_inner, f_inner, 3, padding = 1, groups = f_inner),
+                norm(f_inner),
                 nn.GELU(),
                 nn.Dropout(ff_dropout)
             )),
-            nn.Conv2d(out_dim, out_dim, 1),
+            nn.Conv2d(f_inner, out_dim, 1),
             norm(out_dim)
         )
         self.x_residual = nn.Identity()
@@ -184,7 +185,6 @@ class DPSA(nn.Module):
                 score_r = torch.einsum('b c, b h c -> b h', q_probe, k_height)
                 top_h_indices = score_r.topk(k = height_top_k, dim = -1).indices
                 top_h_indices = top_h_indices[:,None,:,None].expand(-1, k.shape[1], -1, k.shape[-1])
-                
                 k, v = torch.gather(k, dim=2, index=top_h_indices),torch.gather(v, dim=2, index=top_h_indices)
             
             if need_width_select_and_rank:
@@ -195,7 +195,6 @@ class DPSA(nn.Module):
                 score_c = torch.einsum('bh, bcw -> bw', q_probe, k_width)
                 top_w_indices = score_c.topk(k = width_top_k, dim = -1).indices
                 top_w_indices = top_w_indices[:,None,None,:].expand(-1, k.shape[1], k.shape[2], -1)
-
                 k, v = torch.gather(k, dim=3, index=top_w_indices),torch.gather(v, dim=3, index=top_w_indices)
             
         q, k, v = self.flatten_to_hidden_dim(q),self.flatten_to_hidden_dim(k),self.flatten_to_hidden_dim(v)
