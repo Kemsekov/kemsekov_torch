@@ -339,19 +339,19 @@ class ResidualUnet(torch.nn.Module):
         ])
         
         # add HPB blocks at the end
-        # for i in [-1,-2]:
-        #     self.connectors[i]=\
-        #         nn.Sequential(
-        #             HPB(
-        #                 out_channels_[i],
-        #                 out_channels_[i],
-        #                 attn_dropout=dropout_p,
-        #                 ff_dropout=dropout_p,
-        #                 normalization=normalization
-        #             ),
-        #             attention(out_channels_[i]),
-        #             Interpolate(scale_factor=output_scale)
-        #         )
+        for i in [-1,-2]:
+            self.connectors[i]=\
+                nn.Sequential(
+                    HPB(
+                        out_channels_[i],
+                        out_channels_[i],
+                        attn_dropout=dropout_p,
+                        ff_dropout=dropout_p,
+                        normalization=normalization
+                    ),
+                    attention(out_channels_[i]),
+                    Interpolate(scale_factor=output_scale)
+                )
             
     def forward(self, x):
         """
