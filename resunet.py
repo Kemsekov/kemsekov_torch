@@ -339,19 +339,19 @@ class ResidualUnet(torch.nn.Module):
         ])
         
         # add HPB blocks at the end
-        for i in [-1,-2]:
-            self.connectors[i]=\
-                nn.Sequential(
-                    HPB(
-                        out_channels_[i],
-                        out_channels_[i],
-                        attn_dropout=dropout_p,
-                        ff_dropout=dropout_p,
-                        normalization=normalization
-                    ),
-                    attention(out_channels_[i]),
-                    Interpolate(scale_factor=output_scale)
-                )
+        # for i in [-1,-2]:
+        #     self.connectors[i]=\
+        #         nn.Sequential(
+        #             HPB(
+        #                 out_channels_[i],
+        #                 out_channels_[i],
+        #                 attn_dropout=dropout_p,
+        #                 ff_dropout=dropout_p,
+        #                 normalization=normalization
+        #             ),
+        #             attention(out_channels_[i]),
+        #             Interpolate(scale_factor=output_scale)
+        #         )
             
     def forward(self, x):
         """
@@ -424,9 +424,10 @@ class LargeResidualUnet(torch.nn.Module):
         dilations=[
             1,1,1,1,1,
             # aspp block
-            [1]*128+[2]*64+[4]*64,
-            [1]*256+[2]*128+[4]*128,
-            [1]*512+[2]*256+[4]*256,
+            # [1]*128+[2]*64+[4]*64,
+            # [1]*256+[2]*128+[4]*128,
+            # [1]*512+[2]*256+[4]*256,
+            1,1,1
         ]
         
         if output_scale==1:
@@ -480,7 +481,7 @@ class LargeResidualUnet(torch.nn.Module):
                     stride = 1,
                     conv_impl=conv2d,
                     normalization=normalization
-                ),
+                ),  
                 attention(ch),
                 nn.Dropout2d(p=dropout_p),
                 # scale output

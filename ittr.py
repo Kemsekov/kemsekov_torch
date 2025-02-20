@@ -50,9 +50,8 @@ class HPB(nn.Module):
     def __init__(
         self,
         dim,
-        dim_head = 32,
+        out_dim,
         heads = 8,
-        ff_mult = 4,
         attn_height_top_k = -1,
         attn_width_top_k = -1,
         attn_dropout = 0.,
@@ -64,40 +63,43 @@ class HPB(nn.Module):
         self.attn = DPSA(
             dim = dim,
             heads = heads,
-            dim_head = dim_head,
+            out_dim = out_dim,
             height_top_k = attn_height_top_k,
             width_top_k = attn_width_top_k,
             dropout = attn_dropout
         )
-
-        self.dwconv = nn.Conv2d(dim, dim, 3, padding = 1, groups = dim)
-        self.attn_parallel_combine_out = nn.Conv2d(dim * 2, dim, 1)
-
-        ff_inner_dim = dim * ff_mult
+        self.dwconv = nn.Conv2d(dim, out_dim, 3, padding = 1, groups = math.gcd(dim,out_dim))
+        self.attn_parallel_combine_out = nn.Conv2d(out_dim * 2, out_dim, 1)
         
         # this method returns normalization implementation based on dimensions and normalization type
         norm = get_normalization_from_name(dimensions=2,normalization=normalization)
         self.ff = nn.Sequential(
-            nn.Conv2d(dim, ff_inner_dim, 1),
-            norm(ff_inner_dim),
+            nn.Conv2d(out_dim, out_dim, 1),
+            norm(out_dim),
             nn.GELU(),
             nn.Dropout(ff_dropout),
             Residual(nn.Sequential(
-                nn.Conv2d(ff_inner_dim, ff_inner_dim, 3, padding = 1, groups = ff_inner_dim),
-                norm(ff_inner_dim),
+                nn.Conv2d(out_dim, out_dim, 3, padding = 1, groups = out_dim),
+                norm(out_dim),
                 nn.GELU(),
                 nn.Dropout(ff_dropout)
             )),
-            nn.Conv2d(ff_inner_dim, dim, 1),
-            norm(dim)
+            nn.Conv2d(out_dim, out_dim, 1),
+            norm(out_dim)
         )
+        self.x_residual = nn.Identity()
+        if dim!=out_dim:
+            self.x_residual = nn.Sequential(
+                nn.Conv2d(dim,out_dim,kernel_size=1),
+                norm(out_dim)
+            )
 
     def forward(self, x):
         attn_branch_out = self.attn(x)
         conv_branch_out = self.dwconv(x)
 
         concatted_branches = torch.cat((attn_branch_out, conv_branch_out), dim = 1)
-        attn_out = self.attn_parallel_combine_out(concatted_branches) + x
+        attn_out = self.attn_parallel_combine_out(concatted_branches) + self.x_residual(x)
 
         return self.ff(attn_out)
 
@@ -106,17 +108,17 @@ class DPSA(nn.Module):
     def __init__(
         self,
         dim,
+        out_dim,
+        heads = 8,
         height_top_k = -1,
         width_top_k = -1,
-        dim_head = 32,
-        heads = 8,
         dropout = 0.
     ):
         super().__init__()
+
         self.heads = heads
-        self.dim_head = dim_head
-        self.scale = dim_head ** -0.5
-        inner_dim = heads * dim_head
+        self.dim_head = out_dim
+        inner_dim = out_dim*heads
 
         self.norm = ChanLayerNorm(dim)
         self.to_qkv = nn.Conv2d(dim, inner_dim * 3, 1, bias = False)
@@ -125,7 +127,7 @@ class DPSA(nn.Module):
         self.width_top_k = width_top_k
 
         self.dropout = nn.Dropout(dropout)
-        self.to_out = nn.Conv2d(inner_dim, dim, 1)
+        self.to_out = nn.Conv2d(inner_dim, out_dim, 1)
         self.fold_out_heads = Rearrange('b (h c) x y -> (b h) c x y', h = self.heads)
         self.q_probe_reduce = Reduce('b c height width -> b c', 'sum')
         self.k_sum_over_width = Reduce('b c height width -> b height c', 'sum')
