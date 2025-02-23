@@ -86,6 +86,11 @@ class ResidualBlock(torch.nn.Module):
         self.added_pad = pad
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
         self.normalization = normalization
+        if not isinstance(kernel_size,list):
+            kernel_size=[kernel_size]*out_channels
+            
+        self.kernel_size = kernel_size
+        
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
         
@@ -97,14 +102,11 @@ class ResidualBlock(torch.nn.Module):
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels
 
-        if not isinstance(kernel_size,list):
-            kernel_size=[kernel_size]*out_channels
         assert len(dilation) == out_channels, "Number of dilations must match the number of output channels."
 
 
         self.in_channels = in_channels
         self.out_channels = out_channels
-        self.kernel_size = kernel_size
         self.stride = stride
         self.dilation = dilation
         self._activation_func = activation
@@ -183,9 +185,9 @@ class ResidualBlock(torch.nn.Module):
     def _conv_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
         # number of channels or some stride
-        correct_x_ksize = 1 if stride==1 and self.added_pad==0 else (1+stride)//2 *2 +1
+        correct_x_ksize = 1 if stride==1 and self.added_pad==0 else min(self.kernel_size)
+        correct_x_padding= correct_x_ksize // 2 + self.added_pad
         correct_x_dilation = 1
-        correct_x_padding= correct_x_ksize // 2
         
         # make cheap downscale
         x_corr_kwargs=dict(
@@ -194,7 +196,7 @@ class ResidualBlock(torch.nn.Module):
             kernel_size = correct_x_ksize,
             dilation=correct_x_dilation,
             stride = stride,
-            padding = correct_x_padding+self.added_pad,
+            padding = correct_x_padding,
             groups=gcd(in_channels,out_channels)
         )
         
