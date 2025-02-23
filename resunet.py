@@ -17,7 +17,18 @@ class Encoder(torch.nn.Module):
         dropout (torch.nn.Dropout2d): Dropout layer applied after each downsampling block.
     """
 
-    def __init__(self, in_channels_, out_channels_, dilations, downs_conv_impl,dropout_p=0.5,attention = SCSEModule,normalization : Literal['batch','instance',None] = 'batch',kernel_size=3):
+    def __init__(
+        self, 
+        in_channels_, 
+        out_channels_, 
+        dilations, 
+        downs_conv_impl,
+        dropout_p=0.5,
+        attention = SCSEModule,
+        normalization : Literal['batch','instance',None] = 'batch',
+        kernel_size=3,
+        x_residual_type='conv'
+    ):
         """
         Initializes the Encoder module.
 
@@ -47,7 +58,8 @@ class Encoder(torch.nn.Module):
                 stride = 2,
                 dilation=dilations[i],
                 normalization=normalization,
-                conv_impl=downs_conv_impl[i]
+                conv_impl=downs_conv_impl[i],
+                x_residual_type=x_residual_type
             )
             down_i = torch.nn.Sequential(down_i,attention[i](out_channels_[i]))
             downs_list.append(down_i)
@@ -114,7 +126,17 @@ class Decoder(torch.nn.Module):
         up5 (ResidualBlock): The final upsampling ResidualBlock.
         dropout (torch.nn.Dropout2d): Dropout layer applied after each upsampling block.
     """
-    def __init__(self, up_in_channels, up_out_channels, ups_conv_impl,dropout_p=0.5,attention = SCSEModule,normalization : Literal['batch','instance',None] = 'batch',kernel_size=3):
+    def __init__(
+        self, 
+        up_in_channels, 
+        up_out_channels, 
+        ups_conv_impl,
+        dropout_p=0.5,
+        attention = SCSEModule,
+        normalization : Literal['batch','instance',None] = 'batch',
+        kernel_size=3,
+        x_residual_type='conv'
+    ):
         """
         Initializes the Decoder module.
 
@@ -145,7 +167,8 @@ class Decoder(torch.nn.Module):
                 stride = 2,
                 dilation=1,
                 normalization=normalization,
-                conv_impl=ups_conv_impl[i]
+                conv_impl=ups_conv_impl[i],
+                x_residual_type=x_residual_type
             )
             up_i = torch.nn.Sequential(up_i,attention[i](up_out_channels[i]))
             conv1x1_i = torch.nn.Conv2d(up_out_channels[i]*2, up_out_channels[i], kernel_size=1)
@@ -235,7 +258,8 @@ class ResidualUnet(torch.nn.Module):
         attention = SCSEModule,
         dropout_p=0.5,
         normalization : Literal['batch','instance',None] = 'batch',
-        conv_class_wrapper = lambda x: x
+        conv_class_wrapper = lambda x: x,
+        x_residual_type='conv'
         ):
         """
         Initializes the ResidualUnet.
@@ -250,6 +274,7 @@ class ResidualUnet(torch.nn.Module):
             output_scale (float, optional): Scaling factor for the output tensor. Must be a power of 2.
             attention: tensor attention implementation
             normalization: what normalization to use when working with data
+            x_residual_type: what residual path type to use. 'conv' or 'resize'
             
         Raises:
             ValueError: If `output_scale` is not a positive power of 2.
@@ -300,7 +325,8 @@ class ResidualUnet(torch.nn.Module):
             downs_conv_impl,
             attention=attention,
             dropout_p=dropout_p,
-            normalization=normalization
+            normalization=normalization,
+            x_residual_type=x_residual_type
         )
         
         self.decoder = Decoder(
@@ -309,7 +335,8 @@ class ResidualUnet(torch.nn.Module):
             ups_conv_impl,
             attention=attention_up,
             dropout_p=dropout_p,
-            normalization=normalization
+            normalization=normalization,
+            x_residual_type=x_residual_type
         )
 
         self.scaler = Interpolate(scale_factor=output_scale)
@@ -336,19 +363,19 @@ class ResidualUnet(torch.nn.Module):
         ])
         
         # add HPB blocks at the end
-        for i in [-1,-2]:
-            self.connectors[i]=\
-                nn.Sequential(
-                    HPB(
-                        out_channels_[i],
-                        out_channels_[i],
-                        attn_dropout=dropout_p,
-                        ff_dropout=dropout_p,
-                        normalization=normalization
-                    ),
-                    attention(out_channels_[i]),
-                    Interpolate(scale_factor=output_scale)
-                )
+        # for i in [-1,-2]:
+        #     self.connectors[i]=\
+        #         nn.Sequential(
+        #             HPB(
+        #                 out_channels_[i],
+        #                 out_channels_[i],
+        #                 attn_dropout=dropout_p,
+        #                 ff_dropout=dropout_p,
+        #                 normalization=normalization
+        #             ),
+        #             attention(out_channels_[i]),
+        #             Interpolate(scale_factor=output_scale)
+        #         )
             
     def forward(self, x):
         """
