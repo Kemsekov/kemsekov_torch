@@ -17,7 +17,7 @@ class Encoder(torch.nn.Module):
         dropout (torch.nn.Dropout2d): Dropout layer applied after each downsampling block.
     """
 
-    def __init__(self, in_channels_, out_channels_, dilations, downs_conv_impl,dropout_p=0.5,attention = SCSEModule,normalization : Literal['batch','instance',None] = 'batch'):
+    def __init__(self, in_channels_, out_channels_, dilations, downs_conv_impl,dropout_p=0.5,attention = SCSEModule,normalization : Literal['batch','instance',None] = 'batch',kernel_size=3):
         """
         Initializes the Encoder module.
 
@@ -43,7 +43,7 @@ class Encoder(torch.nn.Module):
             down_i = ResidualBlock(
                 in_channels=in_channels_[i],
                 out_channels=out_channels_[i],
-                kernel_size= 3,
+                kernel_size = kernel_size,
                 stride = 2,
                 dilation=dilations[i],
                 normalization=normalization,
@@ -114,7 +114,7 @@ class Decoder(torch.nn.Module):
         up5 (ResidualBlock): The final upsampling ResidualBlock.
         dropout (torch.nn.Dropout2d): Dropout layer applied after each upsampling block.
     """
-    def __init__(self, up_in_channels, up_out_channels, ups_conv_impl,dropout_p=0.5,attention = SCSEModule,normalization : Literal['batch','instance',None] = 'batch'):
+    def __init__(self, up_in_channels, up_out_channels, ups_conv_impl,dropout_p=0.5,attention = SCSEModule,normalization : Literal['batch','instance',None] = 'batch',kernel_size=3):
         """
         Initializes the Decoder module.
 
@@ -141,7 +141,7 @@ class Decoder(torch.nn.Module):
             up_i = ResidualBlock(
                 in_channels=up_in_channels[i],
                 out_channels=up_out_channels[i],
-                kernel_size=3,
+                kernel_size=kernel_size,
                 stride = 2,
                 dilation=1,
                 normalization=normalization,
