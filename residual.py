@@ -50,7 +50,8 @@ class ResidualBlock(torch.nn.Module):
         normalization : Literal['batch','instance',None] = 'batch',#which normalization to use
         conv_impl = nn.Conv2d,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
         dimensions : Literal[1,2,3] = 2,
-        pad = 0
+        pad = 0,
+        x_residual_type : Literal['conv','resize'] = 'conv'
     ):
         """
         Initializes the ResidualBlock.
@@ -77,6 +78,7 @@ class ResidualBlock(torch.nn.Module):
                 or a list of types with length equal to `repeats`, specifying the convolution implementation for each repeat. 
                 Default is `BSConvU`.
             pad (int, optional): additional padding for convolutions
+            x_residual_type (str): how to create residual path, conv means convolutional layer will be used, resize means nearest pixel interpolation will be used
         """
         super().__init__()
 
@@ -97,8 +99,13 @@ class ResidualBlock(torch.nn.Module):
         norm_impl = get_normalization_from_name(dimensions,normalization)
         
         self.dimensions=dimensions
-        self._conv_x_correct(in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
+        if x_residual_type == 'conv':
+            self._conv_x_correct(in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
         
+        if x_residual_type == 'resize':
+            self._resize_x_correct(in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
+        assert x_residual_type in ["conv","resize"],"x_residual_type must be one of ['conv','resize'], but got "+x_residual_type
+        self.x_residual_type=x_residual_type
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels
 
@@ -274,7 +281,8 @@ class ResidualBlock(torch.nn.Module):
             normalization=self.normalization,
             conv_impl = conv_impl,
             dimensions=self.dimensions,
-            pad=self.added_pad
+            pad=self.added_pad,
+            x_residual_type=self.x_residual_type
         )
 
 def get_normalization_from_name(dimensions,normalization:Literal['batch','instance',None]):
