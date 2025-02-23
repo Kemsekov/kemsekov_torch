@@ -88,7 +88,7 @@ class ResidualBlock(torch.nn.Module):
         self.normalization = normalization
         if not isinstance(kernel_size,list):
             kernel_size=[kernel_size]*out_channels
-            
+        assert all([v%2==1 for v in kernel_size]), f"kernel size must be odd number, but given kernel size {kernel_size}"
         self.kernel_size = kernel_size
         
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
