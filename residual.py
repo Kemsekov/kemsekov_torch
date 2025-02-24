@@ -262,24 +262,18 @@ class ResidualBlock(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape (batch_size, out_channels, new_height, new_width).
         """
-        # Apply each convolution with different dilations to the input and concatenate.
+        x_corr = self.x_correct(x)
         out_v = x
-     
-        prev = self.x_correct(x)
-
+        
         for convs,norm in zip(self.convs,self.norms):
-            
             # Fork to parallelize each convolution operation
             futures = [torch.jit.fork(conv, out_v) for conv in convs]
             # Wait for all operations to complete and collect the results
             results = [torch.jit.wait(future) for future in futures]
             out_v = torch.cat(results, dim=1)
-            out_v = norm(out_v)
-            
-            out_v = self.activation(out_v)+prev
-            prev = out_v
+            out_v = self.activation(norm(out_v))
         
-        return out_v
+        return out_v+x_corr
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
     def transpose(self):
         """
