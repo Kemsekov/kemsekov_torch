@@ -118,7 +118,7 @@ class ResidualBlock(torch.nn.Module):
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels[0]
 
-        assert len(dilation) == out_channels[0], f"Number of dilations must match the number of output channels at first dim. {len(dilation)} != {out_channels[0]}"
+        # assert len(dilation) == out_channels[0], f"Number of dilations must match the number of output channels at first dim. {len(dilation)} != {out_channels[0]}"
 
 
         self.in_channels = in_channels
@@ -162,17 +162,15 @@ class ResidualBlock(torch.nn.Module):
             stride_ = stride if v==0 else 1
             added_pad = pad if v==0 else 0
 
-
             # do not change
             dil = dilations_ if v==0 else [1]*len(out_channels_without_dilation)
             
             # change to match out_channels[v]
             outc = out_channels_ if v==0 else out_channels_without_dilation
-            outc = [int(c/out_channels[0]*out_channels[v]) for c in outc] if v>0 else outc
+            outc = [int(c/sum(outc)*out_channels[v]) for c in outc]
             
             # do not change
             ksizes = kernel_sizes_ if v==0 else kernel_sizes_without_dilation
-            
             
             
             # Store the conv layers for each output channel with different dilations.
