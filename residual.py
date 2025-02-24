@@ -205,7 +205,7 @@ class ResidualBlock(torch.nn.Module):
         scale = 1/stride
         if self._is_transpose_conv:
             scale=stride
-        self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions)
+        self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions,normalization=self.normalization)
     
     def _conv_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
@@ -268,16 +268,13 @@ class ResidualBlock(torch.nn.Module):
         prev = self.x_correct(x)
 
         for convs,norm in zip(self.convs,self.norms):
+            
             # Fork to parallelize each convolution operation
             futures = [torch.jit.fork(conv, out_v) for conv in convs]
             # Wait for all operations to complete and collect the results
             results = [torch.jit.wait(future) for future in futures]
             out_v = torch.cat(results, dim=1)
             out_v = norm(out_v)
-            
-            #-----------
-            # prev=torch.nn.functional.adaptive_avg_pool2d(prev,out_v.shape[-2:])
-            #-----------
             
             out_v = self.activation(out_v)+prev
             prev = out_v
@@ -298,7 +295,6 @@ class ResidualBlock(torch.nn.Module):
         # if we use stride 1 do not change anything
         conv_impl = [v for v in self.conv_impl]
         conv_impl[0]=[torch.nn.ConvTranspose1d,torch.nn.ConvTranspose2d,torch.nn.ConvTranspose3d][self.dimensions-1]
-        
         return ResidualBlock(
             in_channels=self.in_channels,
             out_channels=self.out_channels,
@@ -312,18 +308,3 @@ class ResidualBlock(torch.nn.Module):
             pad=self.added_pad,
             x_residual_type=self.x_residual_type
         )
-
-def get_normalization_from_name(dimensions,normalization:Literal['batch','instance',None]):
-    """Get normalization for given dimensions from it's name"""
-    allowed = ['batch','instance','group',None]
-    assert normalization in allowed, f"normalization parameter must be one of {allowed}"
-    norm_type = {
-            "batch":[nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d][dimensions-1],
-            "instance":[nn.InstanceNorm1d,nn.InstanceNorm2d,nn.InstanceNorm3d][dimensions-1],
-            "group": lambda ch: nn.GroupNorm(ch//8,ch)
-        }
-    
-    if normalization is None:
-        return nn.Identity
-    
-    return norm_type[normalization]
