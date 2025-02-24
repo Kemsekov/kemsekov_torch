@@ -265,8 +265,14 @@ class ResidualBlock(torch.nn.Module):
             outc = out_channels_ if v==0 else out_channels_without_dilation
             outc = [int(c/sum(outc)*out_channels[v]) for c in outc]
             
+            # channels that is remained to be added
+            remaining_channels = out_channels[v]-sum(outc)
+            
             # do not change
             ksizes = kernel_sizes_ if v==0 else kernel_sizes_without_dilation
+            
+            outc[torch.argmin(torch.tensor(ksizes))]+=remaining_channels
+            
             
             
             # Store the conv layers for each output channel with different dilations.
