@@ -259,7 +259,7 @@ class ResidualUnet(torch.nn.Module):
         dropout_p=0.5,
         normalization : Literal['batch','instance',None] = 'batch',
         conv_class_wrapper = lambda x: x,
-        x_residual_type='conv'
+        kernel_size=3
         ):
         """
         Initializes the ResidualUnet.
@@ -326,7 +326,8 @@ class ResidualUnet(torch.nn.Module):
             attention=attention,
             dropout_p=dropout_p,
             normalization=normalization,
-            x_residual_type=x_residual_type
+            x_residual_type='conv',
+            kernel_size=kernel_size
         )
         
         self.decoder = Decoder(
@@ -336,7 +337,8 @@ class ResidualUnet(torch.nn.Module):
             attention=attention_up,
             dropout_p=dropout_p,
             normalization=normalization,
-            x_residual_type=x_residual_type
+            x_residual_type='conv',
+            kernel_size=kernel_size
         )
 
         self.scaler = Interpolate(scale_factor=output_scale)

@@ -81,16 +81,19 @@ class ResidualBlock(torch.nn.Module):
             x_residual_type (str): how to create residual path, conv means convolutional layer will be used, resize means nearest pixel interpolation will be used
         """
         super().__init__()
-
+        if x_residual_type=='resize':
+            assert pad==0, "when using 'resize' x_residual_type pad must be zero"
+            
         if not isinstance(conv_impl,list):
             conv_impl=[conv_impl]
         repeats=len(conv_impl)
+        
         self.added_pad = pad
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
         self.normalization = normalization
         if not isinstance(kernel_size,list):
             kernel_size=[kernel_size]*out_channels
-        assert all([v%2==1 for v in kernel_size]), f"kernel size must be odd number, but given kernel size {kernel_size}"
+        # assert all([v%2==1 for v in kernel_size]), f"kernel size must be odd number, but given kernel size {kernel_size}"
         self.kernel_size = kernel_size
         
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
@@ -153,6 +156,7 @@ class ResidualBlock(torch.nn.Module):
             stride_ = stride if v==0 else 1
             added_pad = pad if v==0 else 0
 
+
             # only at first layer do dilations
             dil = dilations_# if v==0 else [1]*len(out_channels_without_dilation)
             outc = out_channels_# if v==0 else out_channels_without_dilation
@@ -161,17 +165,31 @@ class ResidualBlock(torch.nn.Module):
             # Store the conv layers for each output channel with different dilations.
             convs_ = []
             for i in range(len(outc)):
+                ks = ksizes[i]
+                # actual conv kernel size with dilation
+
+                if ks%2==0:
+                    if v==0:
+                        assert stride_!=1,f"there is no way to keep tensor shape when we do stride 1 convolution when using same padding on all dimensions. Given kernel size {ksizes[i]} with stride 1"
+                    if stride_==1:
+                        ks+=1
+                ks_with_dilation = ks + (ks - 1) * (dil[i] - 1)
+                
+                if ks_with_dilation%2==0:
+                    compensation = -1
+                else:
+                    compensation=0
+                
                 conv_kwargs = dict(
                     in_channels=in_ch,
                     out_channels=outc[i],
-                    kernel_size=ksizes[i],
-                    padding=(ksizes[i] + (ksizes[i] - 1) * (dil[i] - 1)) // 2+added_pad,
-                    padding_mode="zeros",
+                    kernel_size=ks,
+                    padding = ks_with_dilation // 2 + added_pad + compensation,
                     dilation=dil[i],
                     stride=stride_
                 )
                 if v==0 and self._is_transpose_conv:
-                    conv_kwargs['output_padding']=stride_ - 1
+                    conv_kwargs['output_padding']=stride_ - 1 + added_pad + compensation
                 convs_.append(conv_impl[v](**conv_kwargs))
 
             conv = torch.nn.ModuleList(convs_)
@@ -194,6 +212,11 @@ class ResidualBlock(torch.nn.Module):
         # number of channels or some stride
         correct_x_ksize = 1 if stride==1 and self.added_pad==0 else min(self.kernel_size)
         correct_x_padding= correct_x_ksize // 2 + self.added_pad
+        if correct_x_ksize%2==0:
+            compensation = -1
+        else:
+            compensation = 0
+            
         correct_x_dilation = 1
         
         # make cheap downscale
@@ -203,14 +226,14 @@ class ResidualBlock(torch.nn.Module):
             kernel_size = correct_x_ksize,
             dilation=correct_x_dilation,
             stride = stride,
-            padding = correct_x_padding,
+            padding = correct_x_padding+compensation,
             groups=gcd(in_channels,out_channels)
         )
         
         x_conv_impl = x_corr_conv_impl
         if self._is_transpose_conv:
             x_conv_impl = x_corr_conv_impl_T
-            x_corr_kwargs['output_padding'] = stride - 1
+            x_corr_kwargs['output_padding'] = stride - 1 + self.added_pad+compensation
             x_corr_kwargs['groups'] = 1
         
         # if we have different output tensor size, apply linear x_correction
@@ -251,6 +274,11 @@ class ResidualBlock(torch.nn.Module):
             results = [torch.jit.wait(future) for future in futures]
             out_v = torch.cat(results, dim=1)
             out_v = norm(out_v)
+            
+            #-----------
+            # prev=torch.nn.functional.adaptive_avg_pool2d(prev,out_v.shape[-2:])
+            #-----------
+            
             out_v = self.activation(out_v)+prev
             prev = out_v
         
