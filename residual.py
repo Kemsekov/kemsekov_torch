@@ -4,40 +4,85 @@ import torch
 import torch.nn as nn
 from conv_modules import *
 from common_modules import *
-
-def gcd(a, b):
-    """Calculate the Greatest Common Divisor of a and b.
-
-    Unless b==0, the result will have the same sign as b (so that when
-    b is divided by it, the result comes out positive).
-    """
-    while b:
-        a, b = b, a%b
-    return a
           
 # advanced residual block with modular structure
 class ResidualBlock(torch.nn.Module):
     """
-    Advanced Residual Block with a Modular Structure.
+    ResidualBlock
 
-    This block supports residual convolutional transformations with custom kernel sizes, dilations, 
-    and stride. It allows modular selection of the convolution implementation (e.g., BSConvU, standard Conv2d, or ConvTranspose2d)
-    and is compatible with transpose convolutions for upsampling.
+    Advanced Residual Block with a Modular and Flexible Structure.
 
-    The ResidualBlock can be repeated multiple times, with each repeat potentially using a different convolution implementation.
-    It also includes an optional batch normalization layer after each convolution and an activation function applied after each normalization.
+    This module implements a highly configurable residual block that applies repeated convolutional transformations with optional parameter collapsing and parallel execution. Each block repeat can use a different convolution implementation (e.g., standard Conv2d, BSConvU, or ConvTranspose2d) to perform the transformation, and supports custom kernel sizes, dilations, strides, and padding. The block ensures compatibility for residual addition by adjusting the input either via a dedicated convolution or through interpolation-based resizing. It is designed to support both downsampling and upsampling operations.
+
+    Parameters:
+        in_channels (int):
+            Number of channels in the input tensor.
+        out_channels (int or list of int):
+            Number of output channels for each block repeat. If a single integer is provided, it is converted internally to a list.
+        kernel_size (int or list of int):
+            Kernel size(s) for the convolutional layers. When provided as a list, its length should match the total number of convolution operations in the first repeat. Consecutive operations with identical kernel size and dilation may be collapsed to reduce computation.
+        stride (int, optional):
+            Stride for the convolution in the first block repeat. Subsequent repeats use a stride of 1. This parameter controls spatial dimension changes.
+        dilation (int or list of int, optional):
+            Dilation rate(s) for the convolutional layers. If provided as a list, its length should match that of kernel_size for the first block.
+        activation (callable, optional):
+            Constructor for the activation function (e.g., torch.nn.ReLU). An instance is created during initialization. Default is torch.nn.ReLU.
+        normalization (Literal['batch', 'instance', None], optional):
+            Specifies the type of normalization to apply after convolution. Options include 'batch', 'instance', or None. Default is 'batch'.
+        conv_impl (type or list of type, optional):
+            Convolution implementation(s) to use. This can be a single convolution type (e.g., nn.Conv2d, BSConvU, or nn.ConvTranspose2d) applied to all block repeats, or a list specifying different implementations for each repeat.
+        dimensions (Literal[1, 2, 3], optional):
+            Dimensionality of the convolution (1D, 2D, or 3D). Default is 2.
+        pad (int, optional):
+            Additional padding to apply to the convolutional layers.
+        x_residual_type (Literal['conv', 'resize'], optional):
+            Method for adjusting the input tensor to match the output shape for residual addition.
+            - 'conv': Applies a dedicated convolutional correction (with optional normalization) to align the input.
+            - 'resize': Uses interpolation-based resizing (nearest neighbor) for spatial adjustment (requires pad to be 0).
 
     Attributes:
-        convs (torch.nn.ModuleList): List of convolutional layers applied in sequence for each repeat.
-        batch_norms (torch.nn.ModuleList): List of batch normalization layers corresponding to each repeat.
-        x_correct (torch.nn.Module): A correction module applied to the input to match the output shape for residual addition.
-        activation (torch.nn.Module): The activation function applied after each convolution and normalization.
+        convs (ModuleList):
+            A ModuleList containing sub-ModuleLists of convolutional layers for each block repeat. Convolutions with identical parameters may be grouped and executed in parallel using torch.jit.fork.
+        norms (ModuleList):
+            A list of normalization layers, one per block repeat.
+        x_correct (Module):
+            A correction module that adjusts the input tensor (via convolution or resizing) to be compatible with the output tensor for residual addition.
+        activation (Module):
+            The instantiated activation function applied after each normalization.
+        repeats (int):
+            The number of repeated convolutional transformations (i.e., the number of block repeats).
+        _is_transpose_conv (bool):
+            Internal flag indicating whether the convolution implementation supports transposed convolutions (i.e., upsampling), determined by the presence of the 'output_padding' parameter in the convolution’s constructor.
 
-    Raises:
-        AssertionError: 
-            - If the length of `conv_impl` (when provided as a list) does not match `repeats`.
-            - If the length of `dilation` does not match `kernel_size` when they are provided as lists.
+    Methods:
+        forward(x: Tensor) -> Tensor:
+            Executes the forward pass by applying the sequence of convolutional layers (leveraging parallel execution), followed by normalization and activation, and finally adds the corrected residual input.
+        transpose() -> ResidualBlock:
+            Returns a new ResidualBlock instance configured for transposed convolutions, enabling upsampling. In the transposed version, the first block’s convolution implementation is replaced with the corresponding transposed convolution type while subsequent blocks remain unchanged.
+
+    Usage Examples:
+        >>> m = ResidualBlock(
+        ...     24,
+        ...     [128, 64],
+        ...     kernel_size=[3]*4 + [4]*4 + [5]*8,
+        ...     dilation=[1]*8 + [2]*4 + [3]*4,
+        ...     stride=2,
+        ...     pad=0
+        ... )
+        >>> output = m(torch.randn(2, 24, 32, 64))
+        >>> output.shape
+        torch.Size([2, 64, 16, 32])
+        >>> m_transposed = m.transpose()
+        >>> output_transposed = m_transposed(torch.randn(2, 24, 32, 64))
+        >>> output_transposed.shape
+        torch.Size([2, 64, 64, 128])
+
+    Notes:
+        - The module collapses consecutive convolutional operations with the same kernel size (and dilation for the first block) to reduce computational overhead.
+        - When using transposed convolutions via the transpose() method, the block is reconfigured to perform upsampling while preserving the residual structure.
+        - If using 'resize' for the residual path, ensure that pad is set to 0.
     """
+
 
     def __init__(
         self,
@@ -54,32 +99,81 @@ class ResidualBlock(torch.nn.Module):
         x_residual_type : Literal['conv','resize'] = 'conv'
     ):
         """
-        Initializes the ResidualBlock.
+        ResidualBlock
 
-        This method sets up the residual block's convolutional layers, add normalization layers, 
-        and residual correction to ensure input-output compatibility for residual addition.
+        Advanced Residual Block with a Modular and Flexible Structure.
 
-        The residual connection is adjusted using a separate convolution (`x_correct`) if there's a change
-        in the number of channels or the stride, ensuring that the input can be added to the output.
+        This module implements a highly configurable residual block that applies repeated convolutional transformations with optional parameter collapsing and parallel execution. Each block repeat can use a different convolution implementation (e.g., standard Conv2d, BSConvU, or ConvTranspose2d) to perform the transformation, and supports custom kernel sizes, dilations, strides, and padding. The block ensures compatibility for residual addition by adjusting the input either via a dedicated convolution or through interpolation-based resizing. It is designed to support both downsampling and upsampling operations.
 
-        Additionally, the block optimizes computation by collapsing consecutive convolutions with the same
-        kernel size and dilation into grouped convolutions.
+        Parameters:
+            in_channels (int):
+                Number of channels in the input tensor.
+            out_channels (int or list of int):
+                Number of output channels for each block repeat. If a single integer is provided, it is converted internally to a list.
+            kernel_size (int or list of int):
+                Kernel size(s) for the convolutional layers. When provided as a list, its length should match the total number of convolution operations in the first repeat. Consecutive operations with identical kernel size and dilation may be collapsed to reduce computation.
+            stride (int, optional):
+                Stride for the convolution in the first block repeat. Subsequent repeats use a stride of 1. This parameter controls spatial dimension changes.
+            dilation (int or list of int, optional):
+                Dilation rate(s) for the convolutional layers. If provided as a list, its length should match that of kernel_size for the first block.
+            activation (callable, optional):
+                Constructor for the activation function (e.g., torch.nn.ReLU). An instance is created during initialization. Default is torch.nn.ReLU.
+            normalization (Literal['batch', 'instance', None], optional):
+                Specifies the type of normalization to apply after convolution. Options include 'batch', 'instance', or None. Default is 'batch'.
+            conv_impl (type or list of type, optional):
+                Convolution implementation(s) to use. This can be a single convolution type (e.g., nn.Conv2d, BSConvU, or nn.ConvTranspose2d) applied to all block repeats, or a list specifying different implementations for each repeat.
+            dimensions (Literal[1, 2, 3], optional):
+                Dimensionality of the convolution (1D, 2D, or 3D). Default is 2.
+            pad (int, optional):
+                Additional padding to apply to the convolutional layers.
+            x_residual_type (Literal['conv', 'resize'], optional):
+                Method for adjusting the input tensor to match the output shape for residual addition.
+                - 'conv': Applies a dedicated convolutional correction (with optional normalization) to align the input.
+                - 'resize': Uses interpolation-based resizing (nearest neighbor) for spatial adjustment (requires pad to be 0).
 
-        Args:
-            in_channels (int): Number of input channels.
-            out_channels (int): Number of output channels.
-            kernel_size (int or list of int): Kernel size(s) for the convolutions. If a list is provided, it should match the number of output channels.
-            stride (int, optional): Stride for the convolutions, used to modify output spatial dimensions. Default is 1.
-            dilation (int or list of int, optional): Dilation rates for the convolutions. If a list is provided, it should match the number of kernel sizes. Default is 1.
-            activation (type, optional): Constructor for the activation function to use (e.g., `torch.nn.ReLU`). Default is `torch.nn.ReLU`.
-            normalization: [`'batch'`,`'instance'`,`None`] which normalization to use
-            conv_impl (type or list of type, optional): Convolution implementation class to use. 
-                Can be a single type (e.g., `BSConvU`, `nn.Conv2d`, `nn.ConvTranspose2d`) applied to all repeats, 
-                or a list of types with length equal to `repeats`, specifying the convolution implementation for each repeat. 
-                Default is `BSConvU`.
-            pad (int, optional): additional padding for convolutions
-            x_residual_type (str): how to create residual path, conv means convolutional layer will be used, resize means nearest pixel interpolation will be used
+        Attributes:
+            convs (ModuleList):
+                A ModuleList containing sub-ModuleLists of convolutional layers for each block repeat. Convolutions with identical parameters may be grouped and executed in parallel using torch.jit.fork.
+            norms (ModuleList):
+                A list of normalization layers, one per block repeat.
+            x_correct (Module):
+                A correction module that adjusts the input tensor (via convolution or resizing) to be compatible with the output tensor for residual addition.
+            activation (Module):
+                The instantiated activation function applied after each normalization.
+            repeats (int):
+                The number of repeated convolutional transformations (i.e., the number of block repeats).
+            _is_transpose_conv (bool):
+                Internal flag indicating whether the convolution implementation supports transposed convolutions (i.e., upsampling), determined by the presence of the 'output_padding' parameter in the convolution’s constructor.
+
+        Methods:
+            forward(x: Tensor) -> Tensor:
+                Executes the forward pass by applying the sequence of convolutional layers (leveraging parallel execution), followed by normalization and activation, and finally adds the corrected residual input.
+            transpose() -> ResidualBlock:
+                Returns a new ResidualBlock instance configured for transposed convolutions, enabling upsampling. In the transposed version, the first block’s convolution implementation is replaced with the corresponding transposed convolution type while subsequent blocks remain unchanged.
+
+        Usage Examples:
+            >>> m = ResidualBlock(
+            ...     24,
+            ...     [128, 64],
+            ...     kernel_size=[3]*4 + [4]*4 + [5]*8,
+            ...     dilation=[1]*8 + [2]*4 + [3]*4,
+            ...     stride=2,
+            ...     pad=0
+            ... )
+            >>> output = m(torch.randn(2, 24, 32, 64))
+            >>> output.shape
+            torch.Size([2, 64, 16, 32])
+            >>> m_transposed = m.transpose()
+            >>> output_transposed = m_transposed(torch.randn(2, 24, 32, 64))
+            >>> output_transposed.shape
+            torch.Size([2, 64, 64, 128])
+
+        Notes:
+            - The module collapses consecutive convolutional operations with the same kernel size (and dilation for the first block) to reduce computational overhead.
+            - When using transposed convolutions via the transpose() method, the block is reconfigured to perform upsampling while preserving the residual structure.
+            - If using 'resize' for the residual path, ensure that pad is set to 0.
         """
+
         super().__init__()
         if x_residual_type=='resize':
             assert pad==0, "when using 'resize' x_residual_type pad must be zero"
@@ -89,11 +183,13 @@ class ResidualBlock(torch.nn.Module):
         
         if not isinstance(out_channels,list):
             out_channels=[out_channels]
+        if len(conv_impl)==1:
+            conv_impl = conv_impl*len(out_channels)
         
         assert len(out_channels)==len(conv_impl),f"len(out_channels) must equal len(conv_impl), {len(out_channels)}!={len(conv_impl)}"
                 
         repeats=len(conv_impl)
-        
+
         self.added_pad = pad
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
         self.normalization = normalization
@@ -104,7 +200,6 @@ class ResidualBlock(torch.nn.Module):
         
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
-        
         norm_impl = get_normalization_from_name(dimensions,normalization)
         
         self.dimensions=dimensions
@@ -113,13 +208,13 @@ class ResidualBlock(torch.nn.Module):
         
         if x_residual_type == 'resize':
             self._resize_x_correct(in_channels, out_channels[-1], stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
+        
         assert x_residual_type in ["conv","resize"],"x_residual_type must be one of ['conv','resize'], but got "+x_residual_type
         self.x_residual_type=x_residual_type
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels[0]
 
         # assert len(dilation) == out_channels[0], f"Number of dilations must match the number of output channels at first dim. {len(dilation)} != {out_channels[0]}"
-
 
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -152,6 +247,7 @@ class ResidualBlock(torch.nn.Module):
             else:
                 out_channels_without_dilation.append(1)
                 kernel_sizes_without_dilation.append(c_size)
+        assert len(kernel_size)==len(dilation), f"len(kernel_size) must equal len(dilation), {len(kernel_size)} != {len(dilation)}"
         
         self.convs = []
         self.norms = []
@@ -181,7 +277,7 @@ class ResidualBlock(torch.nn.Module):
 
                 if ks%2==0:
                     if v==0:
-                        assert stride_!=1,f"there is no way to keep tensor shape when we do stride 1 convolution when using same padding on all dimensions. Given kernel size {ksizes[i]} with stride 1"
+                        assert stride_!=1,f"Impossible to use kernel_size={ks} with stride=1 to get same-shaped tensor"
                     if stride_==1:
                         ks+=1
                 ks_with_dilation = ks + (ks - 1) * (dil[i] - 1)
