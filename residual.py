@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from conv_modules import *
 from common_modules import *
-          
+
 # advanced residual block with modular structure
 class ResidualBlock(torch.nn.Module):
     """
@@ -192,6 +192,9 @@ class ResidualBlock(torch.nn.Module):
 
         self.added_pad = pad
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
+        if self._is_transpose_conv:
+            assert pad==0, f"transpose ResidualBlock works only with pad=0, given pad {pad}!=0"
+
         self.normalization = normalization
         if not isinstance(kernel_size,list):
             kernel_size=[kernel_size]*out_channels[0]
@@ -236,6 +239,7 @@ class ResidualBlock(torch.nn.Module):
                 out_channels_.append(1)
                 kernel_sizes_.append(c_size)
                 dilations_.append(c_dilation)
+                    
 
         # collapse same-shaped conv blocks to reduce computation resources
         # for non-first layers
@@ -272,8 +276,6 @@ class ResidualBlock(torch.nn.Module):
             ksizes = kernel_sizes_ if v==0 else kernel_sizes_without_dilation
             
             outc[torch.argmin(torch.tensor(ksizes))]+=remaining_channels
-            
-            
             
             # Store the conv layers for each output channel with different dilations.
             convs_ = []
