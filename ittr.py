@@ -129,8 +129,8 @@ class DPSA(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
         self.to_out = nn.Conv2d(inner_dim, out_dim, 1)
-        self.fold_out_heads = Rearrange('b (h c) x y -> (b h) c x y', h = self.heads)
-        self.q_probe_reduce = Reduce('b c height width -> b c', 'sum')
+        self.fold_out_heads = Rearrange('b (h c) ... -> (b h) c ...', h = self.heads)
+        self.q_probe_reduce = Reduce('b c .. -> b c', 'sum')
         self.k_sum_over_width = Reduce('b c height width -> b height c', 'sum')
         self.k_sum_over_height = Reduce('b c height width -> b c width', 'sum')
         self.flatten_to_hidden_dim=Rearrange('b d h w -> b (h w) d')

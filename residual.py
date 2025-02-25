@@ -348,7 +348,7 @@ class ResidualBlock(torch.nn.Module):
             dilation=correct_x_dilation,
             stride = stride,
             padding = correct_x_padding+compensation,
-            groups=gcd(in_channels,out_channels)
+            # groups=gcd(in_channels,out_channels)
         )
         
         x_conv_impl = x_corr_conv_impl
