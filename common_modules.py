@@ -3,6 +3,15 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
+
+class ConstModule(torch.nn.Module):
+    """Module that returns constant"""
+    def __init__(self,constant = 0):
+        super().__init__()
+        self.constant=constant
+    def forward(self,x):
+        return self.constant
+
 # change tensor shape
 class Interpolate(torch.nn.Module):
     def __init__(self, scale_factor=None, size=None, mode='nearest', align_corners=None):

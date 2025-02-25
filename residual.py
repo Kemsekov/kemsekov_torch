@@ -35,10 +35,11 @@ class ResidualBlock(torch.nn.Module):
             Dimensionality of the convolution (1D, 2D, or 3D). Default is 2.
         pad (int, optional):
             Additional padding to apply to the convolutional layers.
-        x_residual_type (Literal['conv', 'resize'], optional):
+        x_residual_type (Literal['conv', 'resize', `None`], optional):
             Method for adjusting the input tensor to match the output shape for residual addition.
             - 'conv': Applies a dedicated convolutional correction (with optional normalization) to align the input.
             - 'resize': Uses interpolation-based resizing (nearest neighbor) for spatial adjustment (requires pad to be 0).
+            - `None`: Removes residual connection from module at all
 
     Attributes:
         convs (ModuleList):
@@ -126,10 +127,11 @@ class ResidualBlock(torch.nn.Module):
                 Additional padding to apply to the convolutional layers.
             conv_impl (type or list of type, optional):
                 Convolution implementation(s) to use. This can be a single convolution type (e.g., nn.Conv2d, BSConvU, or nn.ConvTranspose2d) applied to all block repeats, or a list specifying different implementations for each repeat.
-            x_residual_type (Literal['conv', 'resize'], optional):
+            x_residual_type (Literal['conv', 'resize', 'None'], optional):
                 Method for adjusting the input tensor to match the output shape for residual addition.
                 - 'conv': Applies a dedicated convolutional correction (with optional normalization) to align the input.
                 - 'resize': Uses interpolation-based resizing (nearest neighbor) for spatial adjustment (requires pad to be 0).
+                - `None`: Removes residual connection from module
 
         Attributes:
             convs (ModuleList):
@@ -217,8 +219,11 @@ class ResidualBlock(torch.nn.Module):
         
         if x_residual_type == 'resize':
             self._resize_x_correct(in_channels, out_channels[-1], stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
+        if x_residual_type is None:
+            self._no_x_residual()
+            
         
-        assert x_residual_type in ["conv","resize"],"x_residual_type must be one of ['conv','resize'], but got "+x_residual_type
+        assert x_residual_type in ["conv","resize", None],"x_residual_type must be one of ['conv','resize',None], but got "+x_residual_type
         self.x_residual_type=x_residual_type
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels[0]
@@ -321,7 +326,10 @@ class ResidualBlock(torch.nn.Module):
             
         self.convs = torch.nn.ModuleList(self.convs)
         self.norms = torch.nn.ModuleList(self.norms)
-
+    
+    def _no_x_residual(self):
+        self.x_correct = ConstModule()
+        
     def _resize_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         scale = 1/stride
         if self._is_transpose_conv:
