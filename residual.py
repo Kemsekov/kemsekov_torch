@@ -92,10 +92,10 @@ class ResidualBlock(torch.nn.Module):
         stride = 1,                         # stride to use, will reduce/increase output size(dependent on conv2d impl) as multiple of itself
         dilation = 1,                       # List of dilation values for each output channel. Can be an integer
         activation=torch.nn.ReLU,           # Activation function. Always pass constructor
-        normalization : Literal['batch','instance',None] = 'batch',#which normalization to use
-        conv_impl = nn.Conv2d,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
+        normalization : Literal['batch','instance','group',None] = 'batch',#which normalization to use
         dimensions : Literal[1,2,3] = 2,
         pad = 0,
+        conv_impl = None,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
         x_residual_type : Literal['conv','resize'] = 'conv'
     ):
         """
@@ -118,14 +118,14 @@ class ResidualBlock(torch.nn.Module):
                 Dilation rate(s) for the convolutional layers. If provided as a list, its length should match that of kernel_size for the first block.
             activation (callable, optional):
                 Constructor for the activation function (e.g., torch.nn.ReLU). An instance is created during initialization. Default is torch.nn.ReLU.
-            normalization (Literal['batch', 'instance', None], optional):
+            normalization (Literal['batch', 'instance','group', None], optional):
                 Specifies the type of normalization to apply after convolution. Options include 'batch', 'instance', or None. Default is 'batch'.
-            conv_impl (type or list of type, optional):
-                Convolution implementation(s) to use. This can be a single convolution type (e.g., nn.Conv2d, BSConvU, or nn.ConvTranspose2d) applied to all block repeats, or a list specifying different implementations for each repeat.
             dimensions (Literal[1, 2, 3], optional):
                 Dimensionality of the convolution (1D, 2D, or 3D). Default is 2.
             pad (int, optional):
                 Additional padding to apply to the convolutional layers.
+            conv_impl (type or list of type, optional):
+                Convolution implementation(s) to use. This can be a single convolution type (e.g., nn.Conv2d, BSConvU, or nn.ConvTranspose2d) applied to all block repeats, or a list specifying different implementations for each repeat.
             x_residual_type (Literal['conv', 'resize'], optional):
                 Method for adjusting the input tensor to match the output shape for residual addition.
                 - 'conv': Applies a dedicated convolutional correction (with optional normalization) to align the input.
@@ -175,6 +175,13 @@ class ResidualBlock(torch.nn.Module):
         """
 
         super().__init__()
+        
+        x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
+        x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
+        
+        if conv_impl is None:
+            conv_impl=x_corr_conv_impl
+        
         if x_residual_type=='resize':
             assert pad==0, "when using 'resize' x_residual_type pad must be zero"
             
@@ -201,8 +208,7 @@ class ResidualBlock(torch.nn.Module):
         # assert all([v%2==1 for v in kernel_size]), f"kernel size must be odd number, but given kernel size {kernel_size}"
         self.kernel_size = kernel_size
         
-        x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
-        x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
+        
         norm_impl = get_normalization_from_name(dimensions,normalization)
         
         self.dimensions=dimensions
