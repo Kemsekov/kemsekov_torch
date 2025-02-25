@@ -409,7 +409,10 @@ class ResidualBlock(torch.nn.Module):
         
         # if we use stride 1 do not change anything
         conv_impl = [v for v in self.conv_impl]
-        conv_impl[0]=[torch.nn.ConvTranspose1d,torch.nn.ConvTranspose2d,torch.nn.ConvTranspose3d][self.dimensions-1]
+        
+        if self.stride!=1:
+            conv_impl[0]=[torch.nn.ConvTranspose1d,torch.nn.ConvTranspose2d,torch.nn.ConvTranspose3d][self.dimensions-1]
+        
         return ResidualBlock(
             in_channels=self.in_channels,
             out_channels=self.out_channels,
