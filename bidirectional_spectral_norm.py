@@ -155,7 +155,7 @@ class ConvTranspose3dBSN(BaseBSN):
             dilation=self.module.dilation
         )
 
-def BidirectionalSpectralNormalization(module, n_power_iterations=1, eps=1e-12):
+def _BidirectionalSpectralNormalization(module, n_power_iterations=1, eps=1e-12):
     """
     Applies bidirectional spectral normalization to the given module with hardcoded 'weight'.
     """
@@ -179,7 +179,7 @@ def BidirectionalSpectralNormalization(module, n_power_iterations=1, eps=1e-12):
 
 from kemsekov_torch.common_modules import wrap_submodules
 
-def BidirectionalSpectralNormalization_recursive(
+def BidirectionalSpectralNormalization(
     module,
     layers_to_apply=[nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d, nn.Linear],
     n_power_iterations=1,
@@ -192,6 +192,6 @@ def BidirectionalSpectralNormalization_recursive(
         wrap_submodules(
             module,
             l,
-            lambda x: BidirectionalSpectralNormalization(x, n_power_iterations, eps)
+            lambda x: _BidirectionalSpectralNormalization(x, n_power_iterations, eps)
         )
 
