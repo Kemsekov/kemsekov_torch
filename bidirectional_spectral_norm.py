@@ -9,9 +9,6 @@ class BaseBSN(nn.Module):
         weight = self.module.weight  # Direct access to weight
         fan_in, fan_out = self._get_fan_in_fan_out(weight)
         
-
-            
-        
         self.scaling_factor = (2 / fan_in) ** 0.5  # Kaiming scaling
         self.n_power_iterations = n_power_iterations
         self.eps = eps
@@ -23,44 +20,58 @@ class BaseBSN(nn.Module):
         self.gamma = torch.ones(1)
         
         # when possible, make gamma channel-wise to make BSN more flexible
-        if self.is_conv:
+        if self.is_conv or self.is_conv_t:
             # For convolutional layers, gamma is a vector with one value per output channel.
             self.gamma = torch.ones(self.module.out_channels)
             for d in self.module.weight.shape[1:]:
                 self.gamma = self.gamma.unsqueeze(-1)
         if self.is_conv_t:
-            # For transposed convolutional layers, gamma is a vector with one value per input channel.
-            self.gamma = torch.ones(self.module.in_channels)
-            for d in self.module.weight.shape[1:]:
+            self.gamma = torch.ones(self.module.out_channels)  # Match output channels
+            for d in self.module.weight.shape[2:]:  # Skip in_channels and out_channels
                 self.gamma = self.gamma.unsqueeze(-1)
         if hasattr(self.module, 'in_features'):
             # For linear layers, gamma is a vector with one value per input feature.
             self.gamma = torch.ones(self.module.in_features)
         self.gamma = nn.Parameter(self.gamma, requires_grad=True)
         
+        self.forward_shape_for_conv_t = [1, 0, *range(2, weight.dim())]
+        # Update initialization in __init__
         weight_mat_forward, weight_mat_backward = self.reshape_weight(module.weight)
-        # Initialize u and v for both forward and backward passes
-        u_forward = torch.randn(weight_mat_forward.size(0), device=weight_mat_forward.device, dtype=weight_mat_forward.dtype)
-        v_forward = torch.randn(weight_mat_forward.size(1), device=weight_mat_forward.device, dtype=weight_mat_forward.dtype)
-        u_backward = torch.randn(weight_mat_backward.size(0), device=weight_mat_backward.device, dtype=weight_mat_backward.dtype)
-        v_backward = torch.randn(weight_mat_backward.size(1), device=weight_mat_backward.device, dtype=weight_mat_backward.dtype)
+        u_forward = torch.randn(weight_mat_forward.size(0), device=weight_mat_forward.device, dtype=weight_mat_forward.dtype)  # (out_channels)
+        v_forward = torch.randn(weight_mat_forward.size(1), device=weight_mat_forward.device, dtype=weight_mat_forward.dtype)  # (in_channels * k_w * k_h)
+        u_backward = torch.randn(weight_mat_backward.size(0), device=weight_mat_backward.device, dtype=weight_mat_backward.dtype)  # (in_channels * k_w * k_h)
+        v_backward = torch.randn(weight_mat_backward.size(1), device=weight_mat_backward.device, dtype=weight_mat_backward.dtype)  # (out_channels)
         self.register_buffer("u_forward", u_forward)
         self.register_buffer("v_forward", v_forward)
         self.register_buffer("u_backward",u_backward)
         self.register_buffer("v_backward",v_backward)
 
-    def reshape_weight(self,weight):
-        if self.is_conv:
-            # Standard spectral norm for Conv layers
-            weight_mat_forward = weight.view(weight.size(0), -1)  # (c_out, c_in * k_w * k_h)
-            weight_mat_backward = weight.view(-1, weight.size(1))  # (c_out * k_w * k_h, c_in)
+    def reshape_weight(self, weight):
+        """
+        Reshape the weight tensor into two matrices:
+        - weight_mat_forward: used for the forward (operator) pass
+        - weight_mat_backward: its true transpose, corresponding to the adjoint operator
+
+        For standard convolution layers, the weight tensor has shape
+        (out_channels, in_channels, *kernel_dims)
+        and we reshape it to (out_channels, in_channels * prod(kernel_dims)).
+        
+        For conv-transpose layers (shape: (in_channels, out_channels, *kernel_dims)),
+        we first permute the first two dimensions so that the forward mapping is from
+        in_channels to out_channels and then flatten the kernel dimensions.
+        """
+        if self.is_conv and not self.is_conv_t:
+            # For standard convolution layers
+            weight_mat_forward = weight.view(weight.size(0), -1)  # (out_channels, in_channels * k1 * k2 * ...)
+            weight_mat_backward = weight_mat_forward.t()           # (in_channels * k1 * k2 * ..., out_channels)
         elif self.is_conv_t:
-            # For ConvTranspose, weight is (in_channels, out_channels, kernel_size, ...)
-            weight_mat_forward = weight.view(weight.size(0), -1)  # (in_channels, out_channels * k_w * k_h)
-            weight_mat_backward = weight.view(-1, weight.size(1))  # (in_channels * k_w * k_h, out_channels)
-        else:  # Linear layers
-            weight_mat_forward = weight.view(weight.size(0), -1)  # (out_features, in_features)
-            weight_mat_backward = weight.view(-1, weight.size(0))  # (in_features, out_features)
+            # For conv-transpose layers, use the stored permutation order (set in __init__)
+            weight_mat_forward = weight.permute(self.forward_shape_for_conv_t).reshape(weight.size(1), -1)
+            weight_mat_backward = weight_mat_forward.t()
+        else:
+            # For linear layers (weight of shape (out_features, in_features))
+            weight_mat_forward = weight.view(weight.size(0), -1)
+            weight_mat_backward = weight_mat_forward.t()
         return weight_mat_forward, weight_mat_backward
     
     def power_iteration(self, weight):
@@ -69,22 +80,20 @@ class BaseBSN(nn.Module):
 
         # Power iteration for forward spectral norm
         with torch.no_grad():
-            if self.training:
-                for _ in range(self.n_power_iterations):
-                    self.v_forward = F.normalize(weight_mat_forward.t() @ self.u_forward, dim=0, eps=self.eps)
-                    self.u_forward = F.normalize(weight_mat_forward @ self.v_forward, dim=0, eps=self.eps)
+            for _ in range(self.n_power_iterations):
+                self.v_forward = F.normalize(weight_mat_forward.t() @ self.u_forward, dim=0, eps=self.eps)
+                self.u_forward = F.normalize(weight_mat_forward @ self.v_forward, dim=0, eps=self.eps)
             sigma_forward = torch.dot(self.u_forward, weight_mat_forward @ self.v_forward)
 
         # Power iteration for backward spectral norm
         with torch.no_grad():
-            if self.training:
-                for _ in range(self.n_power_iterations):
-                    self.v_backward = F.normalize(weight_mat_backward.t() @ self.u_backward, dim=0, eps=self.eps)
-                    self.u_backward = F.normalize(weight_mat_backward @ self.v_backward, dim=0, eps=self.eps)
+            for _ in range(self.n_power_iterations):
+                self.v_backward = F.normalize(weight_mat_backward.t() @ self.u_backward, dim=0, eps=self.eps)
+                self.u_backward = F.normalize(weight_mat_backward @ self.v_backward, dim=0, eps=self.eps)
             sigma_backward = torch.dot(self.u_backward, weight_mat_backward @ self.v_backward)
 
         # Combine into bidirectional spectral norm
-        sigma = torch.sqrt(sigma_forward ** 2 + sigma_backward ** 2)
+        sigma = 0.5*(sigma_forward + sigma_backward)
         return sigma
 
     def _get_fan_in_fan_out(self, weight):
