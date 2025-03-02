@@ -83,15 +83,37 @@ class UpscaleResize(nn.Module):
         return x
 
 
-def get_normalization_from_name(dimensions,normalization:Literal['batch','instance','group',None]):
-    """Get normalization for given dimensions from it's name"""
-    allowed = ['batch','instance','group',None]
+def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance', 'group', None]):
+    """Get normalization for given dimensions from its name.
+
+    Args:
+        dimensions (int): Dimensionality of the input tensor (1, 2, or 3).
+        normalization (Literal['batch', 'instance', 'group', None]): Type of normalization to apply.
+
+    Returns:
+        callable: A normalization module constructor based on the specified type and dimensions.
+                  For 'group', dynamically determines `num_groups` based on channel count.
+
+    Raises:
+        AssertionError: If `normalization` is not one of ['batch', 'instance', 'group', None].
+    """
+    allowed = ['batch', 'instance', 'group', None]
     assert normalization in allowed, f"normalization parameter must be one of {allowed}"
+    
     norm_type = {
-            "batch":[nn.BatchNorm1d,nn.BatchNorm2d,nn.BatchNorm3d][dimensions-1],
-            "instance":[nn.InstanceNorm1d,nn.InstanceNorm2d,nn.InstanceNorm3d][dimensions-1],
-            "group": lambda ch: nn.GroupNorm(ch//8,ch)
-        }
+        "batch": [nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d][dimensions - 1],
+        "instance": [nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d][dimensions - 1],
+        "group": lambda ch: nn.GroupNorm(
+            num_groups=(
+                ch // 32 if ch % 32 == 0 and ch // 32 >= 2 else
+                ch // 16 if ch % 16 == 0 and ch // 16 >= 2 else
+                ch // 8 if ch % 8 == 0 and ch // 8 >= 2 else
+                ch // 4 if ch % 4 == 0 and ch // 4 >= 2 else
+                ch
+            ),
+            num_channels=ch
+        )
+    }
     
     if normalization is None:
         return nn.Identity
