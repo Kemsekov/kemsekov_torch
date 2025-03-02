@@ -12,22 +12,20 @@ class BaseBSN(nn.Module):
         self.scaling_factor = (2 / fan_in) ** 0.5  # Kaiming scaling
         self.n_power_iterations = n_power_iterations
         self.eps = eps
-        self.u_forward = None
-        self.v_forward = None
-        self.u_backward = None
-        self.v_backward = None
         self.has_bias = hasattr(self.module, 'bias')
         self.is_conv = isinstance(self.module, (nn.Conv1d, nn.Conv2d, nn.Conv3d))
         self.is_conv_t = isinstance(self.module, (nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d))
         
         weight_mat_forward, weight_mat_backward = self.reshape_weight(module.weight)
         # Initialize u and v for both forward and backward passes
-        if self.u_forward is None or self.v_forward is None:
-            self.u_forward = torch.randn(weight_mat_forward.size(0), device=weight_mat_forward.device, dtype=weight_mat_forward.dtype)
-            self.v_forward = torch.randn(weight_mat_forward.size(1), device=weight_mat_forward.device, dtype=weight_mat_forward.dtype)
-            self.u_backward = torch.randn(weight_mat_backward.size(0), device=weight_mat_backward.device, dtype=weight_mat_backward.dtype)
-            self.v_backward = torch.randn(weight_mat_backward.size(1), device=weight_mat_backward.device, dtype=weight_mat_backward.dtype)
-
+        u_forward = torch.randn(weight_mat_forward.size(0), device=weight_mat_forward.device, dtype=weight_mat_forward.dtype)
+        v_forward = torch.randn(weight_mat_forward.size(1), device=weight_mat_forward.device, dtype=weight_mat_forward.dtype)
+        u_backward = torch.randn(weight_mat_backward.size(0), device=weight_mat_backward.device, dtype=weight_mat_backward.dtype)
+        v_backward = torch.randn(weight_mat_backward.size(1), device=weight_mat_backward.device, dtype=weight_mat_backward.dtype)
+        self.register_buffer("u_forward", u_forward)
+        self.register_buffer("v_forward", v_forward)
+        self.register_buffer("u_backward",u_backward)
+        self.register_buffer("v_backward",v_backward)
 
     def reshape_weight(self,weight):
         if self.is_conv:
