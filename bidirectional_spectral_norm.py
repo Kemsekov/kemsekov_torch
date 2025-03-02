@@ -8,13 +8,35 @@ class BaseBSN(nn.Module):
         self.module = module
         weight = self.module.weight  # Direct access to weight
         fan_in, fan_out = self._get_fan_in_fan_out(weight)
-        self.gamma = nn.Parameter(torch.ones(1), requires_grad=True)
+        
+
+            
+        
         self.scaling_factor = (2 / fan_in) ** 0.5  # Kaiming scaling
         self.n_power_iterations = n_power_iterations
         self.eps = eps
         self.has_bias = hasattr(self.module, 'bias')
         self.is_conv = isinstance(self.module, (nn.Conv1d, nn.Conv2d, nn.Conv3d))
         self.is_conv_t = isinstance(self.module, (nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d))
+        
+        # default gamma
+        self.gamma = torch.ones(1)
+        
+        # when possible, make gamma channel-wise to make BSN more flexible
+        if self.is_conv:
+            # For convolutional layers, gamma is a vector with one value per output channel.
+            self.gamma = torch.ones(self.module.out_channels)
+            for d in self.module.weight.shape[1:]:
+                self.gamma = self.gamma.unsqueeze(-1)
+        if self.is_conv_t:
+            # For transposed convolutional layers, gamma is a vector with one value per input channel.
+            self.gamma = torch.ones(self.module.in_channels)
+            for d in self.module.weight.shape[1:]:
+                self.gamma = self.gamma.unsqueeze(-1)
+        if hasattr(self.module, 'in_features'):
+            # For linear layers, gamma is a vector with one value per input feature.
+            self.gamma = torch.ones(self.module.in_features)
+        self.gamma = nn.Parameter(self.gamma, requires_grad=True)
         
         weight_mat_forward, weight_mat_backward = self.reshape_weight(module.weight)
         # Initialize u and v for both forward and backward passes
