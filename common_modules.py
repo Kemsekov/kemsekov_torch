@@ -129,3 +129,39 @@ def gcd(a, b):
     while b:
         a, b = b, a%b
     return a
+
+def wrap_submodules(module,module_type,wrapper):
+    """
+    Applies wrapper to module and/or all it's submodules, that matches
+    `module_type`
+    """
+    # handle list/nn.Sequential/nn.ModuleList
+    try:
+        for i in range(len(module)):
+            el = module[i]
+            if isinstance(el,module_type):
+                module[i]=wrapper(el)
+                continue
+            if isinstance(el,torch.nn.Module):
+                wrap_submodules(el,module_type,wrapper)
+    except Exception as e:
+        pass
+    
+    # handle dictionary-like types
+    try:
+        for key in module:
+            el = module[key]
+            if isinstance(el,module_type):
+                module[key]=wrapper(el)
+                continue
+            wrap_submodules(el,module_type,wrapper)
+    except: pass
+    
+    for d in dir(module):
+        if not hasattr(module,d): continue
+        el = getattr(module,d)
+        if isinstance(el,module_type):
+            setattr(module,d,wrap_submodules(el,wrapper))
+            continue
+        if isinstance(el,torch.nn.Module):
+            wrap_submodules(el,module_type,wrapper)
