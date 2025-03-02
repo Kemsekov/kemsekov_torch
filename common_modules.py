@@ -136,7 +136,16 @@ def wrap_submodules(module,module_type,wrapper):
     `module_type`
     """
     # handle list/nn.Sequential/nn.ModuleList
+    
     try:
+        for i in range(len(module)):
+            el = module[i]
+            module[i] = el
+        is_set_iterable = True
+    except Exception as e:
+        is_set_iterable = False
+        pass
+    if is_set_iterable:
         for i in range(len(module)):
             el = module[i]
             if isinstance(el,module_type):
@@ -144,19 +153,22 @@ def wrap_submodules(module,module_type,wrapper):
                 continue
             if isinstance(el,torch.nn.Module):
                 wrap_submodules(el,module_type,wrapper)
-    except Exception as e:
-        pass
-    
     # handle dictionary-like types
     try:
+        for key in module:
+            el = module[key]
+            module[key]=wrapper(el)
+        is_set_dict = True
+    except: 
+        is_set_dict = False
+        pass
+    if is_set_dict:
         for key in module:
             el = module[key]
             if isinstance(el,module_type):
                 module[key]=wrapper(el)
                 continue
             wrap_submodules(el,module_type,wrapper)
-    except: pass
-    
     for d in dir(module):
         if not hasattr(module,d): continue
         el = getattr(module,d)

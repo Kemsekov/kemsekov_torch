@@ -17,9 +17,9 @@ class BaseBSN(nn.Module):
         self.u_backward = None
         self.v_backward = None
         self.has_bias = hasattr(self.module, 'bias')
-        self.power_iteration(module.weight)
         self.is_conv = isinstance(self.module, (nn.Conv1d, nn.Conv2d, nn.Conv3d))
         self.is_conv_t = isinstance(self.module, (nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d))
+        self.power_iteration(module.weight)
 
     def power_iteration(self, weight):
         """Compute the bidirectional spectral norm using power iteration."""
@@ -173,9 +173,7 @@ def _BidirectionalSpectralNormalization(module, n_power_iterations=1, eps=1e-12)
         return ConvTranspose2dBSN(module, n_power_iterations, eps)
     elif isinstance(module, nn.ConvTranspose3d):
         return ConvTranspose3dBSN(module, n_power_iterations, eps)
-    else:
-        raise ValueError(f"Unsupported module type: {type(module)}")
-
+    return module
 
 from kemsekov_torch.common_modules import wrap_submodules
 
