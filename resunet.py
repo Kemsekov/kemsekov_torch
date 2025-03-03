@@ -193,10 +193,14 @@ class Decoder(torch.nn.Module):
             else:
                 attn = attn(up_out_channels[i],dimensions=dimensions)
             up_i = torch.nn.Sequential(up_i,attn)
-                
+            
             conv1x1_i = [torch.nn.Conv1d,torch.nn.Conv2d,torch.nn.Conv3d][dimensions-1](up_out_channels[i]*2, up_out_channels[i], kernel_size=1)
             ups.append(up_i)
-            conv1x1s.append(conv1x1_i)
+            conv1x1s.append(
+                nn.Sequential(
+                    conv1x1_i,
+                    get_normalization_from_name(dimensions,normalization)(up_out_channels[i]))
+                )
         self.ups =          torch.nn.ModuleList(ups[:-1])
         self.up_1x1_convs = torch.nn.ModuleList(conv1x1s[:-1])
         self.up5 = ups[-1][0]
@@ -218,17 +222,16 @@ class Decoder(torch.nn.Module):
         Returns:
             torch.Tensor: The output tensor after the final upsampling block.
         """
-        x = self.dropout(x)
         # Upsampling path
         for i, (up,conv_1x1) in enumerate(zip(self.ups,self.up_1x1_convs)):
             x = up(x)
+            x=self.dropout(x)
             if len(skip_connections)!=0:
                 # Concatenate the corresponding skip connection (from the downsampling path)
                 skip = skip_connections[-(i + 1)]
                 
                 # here skip needs to be reshaped to x size before making concat
                 x = torch.cat((x, skip), dim=1)
-                x=self.dropout(x)
                 # to decrease num of channels
                 x = conv_1x1(x)
         x = self.up5(x)
@@ -248,7 +251,6 @@ class Decoder(torch.nn.Module):
         Returns:
             torch.Tensor: The output tensor after the final upsampling block.
         """
-        x = self.dropout(x)
         # Upsampling path
         for up in self.ups:
             x = up(x)
