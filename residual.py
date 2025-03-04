@@ -333,7 +333,7 @@ class ResidualBlock(torch.nn.Module):
         
         # re-zero
         if x_residual_type is None:
-            self.alpha = nn.Parameter(torch.tensor(1.0))
+            self.alpha = 1
         else:
             self.alpha = nn.Parameter(torch.tensor(0.0))
     
