@@ -326,6 +326,12 @@ class ResidualBlock(torch.nn.Module):
             
         self.convs = torch.nn.ModuleList(self.convs)
         self.norms = torch.nn.ModuleList(self.norms)
+        
+        # re-zero
+        if x_residual_type is None:
+            self.alpha = nn.Parameter(torch.tensor(1.0))
+        else:
+            self.alpha = nn.Parameter(torch.tensor(0.0))
     
     def _no_x_residual(self):
         self.x_correct = ConstModule()
@@ -402,7 +408,7 @@ class ResidualBlock(torch.nn.Module):
             out_v = torch.cat(results, dim=1)
             out_v = self.activation(norm(out_v))
         
-        return out_v+x_corr
+        return self.alpha*out_v+x_corr
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
     def transpose(self):
         """
