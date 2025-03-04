@@ -97,7 +97,8 @@ class ResidualBlock(torch.nn.Module):
         dimensions : Literal[1,2,3] = 2,
         pad = 0,
         conv_impl = None,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
-        x_residual_type : Literal['conv','resize'] = 'conv'
+        x_residual_type : Literal['conv','resize'] = 'conv',
+        padding_mode="zeros"
     ):
         """
         ResidualBlock
@@ -132,6 +133,7 @@ class ResidualBlock(torch.nn.Module):
                 - 'conv': Applies a dedicated convolutional correction (with optional normalization) to align the input.
                 - 'resize': Uses interpolation-based resizing (nearest neighbor) for spatial adjustment (requires pad to be 0).
                 - `None`: Removes residual connection from module
+            padding_mode: how to pad convolutions. One of ['constant', 'reflect', 'replicate' or 'circular']
 
         Attributes:
             convs (ModuleList):
@@ -200,6 +202,7 @@ class ResidualBlock(torch.nn.Module):
         repeats=len(conv_impl)
 
         self.added_pad = pad
+        self.padding_mode=padding_mode
         self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
         if self._is_transpose_conv:
             assert pad==0, f"transpose ResidualBlock works only with pad=0, given pad {pad}!=0"
@@ -312,7 +315,8 @@ class ResidualBlock(torch.nn.Module):
                     kernel_size=ks,
                     padding = ks_with_dilation // 2 + added_pad + compensation,
                     dilation=dil[i],
-                    stride=stride_
+                    stride=stride_,
+                    padding_mode=padding_mode
                 )
                 if v==0 and self._is_transpose_conv:
                     conv_kwargs['output_padding']=stride_ - 1 + added_pad + compensation
@@ -362,6 +366,7 @@ class ResidualBlock(torch.nn.Module):
             dilation=correct_x_dilation,
             stride = stride,
             padding = correct_x_padding+compensation,
+            padding_mode=self.padding_mode
             # groups=gcd(in_channels,out_channels)
         )
         
@@ -438,5 +443,6 @@ class ResidualBlock(torch.nn.Module):
             conv_impl = conv_impl,
             dimensions=self.dimensions,
             pad=self.added_pad,
-            x_residual_type=self.x_residual_type
+            x_residual_type=self.x_residual_type,
+            padding_mode="zeros"
         )
