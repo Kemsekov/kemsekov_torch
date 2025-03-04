@@ -60,14 +60,14 @@ class BaseBSN(nn.Module):
         we first permute the first two dimensions so that the forward mapping is from
         in_channels to out_channels and then flatten the kernel dimensions.
         """
-        if self.is_conv and not self.is_conv_t:
+        if self.is_conv or self.is_conv_t:
             # For standard convolution layers
             weight_mat_forward = weight.view(weight.size(0), -1)  # (out_channels, in_channels * k1 * k2 * ...)
             weight_mat_backward = weight_mat_forward.t()           # (in_channels * k1 * k2 * ..., out_channels)
-        elif self.is_conv_t:
-            # For conv-transpose layers, use the stored permutation order (set in __init__)
-            weight_mat_forward = weight.permute(self.forward_shape_for_conv_t).reshape(weight.size(1), -1)
-            weight_mat_backward = weight_mat_forward.t()
+        # elif self.is_conv_t:
+        #     # For conv-transpose layers, use the stored permutation order (set in __init__)
+        #     weight_mat_forward = weight.permute(self.forward_shape_for_conv_t).reshape(weight.size(1), -1)
+        #     weight_mat_backward = weight_mat_forward.t()
         else:
             # For linear layers (weight of shape (out_features, in_features))
             weight_mat_forward = weight.view(weight.size(0), -1)
