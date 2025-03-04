@@ -117,6 +117,17 @@ class VectorQuantizer(nn.Module):
         # quantized_x can be used to update codebook
         # ind is id of quantized vectors
         return quantized_x_d,quantized_x, ind
+    
+    def get_codebook_usage(self,threshold=1e-5):
+        """
+        Returns count of used codebooks, 
+        count of codebooks, that relative to most used codebook have usage > `threshold`
+        """
+        usage = self.cluster_counts.average.clone().detach()
+        usage/=usage.max()
+        used = torch.where(usage>threshold)[0].numel()
+        return used
+    
     def update_unused_codebooks(self, amount=0.05, threshold=1e-5):
         """
         Updates codebooks with usage smaller than threshold.
