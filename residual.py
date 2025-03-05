@@ -238,7 +238,6 @@ class ResidualBlock(torch.nn.Module):
         self.stride = stride
         self.dilation = dilation
         self._activation_func = activation
-        self.activation = activation()
         self.repeats = repeats
         self.conv_impl=conv_impl
         
@@ -336,6 +335,19 @@ class ResidualBlock(torch.nn.Module):
             self.alpha = 1
         else:
             self.alpha = nn.Parameter(torch.tensor(0.0))
+        
+        def create_activation(activation_class):
+            # Get the constructor signature
+            signature = inspect.signature(activation_class.__init__)
+            
+            # Check if 'inplace' is in the parameters
+            if 'inplace' in signature.parameters:
+                return activation_class(inplace=True)
+            else:
+                return activation_class()
+        # for each layer create it's own activation function
+        self.activation = nn.ModuleList([create_activation(activation) for i in self.convs])
+        
     
     def _no_x_residual(self):
         self.x_correct = ConstModule()
@@ -405,13 +417,13 @@ class ResidualBlock(torch.nn.Module):
         x_corr = self.x_correct(x)
         out_v = x
         
-        for convs,norm in zip(self.convs,self.norms):
+        for convs,norm,act in zip(self.convs,self.norms,self.activation):
             # Fork to parallelize each convolution operation
             futures = [torch.jit.fork(conv, out_v) for conv in convs]
             # Wait for all operations to complete and collect the results
             results = [torch.jit.wait(future) for future in futures]
             out_v = torch.cat(results, dim=1)
-            out_v = self.activation(norm(out_v))
+            out_v = act(norm(out_v))
         
         return self.alpha*out_v+x_corr
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
