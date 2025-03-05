@@ -97,7 +97,7 @@ class ResidualBlock(torch.nn.Module):
         dimensions : Literal[1,2,3] = 2,
         pad = 0,
         conv_impl = None,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
-        x_residual_type : Literal['conv','resize'] = 'conv',
+        x_residual_type : Literal['conv','resize'] = 'resize',
         padding_mode="zeros"
     ):
         """
@@ -347,7 +347,6 @@ class ResidualBlock(torch.nn.Module):
                 return activation_class()
         # for each layer create it's own activation function
         self.activation = nn.ModuleList([create_activation(activation) for i in self.convs])
-        
     
     def _no_x_residual(self):
         self.x_correct = ConstModule()
