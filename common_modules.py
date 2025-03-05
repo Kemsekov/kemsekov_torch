@@ -81,7 +81,14 @@ class UpscaleResize(nn.Module):
         x = self.channel_adjust(x)
 
         return x
-
+class Residual(torch.nn.Module):
+    """Simple residual block that sums outputs of module with it's input"""
+    def __init__(self,m):
+        super().__init__()
+        self.m = m
+        self.alpha = torch.nn.Parameter(torch.tensor(0.0))
+    def forward(self,x):
+        return self.alpha*self.m(x)+x
 
 def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance', 'group', None]):
     """Get normalization for given dimensions from its name.

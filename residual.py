@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from conv_modules import *
 from common_modules import *
-
+    
 # advanced residual block with modular structure
 class ResidualBlock(torch.nn.Module):
     """
