@@ -76,7 +76,7 @@ class UpscaleResize(nn.Module):
     def forward(self, x):
         # Apply spatial resizing only if scale_factor is not 1
         x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode)
-            
+        
         # Adjust the number of channels
         x = self.channel_adjust(x)
 
