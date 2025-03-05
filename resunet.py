@@ -283,7 +283,8 @@ class ResidualUnet(torch.nn.Module):
         attention = SCSEModule,
         dropout_p=0.5,
         normalization : Literal['batch','instance','group',None] = 'batch',
-        kernel_size=3
+        kernel_size=3,
+        x_residual_type : Literal['conv','resize'] = 'conv'
         ):
         """
         Initializes the ResidualUnet.
@@ -344,7 +345,7 @@ class ResidualUnet(torch.nn.Module):
             dropout_p=dropout_p,
             dimensions=dimensions,
             normalization=normalization,
-            x_residual_type='conv',
+            x_residual_type=x_residual_type,
             kernel_size=kernel_size
         )
         
@@ -356,7 +357,7 @@ class ResidualUnet(torch.nn.Module):
             dropout_p=dropout_p,
             dimensions=dimensions,
             normalization=normalization,
-            x_residual_type='conv',
+            x_residual_type=x_residual_type,
             kernel_size=kernel_size
         )
 
