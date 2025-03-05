@@ -355,7 +355,7 @@ class ResidualBlock(torch.nn.Module):
         scale = 1/stride
         if self._is_transpose_conv:
             scale=stride
-        self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions,normalization=self.normalization,mode='bilinear')
+        self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions,normalization=self.normalization,mode='nearest-exact')
     
     def _conv_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed

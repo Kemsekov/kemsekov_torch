@@ -45,7 +45,7 @@ class UpscaleResize(nn.Module):
         >>> print(output_tensor.shape)
         torch.Size([1, 128, 64, 64])
     """
-    def __init__(self, in_ch, out_ch, scale_factor, dimensions=2, mode='bilinear',normalization='batch'):
+    def __init__(self, in_ch, out_ch, scale_factor, dimensions=2, mode='nearest-exact',normalization='batch'):
         super(UpscaleResize, self).__init__()
         if dimensions not in (1, 2, 3):
             raise ValueError("dimensions must be 1, 2, or 3")
