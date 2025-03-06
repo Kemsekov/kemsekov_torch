@@ -14,28 +14,32 @@ def rotation_trick(e, q):
     Returns:
         torch.Tensor: Transformed tensor q_result of shape (batch, height, width, hidden)
     """
-    # Compute L2 norms along the hidden dimension, shape: (8, 32, 32, 1)
-    e_norm = e.norm(p=2.0, dim=-1, keepdim=True).detach()+1e-6
-    q_norm = q.norm(p=2.0, dim=-1, keepdim=True).detach()+1e-6
+    # Compute norms
+    e_norm = e.norm(p=2.0, dim=-1, keepdim=True).detach() + 1e-6  # (8, 32, 32, 1)
+    q_norm = q.norm(p=2.0, dim=-1, keepdim=True).detach() + 1e-6  # (8, 32, 32, 1)
     
-    # Compute unit vectors, shape: (8, 32, 32, hidden)
-    e_hat = (e / e_norm).detach()
-    q_hat = (q / q_norm).detach()
+    # Unit vectors
+    e_hat = (e / e_norm).detach()  # (8, 32, 32, 5)
+    q_hat = (q / q_norm).detach()  # (8, 32, 32, 5)
     
-    # Compute scaling factor lambda, shape: (8, 32, 32, 1)
-    lmbda = q_norm / e_norm
+    # Scaling factor
+    lambda_val = q_norm / e_norm  # (8, 32, 32, 1)
     
-    # Compute reflection direction r, shape: (8, 32, 32, hidden)
-    r = e_hat + q_hat
-    r/=r.norm(p=2.0, dim=-1, keepdim=True)
+    # Correct reflection vector
+    e_hat_plus_q_hat = e_hat + q_hat  # (8, 32, 32, 5)
+    norm_e_hat_plus_q_hat = e_hat_plus_q_hat.norm(p=2.0, dim=-1, keepdim=True).detach() + 1e-6  # (8, 32, 32, 1)
+    r = (e_hat_plus_q_hat / norm_e_hat_plus_q_hat).detach()  # (8, 32, 32, 5)
     
-    # Compute outer products, shape: (8, 32, 32, hidden, hidden)
-    r_rT = r.unsqueeze(-1) * r.unsqueeze(-2)
-    q_hat_e_hatT = q_hat.unsqueeze(-1) * e_hat.unsqueeze(-2)
+    # Compute r^T e directly as dot product
+    r_dot_e = (r * e).sum(dim=-1, keepdim=True)  # (8, 32, 32, 1)
     
-    e_unsqueeze = e.unsqueeze(-1)
-    # Apply rotation to e, shape: (8, 32, 32, hidden)
-    q_result = lmbda*(e_unsqueeze-2*r_rT @ e_unsqueeze+2*q_hat_e_hatT @ e_unsqueeze).squeeze(-1)
+    # Expression terms (keep shapes consistent)
+    r_r_e = r * r_dot_e  # (8, 32, 32, 5) * (8, 32, 32, 1) -> (8, 32, 32, 5)
+    q_hat_e_norm = q_hat * e_norm  # (8, 32, 32, 5) * (8, 32, 32, 1) -> (8, 32, 32, 5)
+    
+    # Compute expression
+    expression = e - 2 * r_r_e + 2 * q_hat_e_norm  # (8, 32, 32, 5)
+    q_result = lambda_val * expression  # (8, 32, 32, 1) * (8, 32, 32, 5) -> (8, 32, 32, 5)
     
     return q_result
 
