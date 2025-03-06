@@ -90,21 +90,14 @@ class VectorQuantizer(nn.Module):
 
         # Dictionary embeddings.
         e_i_ts = torch.FloatTensor(embedding_dim, num_embeddings)
-        self.init_tensor(e_i_ts)
         
         self.register_buffer("e_i_ts", e_i_ts)
 
         # Exponential moving average of the cluster counts.
-        self.cluster_counts = SonnetExponentialMovingAverage(decay, (num_embeddings,),torch.ones(num_embeddings)*0.1)
+        self.cluster_counts = SonnetExponentialMovingAverage(decay, (num_embeddings,))
         # Exponential moving average of the embeddings.
-        self.embeddings = SonnetExponentialMovingAverage(decay, e_i_ts.shape,e_i_ts.clone())
+        self.embeddings = SonnetExponentialMovingAverage(decay, e_i_ts.shape)
     
-    def init_tensor(self,t : torch.Tensor):
-        with torch.no_grad():
-            t_n = F.normalize(torch.rand(t.shape).to(t.device),dim=0,p=2.0)*self.embedding_scale
-            # t_n = torch.rand(t.shape).to(t.device)*self.embedding_scale
-            t.zero_()
-            t+=t_n
     
     def forward(self, x):
         # x is of shape (batch,emb_dim,height,width)
@@ -189,27 +182,3 @@ class VectorQuantizer(nn.Module):
         usage/=usage.max()
         used = torch.where(usage>threshold)[0].numel()
         return used
-    
-    @torch.jit.export
-    def update_unused_codebooks(self, amount : float=0.05, threshold : float=1e-5):
-        """
-        Updates codebooks with usage smaller than threshold.
-        threshold equals to a fraction of a max usage, so threshold=0.01 means
-        tokens that is used 100 times less frequent than than most used token
-        """
-        # Determine the maximum number of embeddings to reinitialize.
-        num_to_reinit = int(self.num_embeddings * amount)
-        counts = self.cluster_counts.average.detach().clone()
-        counts/=counts.max()
-        
-        unused_indices = torch.where(counts < threshold)[0][:num_to_reinit]
-        
-        with torch.no_grad():
-            self.init_tensor(self.e_i_ts[:,unused_indices])
-            
-            self.cluster_counts.average[unused_indices]=0
-            self.cluster_counts.hidden[unused_indices]=0
-
-            self.embeddings.hidden[:,unused_indices]=0
-            self.embeddings.average[:,unused_indices]=0
-        
