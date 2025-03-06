@@ -123,10 +123,6 @@ class VectorQuantizer(nn.Module):
         )
         permute_to_orig = [0, len(x.shape)-1]+[1, 2, 3][:len(dimensions_axis)]
         encoding_indices = distances.argmin(1)
-        ind = encoding_indices.view([x.shape[0]] + list(x.shape[2:]))
-        quantized_x = F.embedding(
-            ind, self.e_i_ts.transpose(0, 1)
-        )
         
         if self.training:
             with torch.no_grad():
@@ -157,6 +153,11 @@ class VectorQuantizer(nn.Module):
         #same
         # print(x_permute.shape)
         # print(quantized_x.shape)
+        
+        ind = encoding_indices.view([x.shape[0]] + list(x.shape[2:]))
+        quantized_x = F.embedding(
+            ind, self.e_i_ts.transpose(0, 1)
+        )
         quantized_x_d=rotation_trick(x_permute,quantized_x)
         quantized_x=quantized_x.permute(permute_to_orig)
         quantized_x_d=quantized_x_d.permute(permute_to_orig)
@@ -166,8 +167,20 @@ class VectorQuantizer(nn.Module):
         # quantized_x can be used to update codebook
         # ind is id of quantized vectors
         return quantized_x_d,quantized_x, ind
+    @torch.jit.export
+    def decode_from_ind(self,ind):
+        """
+        Decodes tensor from indices
+        """
+        dimensions_axis = [2,3,4][:len(ind.shape)-1]
+        permute_to_orig = [0, len(ind.shape)]+[1, 2, 3][:len(dimensions_axis)]
+        quantized_x = F.embedding(
+            ind, self.e_i_ts.transpose(0, 1)
+        )
+        return quantized_x.permute(permute_to_orig)
     
-    def get_codebook_usage(self,threshold=1e-5):
+    @torch.jit.export
+    def get_codebook_usage(self,threshold : float=1e-5):
         """
         Returns count of used codebooks, 
         count of codebooks, that relative to most used codebook have usage > `threshold`
@@ -177,7 +190,8 @@ class VectorQuantizer(nn.Module):
         used = torch.where(usage>threshold)[0].numel()
         return used
     
-    def update_unused_codebooks(self, amount=0.05, threshold=1e-5):
+    @torch.jit.export
+    def update_unused_codebooks(self, amount : float=0.05, threshold : float=1e-5):
         """
         Updates codebooks with usage smaller than threshold.
         threshold equals to a fraction of a max usage, so threshold=0.01 means

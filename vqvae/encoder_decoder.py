@@ -2,14 +2,19 @@ from typing import List
 import torch
 from kemsekov_torch.residual import ResidualBlock
 import torch.nn as nn
+# Three layers hierarchical encoder and decoder
 
 class Encoder(nn.Module):
-    def __init__(self,h_dim,internal_dim,res_h_dim,num_residual_layers=2,normalization = 'batch',dimensions=2):
+    def __init__(self,input_channels,h_dim,internal_dim,res_h_dim,num_residual_layers=2,normalization = 'batch',dimensions=2):
+        """
+        input_channels - input channels
+        
+        """
         super().__init__()
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         self.enc = nn.Sequential(
             # nn.Dropout(0.1), #denoise autoencoder
-            ResidualBlock(3,h_dim//2,stride=2,kernel_size=4,normalization=normalization,dimensions=dimensions),
+            ResidualBlock(input_channels,h_dim//2,stride=2,kernel_size=4,normalization=normalization,dimensions=dimensions),
             ResidualBlock(h_dim//2,internal_dim,stride=2,kernel_size=4,normalization=normalization,dimensions=dimensions),
             
             # residual stack
@@ -32,16 +37,16 @@ class Encoder(nn.Module):
         m = self.middle(x)
         b = self.bottom(m)
         m = self.middle_out(m)
-        
         return [h,m,b]
+
 class Decoder(nn.Module):
-    def __init__(self,h_dim,internal_dim,res_h_dim,num_residual_layers=2,normalization = 'batch',dimensions=2):
+    def __init__(self,output_channels,h_dim,internal_dim,res_h_dim,num_residual_layers=2,normalization = 'batch',dimensions=2):
         super().__init__()
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
-        self.high_conv = ResidualBlock(h_dim,h_dim,normalization=None,dimensions=dimensions)
-        self.middle_upscale = ResidualBlock(h_dim,h_dim,kernel_size=4,stride=2,normalization=None,dimensions=dimensions).transpose()
+        self.high_conv = ResidualBlock(h_dim,h_dim,normalization=normalization,dimensions=dimensions)
+        self.middle_upscale = ResidualBlock(h_dim,h_dim,kernel_size=4,stride=2,normalization=normalization,dimensions=dimensions).transpose()
         self.low_upscale = nn.Sequential(
-            ResidualBlock(h_dim,h_dim,kernel_size=4,stride=2,normalization=None,dimensions=dimensions).transpose(),
+            ResidualBlock(h_dim,h_dim,kernel_size=4,stride=2,normalization=normalization,dimensions=dimensions).transpose(),
             ResidualBlock(h_dim,h_dim,kernel_size=4,stride=2,normalization=normalization,dimensions=dimensions).transpose()
         )
         
@@ -56,7 +61,7 @@ class Decoder(nn.Module):
             ],
             ResidualBlock(internal_dim,h_dim//2,stride=2,kernel_size=4,normalization=normalization,dimensions=dimensions).transpose(),
             ResidualBlock(h_dim//2,h_dim//4,stride=2,kernel_size=4,normalization=normalization,dimensions=dimensions).transpose(),
-            conv(h_dim//4,3,kernel_size=1)
+            conv(h_dim//4,output_channels,kernel_size=1)
         )
 
     def forward(self,x : List[torch.Tensor]):
