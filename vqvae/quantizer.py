@@ -95,9 +95,9 @@ class VectorQuantizer(nn.Module):
         self.register_buffer("e_i_ts", e_i_ts)
 
         # Exponential moving average of the cluster counts.
-        self.cluster_counts = SonnetExponentialMovingAverage(decay, (num_embeddings,))
+        self.cluster_counts = SonnetExponentialMovingAverage(decay, (num_embeddings,),torch.ones(num_embeddings))
         # Exponential moving average of the embeddings.
-        self.embeddings = SonnetExponentialMovingAverage(decay, e_i_ts.shape)
+        self.embeddings = SonnetExponentialMovingAverage(decay, e_i_ts.shape,e_i_ts.clone())
     
     def init_tensor(self,t : torch.Tensor):
         with torch.no_grad():
