@@ -80,8 +80,8 @@ class VectorQuantizer(nn.Module):
         # See Section 3 of "Neural Discrete Representation Learning" and:
         # https://github.com/deepmind/sonnet/blob/v2/sonnet/src/nets/vqvae.py#L142.
 
-        self.embedding_dim = embedding_dim
-        self.num_embeddings = num_embeddings
+        self.embedding_dim : int = embedding_dim
+        self.num_embeddings : int = num_embeddings
         # Weight for the exponential moving average.
         self.decay = decay
         # Small constant to avoid numerical instability in embedding updates.
