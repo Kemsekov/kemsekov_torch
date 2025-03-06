@@ -101,7 +101,7 @@ class VectorQuantizer(nn.Module):
     
     def init_tensor(self,t : torch.Tensor):
         with torch.no_grad():
-            t_n = F.normalize(torch.rand(t.shape).to(t.device),dim=1,p=2.0)*self.embedding_scale
+            t_n = F.normalize(torch.rand(t.shape).to(t.device),dim=0,p=2.0)*self.embedding_scale
             # t_n = torch.rand(t.shape).to(t.device)*self.embedding_scale
             t.zero_()
             t+=t_n
