@@ -3,16 +3,56 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+def rotation_trick(e, q):
+    """
+    Applies the rotation trick to transform e into q for VQVAE.
+    
+    Args:
+        e (torch.Tensor): Input tensor of shape (batch, height, width, hidden), e.g., (8, 32, 32, hidden)
+        q (torch.Tensor): Target tensor of shape (batch, height, width, hidden), e.g., (8, 32, 32, hidden)
+    
+    Returns:
+        torch.Tensor: Transformed tensor q_result of shape (batch, height, width, hidden)
+    """
+    # Compute L2 norms along the hidden dimension, shape: (8, 32, 32, 1)
+    e_norm = e.norm(p=2.0, dim=-1, keepdim=True).detach()+1e-6
+    q_norm = q.norm(p=2.0, dim=-1, keepdim=True).detach()+1e-6
+    
+    # Compute unit vectors, shape: (8, 32, 32, hidden)
+    e_hat = (e / e_norm).detach()
+    q_hat = (q / q_norm).detach()
+    
+    # Compute scaling factor lambda, shape: (8, 32, 32, 1)
+    lmbda = q_norm / e_norm
+    
+    # Compute reflection direction r, shape: (8, 32, 32, hidden)
+    r = e_hat + q_hat
+    r/=r.norm(p=2.0, dim=-1, keepdim=True)
+    
+    # Compute outer products, shape: (8, 32, 32, hidden, hidden)
+    r_rT = r.unsqueeze(-1) * r.unsqueeze(-2)
+    q_hat_e_hatT = q_hat.unsqueeze(-1) * e_hat.unsqueeze(-2)
+    
+    e_unsqueeze = e.unsqueeze(-1)
+    # Apply rotation to e, shape: (8, 32, 32, hidden)
+    q_result = lmbda*(e_unsqueeze-2*r_rT @ e_unsqueeze+2*q_hat_e_hatT @ e_unsqueeze).squeeze(-1)
+    
+    return q_result
+
 class SonnetExponentialMovingAverage(nn.Module):
     # See: https://github.com/deepmind/sonnet/blob/5cbfdc356962d9b6198d5b63f0826a80acfdf35b/sonnet/src/moving_averages.py#L25.
     # They do *not* use the exponential moving average updates described in Appendix A.1
     # of "Neural Discrete Representation Learning".
-    def __init__(self, decay, shape):
+    def __init__(self, decay, shape,init_hidden = None,init_average = None):
         super().__init__()
         self.decay = decay
         self.counter = 0
-        self.register_buffer("hidden", torch.zeros(*shape))
-        self.register_buffer("average", torch.zeros(*shape))
+        if init_hidden is None:
+            init_hidden = torch.zeros(*shape)
+        if init_average is None:
+            init_average = torch.zeros(*shape)
+        self.register_buffer("hidden", init_hidden)
+        self.register_buffer("average", init_average)
 
     def update(self, value):
         if self.training:
@@ -52,16 +92,15 @@ class VectorQuantizer(nn.Module):
 
         # Exponential moving average of the cluster counts.
         self.cluster_counts = SonnetExponentialMovingAverage(decay, (num_embeddings,))
-        
         # Exponential moving average of the embeddings.
         self.embeddings = SonnetExponentialMovingAverage(decay, e_i_ts.shape)
-        self.batch_norm = nn.BatchNorm1d(embedding_dim)
     
-    def init_tensor(self,t):
+    def init_tensor(self,t : torch.Tensor):
         with torch.no_grad():
-            t_n = F.normalize(torch.rand(t.shape).to(t.device),dim=0,p=2.0)*self.embedding_scale
+            t_n = F.normalize(torch.rand(t.shape).to(t.device),dim=1,p=2.0)*self.embedding_scale
             # t_n = torch.rand(t.shape).to(t.device)*self.embedding_scale
-            t+=t_n-t
+            t.zero_()
+            t+=t_n
     
     def forward(self, x):
         # x is of shape (batch,emb_dim,height,width)
@@ -70,20 +109,20 @@ class VectorQuantizer(nn.Module):
         emb_axis = 1
         dimensions_axis = [2,3,4][:len(x.shape)-2]
         
-        flat_x = x.permute([batch_axis] + dimensions_axis + [emb_axis]).reshape(-1, self.embedding_dim)
+        x_permute = x.permute([batch_axis] + dimensions_axis + [emb_axis])
+        flat_x = x_permute.reshape(-1, self.embedding_dim)
 
         distances = (
             (flat_x ** 2).sum(1, keepdim=True)
             - 2 * flat_x @ self.e_i_ts
             + (self.e_i_ts ** 2).sum(0, keepdim=True)
         )
+        permute_to_orig = [0, len(x.shape)-1]+[1, 2, 3][:len(dimensions_axis)]
         encoding_indices = distances.argmin(1)
         ind = encoding_indices.view([x.shape[0]] + list(x.shape[2:]))
         quantized_x = F.embedding(
             ind, self.e_i_ts.transpose(0, 1)
-        ).permute([0, len(x.shape)-1]+[1, 2, 3][:len(dimensions_axis)])
-
-        quantized_x_d = x + (quantized_x - x).detach()
+        )
         
         if self.training:
             with torch.no_grad():
@@ -111,7 +150,13 @@ class VectorQuantizer(nn.Module):
                     * N_i_ts_sum
                 )
                 self.e_i_ts = self.embeddings.average / N_i_ts_stable.unsqueeze(0)
-
+        #same
+        # print(x_permute.shape)
+        # print(quantized_x.shape)
+        quantized_x_d=rotation_trick(x_permute,quantized_x)
+        quantized_x=quantized_x.permute(permute_to_orig)
+        quantized_x_d=quantized_x_d.permute(permute_to_orig)
+        
         # return detached quantized and just quantized
         # quantized_x_d can be passed to decoder,
         # quantized_x can be used to update codebook
