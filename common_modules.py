@@ -45,20 +45,10 @@ class UpscaleResize(nn.Module):
         >>> print(output_tensor.shape)
         torch.Size([1, 128, 64, 64])
     """
-    def __init__(self, in_ch, out_ch, scale_factor, dimensions=2, mode=None,normalization='batch'):
+    def __init__(self, in_ch, out_ch, scale_factor, dimensions=2, mode='nearest-exact',normalization='batch'):
         super(UpscaleResize, self).__init__()
         if dimensions not in (1, 2, 3):
             raise ValueError("dimensions must be 1, 2, or 3")
-        
-        if scale_factor>1 and mode is None:
-            if dimensions==2:
-                mode = "bilinear"
-            elif dimensions==3:
-                mode = "trilinear"
-            else:
-                mode = "linear"
-        else:
-            mode = 'nearest-exact'
             
         self.dimensions = dimensions
         self.scale_factor = float(scale_factor)
@@ -85,7 +75,8 @@ class UpscaleResize(nn.Module):
 
     def forward(self, x):
         # Apply spatial resizing only if scale_factor is not 1
-        x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode)
+        if self.scale_factor!=1:
+            x = F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode)
         
         # Adjust the number of channels
         x = self.channel_adjust(x)

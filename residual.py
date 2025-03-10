@@ -98,7 +98,7 @@ class ResidualBlock(torch.nn.Module):
         pad = 0,
         conv_impl = None,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
         x_residual_type : Literal['conv','resize'] = 'resize',
-        padding_mode="zeros"
+        padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate"
     ):
         """
         ResidualBlock
@@ -268,6 +268,7 @@ class ResidualBlock(torch.nn.Module):
         
         self.convs = []
         self.norms = []
+        self.input_resize=torch.nn.Identity()
         for v in range(repeats):
             # on first repeat block make sure to cast input tensor to output shape
             # and on further repeats just make same-shaped transformations
@@ -317,9 +318,21 @@ class ResidualBlock(torch.nn.Module):
                     stride=stride_,
                     padding_mode=padding_mode
                 )
-                if v==0 and self._is_transpose_conv:
-                    conv_kwargs['output_padding']=stride_ - 1 + added_pad + compensation
-                convs_.append(conv_impl[v](**conv_kwargs))
+                # for downsampling use convolutions to extract features
+                if not self._is_transpose_conv:
+                    if v==0 and self._is_transpose_conv:
+                        conv_kwargs['output_padding']=stride_ - 1 + added_pad + compensation
+                    convs_.append(conv_impl[v](**conv_kwargs))
+                
+                # for up-sampling use resize
+                if self._is_transpose_conv:
+                    conv_kwargs['stride']=1
+                    convs_.append(x_corr_conv_impl(**conv_kwargs))
+                    scale = 1/stride_
+                    if self._is_transpose_conv:
+                        scale=stride_
+                    if v==0 and self._is_transpose_conv:
+                        self.input_resize = UpscaleResize(in_ch,in_ch,scale,self.dimensions,normalization=self.normalization,mode='nearest-exact')
 
             conv = torch.nn.ModuleList(convs_)
             self.convs.append(conv)
@@ -356,7 +369,7 @@ class ResidualBlock(torch.nn.Module):
         if self._is_transpose_conv:
             scale=stride
 
-        self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions,normalization=self.normalization)
+        self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions,normalization=self.normalization,mode='nearest-exact')
     
     def _conv_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
@@ -415,7 +428,7 @@ class ResidualBlock(torch.nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, out_channels, new_height, new_width).
         """
         x_corr = self.x_correct(x)
-        out_v = x
+        out_v = self.input_resize(x)
         
         for convs,norm,act in zip(self.convs,self.norms,self.activation):
             # Fork to parallelize each convolution operation
