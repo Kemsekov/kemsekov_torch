@@ -127,8 +127,7 @@ class ResidualBlock(torch.nn.Module):
                 Dimensionality of the convolution (1D, 2D, or 3D). Default is 2.
             pad (int, optional):
                 Additional padding to apply to the convolutional layers.
-            conv_impl (type or list of type, optional):
-                Convolution implementation(s) to use. This can be a single convolution type (e.g., nn.Conv2d, BSConvU, or nn.ConvTranspose2d) applied to all block repeats, or a list specifying different implementations for each repeat.
+            is_transpose: is transpose convolutions
             x_residual_type (Literal['conv', 'resize', 'None'], optional):
                 Method for adjusting the input tensor to match the output shape for residual addition.
                 - 'conv': Applies a dedicated convolutional correction (with optional normalization) to align the input.
@@ -272,7 +271,7 @@ class ResidualBlock(torch.nn.Module):
         self.norms = []
         self.input_resize=nn.ModuleList([torch.nn.Identity()]*repeats)
         
-        assert stride%2==0, f"stride must be even. given stride={stride}"
+        assert stride%2==0 or stride==1, f"stride must be even or 1. given stride={stride}"
         strides = [1]*repeats
         
         stride_ind=0
