@@ -1,4 +1,5 @@
 import inspect
+import math
 from typing import Literal
 import torch
 import torch.nn as nn
@@ -96,7 +97,7 @@ class ResidualBlock(torch.nn.Module):
         normalization : Literal['batch','instance','group',None] = 'batch',#which normalization to use
         dimensions : Literal[1,2,3] = 2,
         pad = 0,
-        conv_impl = None,              #conv2d implementation. BSConvU torch.nn.Conv2d or torch.nn.ConvTranspose2d or whatever you want
+        is_transpose = False,
         x_residual_type : Literal['conv','resize'] = 'resize',
         padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate"
     ):
@@ -183,35 +184,25 @@ class ResidualBlock(torch.nn.Module):
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
         
-        if conv_impl is None:
-            conv_impl=x_corr_conv_impl
-        
         if x_residual_type=='resize':
             assert pad==0, "when using x_residual_type='resize' pad must be zero"
             
-        if not isinstance(conv_impl,list):
-            conv_impl=[conv_impl]
-        
         if not isinstance(out_channels,list):
             out_channels=[out_channels]
-        if len(conv_impl)==1:
-            conv_impl = conv_impl*len(out_channels)
-        
-        
-        assert len(out_channels)==len(conv_impl),f"len(out_channels) must equal len(conv_impl), {len(out_channels)}!={len(conv_impl)}"
                 
-        repeats=len(conv_impl)
+        repeats=len(out_channels)
 
         self.added_pad = pad
         self.padding_mode=padding_mode
-        self._is_transpose_conv = "output_padding" in inspect.signature(conv_impl[0].__init__).parameters
+        
+        self._is_transpose_conv = is_transpose
         if self._is_transpose_conv:
             assert pad==0, f"transpose ResidualBlock works only with pad=0, given pad {pad}!=0"
 
         self.normalization = normalization
         if not isinstance(kernel_size,list):
             kernel_size=[kernel_size]
-        # assert all([v%2==1 for v in kernel_size]), f"kernel size must be odd number, but given kernel size {kernel_size}"
+
         self.kernel_size = kernel_size
         
         
@@ -247,7 +238,6 @@ class ResidualBlock(torch.nn.Module):
         self.dilation = dilation
         self._activation_func = activation
         self.repeats = repeats
-        self.conv_impl=conv_impl
         
         # collapse same-shaped conv blocks to reduce computation resources
         out_channels_ = [1]
@@ -280,12 +270,21 @@ class ResidualBlock(torch.nn.Module):
         
         self.convs = []
         self.norms = []
-        self.input_resize=torch.nn.Identity()
+        self.input_resize=nn.ModuleList([torch.nn.Identity()]*repeats)
+        
+        assert stride%2==0, f"stride must be even. given stride={stride}"
+        strides = [1]*repeats
+        
+        stride_ind=0
+        while math.prod(strides)<stride:
+            strides[stride_ind%repeats]*=2
+            stride_ind+=1
+        
         for v in range(repeats):
             # on first repeat block make sure to cast input tensor to output shape
             # and on further repeats just make same-shaped transformations
             in_ch = in_channels if v==0 else out_channels[v-1]
-            stride_ = stride if v==0 else 1
+            stride_ = strides[v]
             added_pad = pad if v==0 else 0
 
             # do not change
@@ -339,22 +338,23 @@ class ResidualBlock(torch.nn.Module):
                         conv_kwargs['padding'] = (conv_kwargs['kernel_size']  + (conv_kwargs['kernel_size']  - 1) * (dil[i] - 1))//2
                     
                     convs_.append(x_corr_conv_impl(**conv_kwargs))
-                        
-                    if v==0 and self._is_transpose_conv:
-                        self.input_resize = ResizeConv(
-                            in_ch,
-                            in_ch,
-                            scale,
-                            self.dimensions,
-                            normalization=self.normalization,
-                            mode='nearest-exact'
-                        )
+                    
+                    self.input_resize[v] = ResizeConv(
+                        in_ch,
+                        in_ch,
+                        scale,
+                        self.dimensions,
+                        normalization=self.normalization,
+                        mode='nearest-exact'
+                    )
                     continue
                 
+                conv__ = x_corr_conv_impl
                 # for downsampling use convolutions to extract features
-                if v==0 and self._is_transpose_conv:
+                if stride_!=1 and self._is_transpose_conv:
                     conv_kwargs['output_padding']=stride_ - 1 + added_pad + compensation
-                convs_.append(conv_impl[v](**conv_kwargs))
+                    conv__ = x_corr_conv_impl_T
+                convs_.append(conv__(**conv_kwargs))
                 
             conv = torch.nn.ModuleList(convs_)
             self.convs.append(conv)
@@ -449,9 +449,10 @@ class ResidualBlock(torch.nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, out_channels, new_height, new_width).
         """
         x_corr = self.x_correct(x)
-        out_v = self.input_resize(x)
+        out_v = x
         
-        for convs,norm,act in zip(self.convs,self.norms,self.activation):
+        for convs,norm,act,resize in zip(self.convs,self.norms,self.activation,self.input_resize):
+            out_v=resize(out_v)
             # Fork to parallelize each convolution operation
             futures = [torch.jit.fork(conv, out_v) for conv in convs]
             # Wait for all operations to complete and collect the results
@@ -471,13 +472,6 @@ class ResidualBlock(torch.nn.Module):
         Returns:
             ResidualBlock: A new `ResidualBlock` instance configured for transposed convolutions.
         """
-        
-        # if we use stride 1 do not change anything
-        conv_impl = [v for v in self.conv_impl]
-        
-        if self.stride!=1:
-            conv_impl[0]=[torch.nn.ConvTranspose1d,torch.nn.ConvTranspose2d,torch.nn.ConvTranspose3d][self.dimensions-1]
-        
         return ResidualBlock(
             in_channels=self.in_channels,
             out_channels=self.out_channels,
@@ -486,7 +480,7 @@ class ResidualBlock(torch.nn.Module):
             dilation = self.dilation,
             activation = self._activation_func,
             normalization=self.normalization,
-            conv_impl = conv_impl,
+            is_transpose=True,
             dimensions=self.dimensions,
             pad=self.added_pad,
             x_residual_type=self.x_residual_type,
