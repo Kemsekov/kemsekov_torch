@@ -336,9 +336,8 @@ class ResidualBlock(torch.nn.Module):
                     
                     scale=stride_
                     if ks%2==0:
-                        conv_kwargs['padding'] += 1
                         conv_kwargs['kernel_size'] += 1
-                        
+                        conv_kwargs['padding'] = (conv_kwargs['kernel_size']  + (conv_kwargs['kernel_size']  - 1) * (dil[i] - 1))//2
                     
                     convs_.append(x_corr_conv_impl(**conv_kwargs))
                         
