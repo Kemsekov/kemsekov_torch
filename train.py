@@ -426,7 +426,7 @@ def update_metric(train_loader, best_train_metric, train_metric_history, metric)
             train_metric_history[m]=[]
         if m not in best_train_metric:
             best_train_metric[m]=-1e10
-        train_metric_history[m].append(round(train_metric[m],5))
+        train_metric_history[m].append(round(float(train_metric[m]),5))
             # update train metric we see improvements
         if train_metric[m]>best_train_metric[m]:
             best_train_metric[m]=train_metric[m]
