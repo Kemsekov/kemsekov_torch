@@ -187,7 +187,7 @@ class ResidualBlock(torch.nn.Module):
             conv_impl=x_corr_conv_impl
         
         if x_residual_type=='resize':
-            assert pad==0, "when using 'resize' x_residual_type pad must be zero"
+            assert pad==0, "when using x_residual_type='resize' pad must be zero"
             
         if not isinstance(conv_impl,list):
             conv_impl=[conv_impl]
@@ -245,6 +245,7 @@ class ResidualBlock(torch.nn.Module):
         out_channels_ = [1]
         kernel_sizes_ = [kernel_size[0]]
         dilations_ = [dilation[0]]
+        
         for c_size,c_dilation in list(zip(kernel_size,dilation))[1:]:
             if c_size==kernel_sizes_[-1] and c_dilation==dilations_[-1]:
                 out_channels_[-1]+=1
@@ -252,13 +253,17 @@ class ResidualBlock(torch.nn.Module):
                 out_channels_.append(1)
                 kernel_sizes_.append(c_size)
                 dilations_.append(c_dilation)
-                    
 
         # collapse same-shaped conv blocks to reduce computation resources
         # for non-first layers
         out_channels_without_dilation = [1]
         kernel_sizes_without_dilation = [kernel_size[0]]
+        if kernel_sizes_without_dilation[0]%2==0:
+            kernel_sizes_without_dilation[0]+=1
+            
         for c_size in list(kernel_size)[1:]:
+            if c_size%2==0:
+                c_size+=1
             if c_size==kernel_sizes_without_dilation[-1]:
                 out_channels_without_dilation[-1]+=1
             else:
@@ -288,7 +293,6 @@ class ResidualBlock(torch.nn.Module):
             
             # do not change
             ksizes = kernel_sizes_ if v==0 else kernel_sizes_without_dilation
-            
             outc[torch.argmin(torch.tensor(ksizes))]+=remaining_channels
             
             # Store the conv layers for each output channel with different dilations.
@@ -300,8 +304,7 @@ class ResidualBlock(torch.nn.Module):
                 if ks%2==0:
                     if v==0:
                         assert stride_!=1,f"Impossible to use kernel_size={ks} with stride=1 to get same-shaped tensor"
-                    if stride_==1:
-                        ks+=1
+
                 ks_with_dilation = ks + (ks - 1) * (dil[i] - 1)
                 
                 if ks_with_dilation%2==0:
@@ -318,22 +321,35 @@ class ResidualBlock(torch.nn.Module):
                     stride=stride_,
                     padding_mode=padding_mode
                 )
-                # for downsampling use convolutions to extract features
-                if not self._is_transpose_conv:
-                    if v==0 and self._is_transpose_conv:
-                        conv_kwargs['output_padding']=stride_ - 1 + added_pad + compensation
-                    convs_.append(conv_impl[v](**conv_kwargs))
-                
-                # for up-sampling use resize
-                if self._is_transpose_conv:
-                    conv_kwargs['stride']=1
-                    convs_.append(x_corr_conv_impl(**conv_kwargs))
-                    scale = 1/stride_
-                    if self._is_transpose_conv:
-                        scale=stride_
-                    if v==0 and self._is_transpose_conv:
-                        self.input_resize = UpscaleResize(in_ch,in_ch,scale,self.dimensions,normalization=self.normalization,mode='nearest-exact')
 
+                # for up-sampling use resize when possible
+                if self._is_transpose_conv and x_residual_type=='resize':
+                    conv_kwargs['stride']=1
+                    
+                    scale=stride_
+                    if ks%2==0:
+                        conv_kwargs['padding'] += 1
+                        conv_kwargs['kernel_size'] += 1
+                        
+                    
+                    convs_.append(x_corr_conv_impl(**conv_kwargs))
+                        
+                    if v==0 and self._is_transpose_conv:
+                        self.input_resize = UpscaleResize(
+                            in_ch,
+                            in_ch,
+                            scale,
+                            self.dimensions,
+                            normalization=self.normalization,
+                            mode='nearest-exact'
+                        )
+                    continue
+                
+                # for downsampling use convolutions to extract features
+                if v==0 and self._is_transpose_conv:
+                    conv_kwargs['output_padding']=stride_ - 1 + added_pad + compensation
+                convs_.append(conv_impl[v](**conv_kwargs))
+                
             conv = torch.nn.ModuleList(convs_)
             self.convs.append(conv)
             
