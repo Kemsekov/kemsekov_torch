@@ -39,6 +39,8 @@ class VQVAE2(nn.Module):
         # returns reconstruction, encoder outputs, quantized encoder outputs, indices of quantized vectors from codebooks
         return x_rec, [z_high,z_middle,z_low], [z_q_high,z_q_middle,z_q_low], [indices_high,indices_middle,indices_low]
     
+    
+import torchvision.transforms as T
 def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     """
     Computes loss for vqvae2 results.
@@ -50,9 +52,16 @@ def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     beta: how fast to update encoder outputs z relative to reconstruction loss term
     """
     loss_ = lambda x,y : ((x-y)**2).mean()
-    loss = 0
-    # mse reconstruction loss
-    loss += loss_(x,x_rec)
+    
+    # general mse reconstruction loss
+    loss = loss_(x,x_rec)
+    
+    # remove background from image and remain only fine details, and compute loss on it
+    for sigma in [0.1,0.5,1,2]:
+        gb = T.GaussianBlur(7,sigma)
+        x_gb = gb(x)
+        loss += loss_(x-x_gb,x_rec-x_gb)
+    
     
     # commitment loss
     for z_,z_q_ in zip(z,z_q):

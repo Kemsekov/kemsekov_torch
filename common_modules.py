@@ -3,7 +3,6 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-
 class ConstModule(torch.nn.Module):
     """Module that returns constant"""
     def __init__(self,constant = 0):
@@ -12,19 +11,7 @@ class ConstModule(torch.nn.Module):
     def forward(self,x):
         return self.constant
 
-# change tensor shape
-class Interpolate(torch.nn.Module):
-    def __init__(self, scale_factor=None, size=None, mode='nearest', align_corners=None):
-        super(Interpolate, self).__init__()
-        self.scale_factor = scale_factor
-        self.size = size
-        self.mode = mode
-        self.align_corners = align_corners
-
-    def forward(self, x):
-        return F.interpolate(x, scale_factor=self.scale_factor, size=self.size, mode=self.mode, align_corners=self.align_corners)
-
-class UpscaleResize(nn.Module):
+class ResizeConv(nn.Module):
     """
     A PyTorch module that adjusts the spatial dimensions and channel count of an input tensor.
 
@@ -46,7 +33,7 @@ class UpscaleResize(nn.Module):
         torch.Size([1, 128, 64, 64])
     """
     def __init__(self, in_ch, out_ch, scale_factor, dimensions=2, mode='nearest-exact',normalization='batch'):
-        super(UpscaleResize, self).__init__()
+        super().__init__()
         if dimensions not in (1, 2, 3):
             raise ValueError("dimensions must be 1, 2, or 3")
             

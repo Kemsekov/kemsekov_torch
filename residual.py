@@ -261,17 +261,16 @@ class ResidualBlock(torch.nn.Module):
                 out_channels_.append(1)
                 kernel_sizes_.append(c_size)
                 dilations_.append(c_dilation)
-
         # collapse same-shaped conv blocks to reduce computation resources
         # for non-first layers
         out_channels_without_dilation = [1]
         kernel_sizes_without_dilation = [kernel_size[0]]
         if kernel_sizes_without_dilation[0]%2==0:
-            kernel_sizes_without_dilation[0]+=1
+            kernel_sizes_without_dilation[0]-=1
             
         for c_size in list(kernel_size)[1:]:
             if c_size%2==0:
-                c_size+=1
+                c_size-=1
             if c_size==kernel_sizes_without_dilation[-1]:
                 out_channels_without_dilation[-1]+=1
             else:
@@ -336,13 +335,13 @@ class ResidualBlock(torch.nn.Module):
                     
                     scale=stride_
                     if ks%2==0:
-                        conv_kwargs['kernel_size'] += 1
+                        conv_kwargs['kernel_size'] -= 1
                         conv_kwargs['padding'] = (conv_kwargs['kernel_size']  + (conv_kwargs['kernel_size']  - 1) * (dil[i] - 1))//2
                     
                     convs_.append(x_corr_conv_impl(**conv_kwargs))
                         
                     if v==0 and self._is_transpose_conv:
-                        self.input_resize = UpscaleResize(
+                        self.input_resize = ResizeConv(
                             in_ch,
                             in_ch,
                             scale,
@@ -391,8 +390,7 @@ class ResidualBlock(torch.nn.Module):
         scale = 1/stride
         if self._is_transpose_conv:
             scale=stride
-
-        self.x_correct = UpscaleResize(in_channels,out_channels,scale,self.dimensions,normalization=self.normalization,mode='nearest-exact')
+        self.x_correct = ResizeConv(in_channels,out_channels,scale,self.dimensions,normalization=self.normalization,mode='nearest-exact')
     
     def _conv_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
