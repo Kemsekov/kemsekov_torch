@@ -1,6 +1,7 @@
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
 from kemsekov_torch.residual import ResidualBlock
+from kemsekov_torch.conv_modules import SCSEModule
 
 class VQVAE2(nn.Module):
     # encoder(image with shape (BATCH,3,H,W)) -> z with shape (BATCH,latent_dim,h_small,w_small)
@@ -30,33 +31,39 @@ class VQVAE2(nn.Module):
         # input_ch -> channels
         self.encoder_bottom = nn.Sequential(
             ResidualBlock(3,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         # channels -> channels
         self.encoder_mid  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         # channels -> channels
         self.encoder_top  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         self.decoder_top = nn.Sequential(
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
+            SCSEModule(embedding_dim),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         self.decoder_mid = nn.Sequential(
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         self.decoder_bottom = nn.Sequential(
             ResidualBlock(3*embedding_dim,[res_dim,embedding_dim],**common),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common).transpose(),
             conv(embedding_dim,3,1)
@@ -114,7 +121,7 @@ class VQVAE2(nn.Module):
         zd_bottom,indices_bottom = self.quantizer_bottom(z_bottom)
         total_quant = [zd_bottom,self.upsample_mid(zd_mid),self.upsample_top(zd_top)]
         z = torch.concat(total_quant,1)
-        z=F.normalize(z, p=2.0, dim=1)
+        # z=F.normalize(z, p=2.0, dim=1)
 
 
         all_zd_emb.append(zd_bottom)
@@ -126,6 +133,7 @@ class VQVAE2(nn.Module):
         
         return z, all_z_emb, all_zd_emb, all_ind
 
+import torchvision.transforms as T
 
 def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     """
@@ -140,7 +148,11 @@ def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     loss_ = lambda x,y : ((x-y)**2).mean()
     
     # general mse reconstruction loss
+    # TODO: use guassian blur for 1d and 3d data as well
     loss = loss_(x,x_rec)
+    for sigma in [0.1,0.5,1]:
+        xgb = T.GaussianBlur(7,sigma)(x)
+        loss+=loss_(x-xgb,x_rec-xgb)
     
     # commitment loss
     for z_,z_q_ in zip(z,z_q):
