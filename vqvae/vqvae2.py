@@ -1,15 +1,13 @@
-from kemsekov_torch.vqvae.quantizer import VectorQuantizer
 import torch.nn as nn
+from kemsekov_torch.vqvae.quantizer import *
+from kemsekov_torch.residual import ResidualBlock
+
 class VQVAE2(nn.Module):
     # encoder(image with shape (BATCH,3,H,W)) -> z with shape (BATCH,latent_dim,h_small,w_small)
     # decoder(z)=reconstructed image with shape (BATCH,3,H,W)
-    def __init__(self,encoder,decoder,embedding_dim,codebook_size=[256,128,128],embedding_scale=1):
+    def __init__(self,embedding_dim,codebook_size=[256,256,256],embedding_scale=1,decay=0.99,epsilon=1e-5):
         """
         Creates new vqvae2.
-        encoder: 
-            takes as input some tensor and returns three [(BATCH,embedding_dim,...)] tensors with encoded output for 3 quantization levels, high,middle and low
-        decoder: 
-            takes as input three [(BATCH,embedding_dim,...)] tensors and returns decoded tensor with original shape
         embedding_dim:
             channels count of encoder output
         codebook_size: list[int]
@@ -17,30 +15,118 @@ class VQVAE2(nn.Module):
         embedding_scale: desired norm of initialization vectors in codebooks
         """
         super().__init__()
-        self.quantizer_high = VectorQuantizer(embedding_dim,codebook_size[0],0.99,1e-5,embedding_scale)
-        self.quantizer_middle = VectorQuantizer(embedding_dim,codebook_size[1],0.99,1e-5,embedding_scale)
-        self.quantizer_low = VectorQuantizer(embedding_dim,codebook_size[2],0.99,1e-5,embedding_scale)
+        self.quantizer_bottom = VectorQuantizer(embedding_dim,codebook_size[0],decay,epsilon,embedding_scale)
+        self.quantizer_mid    = VectorQuantizer(embedding_dim,codebook_size[1],decay,epsilon,embedding_scale)
+        self.quantizer_top    = VectorQuantizer(embedding_dim,codebook_size[2],decay,epsilon,embedding_scale)
         
-        self.encoder = encoder
-        self.decoder = decoder
+        dimensions=2
+        conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
+        common = {
+            "normalization":'batch',
+            'x_residual_type':'conv'
+        }
+        res_dim = embedding_dim//2
+        
+        # input_ch -> channels
+        self.encoder_bottom = nn.Sequential(
+            ResidualBlock(3,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+        )
+        # channels -> channels
+        self.encoder_mid  = nn.Sequential(
+            ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+        )
+        
+        # channels -> channels
+        self.encoder_top  = nn.Sequential(
+            ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+        )
+        
+        self.decoder_top = nn.Sequential(
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
+        )
+        
+        self.decoder_mid = nn.Sequential(
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+        )
+        
+        self.decoder_bottom = nn.Sequential(
+            ResidualBlock(3*embedding_dim,[res_dim,embedding_dim],**common),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            ResidualBlock(embedding_dim,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common).transpose(),
+            conv(embedding_dim,3,1)
+        )
+        self.combine_bottom_and_decode_mid = ResidualBlock(2*embedding_dim,embedding_dim,**common)
+        self.combine_mid_and_decode_top = ResidualBlock(2*embedding_dim,embedding_dim,**common)
+        self.upsample_mid = ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common).transpose()
+        self.upsample_top = ResidualBlock(embedding_dim,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common).transpose()
         
     def forward(self,x):
+        z, z_layers, zq_layers, indices_layers = self.encode(x)
+        x_rec = self.decode(z)
+        return x_rec, z_layers, zq_layers, indices_layers
+
+    @torch.jit.export
+    def decode(self,z):
+        return self.decoder_bottom(z)
+    
+    @torch.jit.export
+    def encode(self,x):
+        all_z_emb = []
+        all_zd_emb = []
+        all_ind = []
+        
         # something like
-        # [64,32,32], [64,16,16]
-        z_high,z_middle,z_low = self.encoder(x)
-        # z = F.normalize(z, p=2.0, dim=1)
+        z_bottom = self.encoder_bottom(x) #emb
+        z_mid = self.encoder_mid(z_bottom) #emb
+        z_top = self.encoder_top(z_mid) #emb
+        z_top = F.normalize(z_top, p=2.0, dim=1)
+        
+        # z_bottom = F.normalize(z_bottom, p=2.0, dim=1)
+        # z_mid = F.normalize(z_mid, p=2.0, dim=1)
+        
+        all_z_emb.append(z_top)
+        zd_top,indices_top = self.quantizer_top(z_top) #emb
+        dec_top = self.decoder_top(zd_top) # emb
+        z_mid = torch.concat([z_mid,dec_top],1) # 2 emb
+        z_mid = self.combine_mid_and_decode_top(z_mid) # emb
+        z_mid = F.normalize(z_mid, p=2.0, dim=1)
+        
+        all_z_emb.append(z_mid)
+        all_zd_emb.append(zd_top)
+        all_ind.append(indices_top)
+        
+        zd_mid,indices_mid = self.quantizer_mid(z_mid)
+        dec_mid = self.decoder_mid(zd_mid)
+        z_bottom = torch.concat([z_bottom,dec_mid],1) # 2 emb
+        z_bottom = self.combine_bottom_and_decode_mid(z_bottom)
+        z_bottom=F.normalize(z_bottom, p=2.0, dim=1)
+        
+        all_z_emb.append(z_bottom)
+        all_zd_emb.append(zd_mid)
+        all_ind.append(indices_mid)
+        
+        zd_bottom,indices_bottom = self.quantizer_bottom(z_bottom)
+        total_quant = [zd_bottom,self.upsample_mid(zd_mid),self.upsample_top(zd_top)]
+        z = torch.concat(total_quant,1)
+        z=F.normalize(z, p=2.0, dim=1)
 
-        # quantize low and high level features
-        z_d_low,z_q_low,indices_low = self.quantizer_low(z_low)
-        z_d_middle,z_q_middle,indices_middle = self.quantizer_middle(z_middle)
-        z_d_high,z_q_high,indices_high = self.quantizer_high(z_high)
 
-        x_rec = self.decoder([z_d_high,z_d_middle, z_d_low])
-        # returns reconstruction, encoder outputs, quantized encoder outputs, indices of quantized vectors from codebooks
-        return x_rec, [z_high,z_middle,z_low], [z_q_high,z_q_middle,z_q_low], [indices_high,indices_middle,indices_low]
-    
-    
-import torchvision.transforms as T
+        all_zd_emb.append(zd_bottom)
+        all_ind.append(indices_bottom)
+        
+        all_ind.reverse()
+        all_zd_emb.reverse()
+        all_z_emb.reverse()
+        
+        return z, all_z_emb, all_zd_emb, all_ind
+
+
 def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     """
     Computes loss for vqvae2 results.
@@ -55,13 +141,6 @@ def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     
     # general mse reconstruction loss
     loss = loss_(x,x_rec)
-    
-    # remove background from image and remain only fine details, and compute loss on it
-    for sigma in [0.1,0.5,1,2]:
-        gb = T.GaussianBlur(7,sigma)
-        x_gb = gb(x)
-        loss += loss_(x-x_gb,x_rec-x_gb)
-    
     
     # commitment loss
     for z_,z_q_ in zip(z,z_q):

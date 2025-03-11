@@ -43,6 +43,9 @@ def rotation_trick(e, q):
     
     return q_result
 
+def skip_gradient_trick(e,q):
+    return e-(q-e).detach()
+
 class SonnetExponentialMovingAverage(nn.Module):
     # See: https://github.com/deepmind/sonnet/blob/5cbfdc356962d9b6198d5b63f0826a80acfdf35b/sonnet/src/moving_averages.py#L25.
     # They do *not* use the exponential moving average updates described in Appendix A.1
@@ -80,8 +83,8 @@ class VectorQuantizer(nn.Module):
         # See Section 3 of "Neural Discrete Representation Learning" and:
         # https://github.com/deepmind/sonnet/blob/v2/sonnet/src/nets/vqvae.py#L142.
 
-        self.embedding_dim : int = embedding_dim
-        self.num_embeddings : int = num_embeddings
+        self.embedding_dim = embedding_dim
+        self.num_embeddings = num_embeddings
         # Weight for the exponential moving average.
         self.decay = decay
         # Small constant to avoid numerical instability in embedding updates.
@@ -151,7 +154,12 @@ class VectorQuantizer(nn.Module):
         quantized_x = F.embedding(
             ind, self.e_i_ts.transpose(0, 1)
         )
+        
+        # choose what to use, rotation trick or skip gradient trick
         quantized_x_d=rotation_trick(x_permute,quantized_x)
+        # quantized_x_d=skip_gradient_trick(x_permute,quantized_x)
+        
+        
         quantized_x=quantized_x.permute(permute_to_orig)
         quantized_x_d=quantized_x_d.permute(permute_to_orig)
         
@@ -159,7 +167,7 @@ class VectorQuantizer(nn.Module):
         # quantized_x_d can be passed to decoder,
         # quantized_x can be used to update codebook
         # ind is id of quantized vectors
-        return quantized_x_d,quantized_x, ind
+        return quantized_x_d, ind
     @torch.jit.export
     def decode_from_ind(self,ind):
         """
