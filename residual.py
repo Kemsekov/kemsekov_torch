@@ -197,6 +197,7 @@ class ResidualBlock(torch.nn.Module):
         if len(conv_impl)==1:
             conv_impl = conv_impl*len(out_channels)
         
+        
         assert len(out_channels)==len(conv_impl),f"len(out_channels) must equal len(conv_impl), {len(out_channels)}!={len(conv_impl)}"
                 
         repeats=len(conv_impl)
@@ -209,7 +210,7 @@ class ResidualBlock(torch.nn.Module):
 
         self.normalization = normalization
         if not isinstance(kernel_size,list):
-            kernel_size=[kernel_size]*out_channels[0]
+            kernel_size=[kernel_size]
         # assert all([v%2==1 for v in kernel_size]), f"kernel size must be odd number, but given kernel size {kernel_size}"
         self.kernel_size = kernel_size
         
@@ -230,6 +231,13 @@ class ResidualBlock(torch.nn.Module):
         self.x_residual_type=x_residual_type
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels[0]
+
+        if len(kernel_size)==1 and len(dilation)!=1:
+            kernel_size=kernel_size*len(dilation)
+        
+        if len(kernel_size)!=1 and len(dilation)==1:
+            dilation=dilation*len(kernel_size)
+
 
         # assert len(dilation) == out_channels[0], f"Number of dilations must match the number of output channels at first dim. {len(dilation)} != {out_channels[0]}"
 
