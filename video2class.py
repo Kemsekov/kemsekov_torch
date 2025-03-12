@@ -28,9 +28,7 @@ class Video2Class(nn.Sequential):
             nn.BatchNorm3d(in_channels),
             ResidualBlock(
                 in_channels=in_channels,
-                out_channels=64,
-                kernel_size=3,
-                conv_impl=[nn.Conv3d]*block_size,
+                out_channels=[64]*block_size,
                 dimensions=3
             ),
             nn.MaxPool3d((1,2,2)),
@@ -38,9 +36,7 @@ class Video2Class(nn.Sequential):
             nn.Dropout3d(dropout_p),
             ResidualBlock(
                 in_channels=64,
-                out_channels=128,
-                kernel_size=3,
-                conv_impl=[nn.Conv3d]*block_size,
+                out_channels=[128]*block_size,
                 dilation=[1]*64+[2]*64,
                 dimensions=3
             ),
@@ -49,9 +45,7 @@ class Video2Class(nn.Sequential):
             nn.Dropout3d(dropout_p),
             ResidualBlock(
                 in_channels=128,
-                out_channels=256,
-                kernel_size=3,
-                conv_impl=[nn.Conv3d]*block_size,
+                out_channels=[256]*block_size,
                 dilation=[1]*128+[2]*128,
                 dimensions=3
             ),
@@ -60,9 +54,7 @@ class Video2Class(nn.Sequential):
             nn.Dropout3d(dropout_p),
             ResidualBlock(
                 in_channels=256,
-                out_channels=512,
-                kernel_size=3,
-                conv_impl=[nn.Conv3d]*block_size,
+                out_channels=[512]*block_size,
                 dilation=[1]*256+[2]*256,
                 dimensions=3
             ),
