@@ -3,7 +3,7 @@ from kemsekov_torch.vqvae.quantizer import *
 from kemsekov_torch.residual import ResidualBlock
 from kemsekov_torch.conv_modules import SCSEModule
 
-class VQVAE2(nn.Module):
+class VQVAE2Scale3(nn.Module):
     # encoder(image with shape (BATCH,3,H,W)) -> z with shape (BATCH,latent_dim,h_small,w_small)
     # decoder(z)=reconstructed image with shape (BATCH,3,H,W)
     def __init__(self,embedding_dim,codebook_size=[256,256,256],embedding_scale=1,decay=0.99,epsilon=1e-5):
@@ -94,11 +94,9 @@ class VQVAE2(nn.Module):
         z_top = self.encoder_top(z_mid) #emb
         z_top = F.normalize(z_top, p=2.0, dim=1)
         
-        # z_bottom = F.normalize(z_bottom, p=2.0, dim=1)
-        # z_mid = F.normalize(z_mid, p=2.0, dim=1)
-        
         all_z_emb.append(z_top)
         zd_top,indices_top = self.quantizer_top(z_top) #emb
+        zd_top = F.normalize(zd_top, p=2.0, dim=1)        
         dec_top = self.decoder_top(zd_top) # emb
         z_mid = torch.concat([z_mid,dec_top],1) # 2 emb
         z_mid = self.combine_mid_and_decode_top(z_mid) # emb
@@ -109,6 +107,7 @@ class VQVAE2(nn.Module):
         all_ind.append(indices_top)
         
         zd_mid,indices_mid = self.quantizer_mid(z_mid)
+        zd_mid = F.normalize(zd_mid, p=2.0, dim=1)        
         dec_mid = self.decoder_mid(zd_mid)
         z_bottom = torch.concat([z_bottom,dec_mid],1) # 2 emb
         z_bottom = self.combine_bottom_and_decode_mid(z_bottom)
@@ -119,6 +118,7 @@ class VQVAE2(nn.Module):
         all_ind.append(indices_mid)
         
         zd_bottom,indices_bottom = self.quantizer_bottom(z_bottom)
+        zd_bottom = F.normalize(zd_bottom, p=2.0, dim=1)        
         total_quant = [zd_bottom,self.upsample_mid(zd_mid),self.upsample_top(zd_top)]
         z = torch.concat(total_quant,1)
         # z=F.normalize(z, p=2.0, dim=1)
@@ -134,7 +134,6 @@ class VQVAE2(nn.Module):
         return z, all_z_emb, all_zd_emb, all_ind
 
 import torchvision.transforms as T
-
 def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     """
     Computes loss for vqvae2 results.
@@ -145,17 +144,21 @@ def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     z_q: list of quantized embeddings
     beta: how fast to update encoder outputs z relative to reconstruction loss term
     """
+    
     loss_ = lambda x,y : ((x-y)**2).mean()
     
+    rec_loss = 0
     # general mse reconstruction loss
-    # TODO: use guassian blur for 1d and 3d data as well
-    loss = loss_(x,x_rec)
+    rec_loss = 3*loss_(x,x_rec)
     for sigma in [0.1,0.5,1]:
         xgb = T.GaussianBlur(7,sigma)(x)
-        loss+=loss_(x-xgb,x_rec-xgb)
+        rec_loss+=loss_(x-xgb,x_rec-xgb)
+    rec_loss/=6
     
+    commitment_loss = 0
     # commitment loss
     for z_,z_q_ in zip(z,z_q):
-        loss += beta*loss_(z_,z_q_.detach())/len(z)
+        commitment_loss += loss_(z_,z_q_.detach())/len(z)
+    commitment_loss/=len(z)
     
-    return loss
+    return rec_loss+beta*commitment_loss
