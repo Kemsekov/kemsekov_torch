@@ -32,39 +32,39 @@ class VQVAE2Scale3(nn.Module):
         # input_ch -> channels
         self.encoder_bottom = nn.Sequential(
             ResidualBlock(3,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common),
-            # SCSEModule(embedding_dim),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         # channels -> channels
         self.encoder_mid  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
-            # SCSEModule(embedding_dim),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         # channels -> channels
         self.encoder_top  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
-            # SCSEModule(embedding_dim),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         self.decoder_top = nn.Sequential(
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
-            # SCSEModule(embedding_dim),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         self.decoder_mid = nn.Sequential(
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
-            # SCSEModule(embedding_dim),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         self.decoder_bottom = nn.Sequential(
             ResidualBlock(3*embedding_dim,[res_dim,embedding_dim],**common),
-            # SCSEModule(embedding_dim),
+            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common).transpose(),
             # SCSEModule(embedding_dim),
@@ -97,6 +97,7 @@ class VQVAE2Scale3(nn.Module):
         z_top = F.normalize(z_top, p=2.0, dim=1)
         
         all_z_emb.append(z_top)
+
         zd_top,indices_top = self.quantizer_top(z_top) #emb
         zd_top = F.normalize(zd_top, p=2.0, dim=1)        
         dec_top = self.decoder_top(zd_top) # emb
@@ -138,7 +139,7 @@ class VQVAE2Scale3(nn.Module):
     def decode_from_ind(self,all_ind : List[torch.Tensor]):
         bottom,mid,top = all_ind[0],all_ind[1],all_ind[2]
         zd_bottom = self.quantizer_bottom.decode_from_ind(bottom)
-        zd_bottom = F.normalize(zd_bottom, p=2.0, dim=1)        
+        zd_bottom = F.normalize(zd_bottom, p=2.0, dim=1)
         
         zd_mid = self.quantizer_mid.decode_from_ind(mid)
         zd_mid = F.normalize(zd_mid, p=2.0, dim=1)        

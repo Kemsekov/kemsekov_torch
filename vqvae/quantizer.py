@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from kemsekov_torch.vqvae.rotate import rotate_to
 
 def rotation_trick(e, q):
     """
@@ -44,7 +45,7 @@ def rotation_trick(e, q):
     return q_result
 
 def skip_gradient_trick(e,q):
-    return e-(q-e).detach()
+    return e+(q-e).detach()
 
 class SonnetExponentialMovingAverage(nn.Module):
     # See: https://github.com/deepmind/sonnet/blob/5cbfdc356962d9b6198d5b63f0826a80acfdf35b/sonnet/src/moving_averages.py#L25.
@@ -97,10 +98,9 @@ class VectorQuantizer(nn.Module):
         self.register_buffer("e_i_ts", e_i_ts)
 
         # Exponential moving average of the cluster counts.
-        self.cluster_counts = SonnetExponentialMovingAverage(decay, (num_embeddings,),torch.ones(num_embeddings)*0.1)
+        self.cluster_counts = SonnetExponentialMovingAverage(decay, (num_embeddings,))
         # Exponential moving average of the embeddings.
         self.embeddings = SonnetExponentialMovingAverage(decay, e_i_ts.shape)
-    
     
     def forward(self, x):
         # x is of shape (batch,emb_dim,height,width)
@@ -110,6 +110,8 @@ class VectorQuantizer(nn.Module):
         dimensions_axis = [2,3,4][:len(x.shape)-2]
         
         x_permute = x.permute([batch_axis] + dimensions_axis + [emb_axis])
+        permute_to_orig = [0, len(x.shape)-1]+[1, 2, 3][:len(dimensions_axis)]
+        
         flat_x = x_permute.reshape(-1, self.embedding_dim)
 
         distances = (
@@ -117,8 +119,12 @@ class VectorQuantizer(nn.Module):
             - 2 * flat_x @ self.e_i_ts
             + (self.e_i_ts ** 2).sum(0, keepdim=True)
         )
-        permute_to_orig = [0, len(x.shape)-1]+[1, 2, 3][:len(dimensions_axis)]
         encoding_indices = distances.argmin(1)
+        #same
+        # print(x_permute.shape)
+        # print(quantized_x.shape)
+        
+        ind = encoding_indices.view([x.shape[0]] + list(x.shape[2:]))
         
         if self.training:
             with torch.no_grad():
@@ -146,21 +152,16 @@ class VectorQuantizer(nn.Module):
                     * N_i_ts_sum
                 )
                 self.e_i_ts = self.embeddings.average / N_i_ts_stable.unsqueeze(0)
-        #same
-        # print(x_permute.shape)
-        # print(quantized_x.shape)
-        
-        ind = encoding_indices.view([x.shape[0]] + list(x.shape[2:]))
+
         quantized_x = F.embedding(
             ind, self.e_i_ts.transpose(0, 1)
         )
         
-        # I have been in torture trying to optimize this part
-        # and it seems that sum of rotation and skip tricks somehow works best
-        quantized_x_d_rotate=rotation_trick(x_permute,quantized_x)
-        quantized_x_d_skip=skip_gradient_trick(x_permute,quantized_x)
-        quantized_x_d=(quantized_x_d_rotate+quantized_x_d_skip)/2
+        # quantized_x_d_skip = skip_gradient_trick(x_permute,quantized_x)
+        quantized_x_d_rotate = rotate_to(x_permute,quantized_x)
+        quantized_x_d=quantized_x_d_rotate
         
+        # quantized_x_d=quantized_x_d_rotate
         
         quantized_x=quantized_x.permute(permute_to_orig)
         quantized_x_d=quantized_x_d.permute(permute_to_orig)
