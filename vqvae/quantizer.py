@@ -155,9 +155,11 @@ class VectorQuantizer(nn.Module):
             ind, self.e_i_ts.transpose(0, 1)
         )
         
-        # choose what to use, rotation trick or skip gradient trick
-        quantized_x_d=rotation_trick(x_permute,quantized_x)
-        # quantized_x_d=skip_gradient_trick(x_permute,quantized_x)
+        # I have been in torture trying to optimize this part
+        # and it seems that sum of rotation and skip tricks somehow works best
+        quantized_x_d_rotate=rotation_trick(x_permute,quantized_x)
+        quantized_x_d_skip=skip_gradient_trick(x_permute,quantized_x)
+        quantized_x_d=(quantized_x_d_rotate+quantized_x_d_skip)/2
         
         
         quantized_x=quantized_x.permute(permute_to_orig)
@@ -168,6 +170,7 @@ class VectorQuantizer(nn.Module):
         # quantized_x can be used to update codebook
         # ind is id of quantized vectors
         return quantized_x_d, ind
+    
     @torch.jit.export
     def decode_from_ind(self,ind):
         """
