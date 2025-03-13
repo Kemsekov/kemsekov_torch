@@ -1,3 +1,4 @@
+from typing import List
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
 from kemsekov_torch.residual import ResidualBlock
@@ -66,6 +67,7 @@ class VQVAE2Scale3(nn.Module):
             SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common).transpose(),
+            SCSEModule(embedding_dim),
             conv(embedding_dim,3,1)
         )
         self.combine_bottom_and_decode_mid = ResidualBlock(2*embedding_dim,embedding_dim,**common)
@@ -123,7 +125,6 @@ class VQVAE2Scale3(nn.Module):
         z = torch.concat(total_quant,1)
         # z=F.normalize(z, p=2.0, dim=1)
 
-
         all_zd_emb.append(zd_bottom)
         all_ind.append(indices_bottom)
         
@@ -132,6 +133,16 @@ class VQVAE2Scale3(nn.Module):
         all_z_emb.reverse()
         
         return z, all_z_emb, all_zd_emb, all_ind
+    
+    @torch.jit.export
+    def decode_from_ind(self,all_ind : List[torch.Tensor]):
+        bottom,mid,top = all_ind[0],all_ind[1],all_ind[2]
+        zd_bottom = self.quantizer_bottom.decode_from_ind(bottom)
+        zd_mid = self.quantizer_mid.decode_from_ind(mid)
+        zd_top = self.quantizer_top.decode_from_ind(top)
+        total_quant = [zd_bottom,self.upsample_mid(zd_mid),self.upsample_top(zd_top)]
+        z = torch.concat(total_quant,1)
+        return self.decoder_bottom(z)
 
 import torchvision.transforms as T
 def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
