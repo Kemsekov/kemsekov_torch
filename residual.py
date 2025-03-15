@@ -98,7 +98,7 @@ class ResidualBlock(torch.nn.Module):
         dimensions : Literal[1,2,3] = 2,
         pad = 0,
         is_transpose = False,
-        x_residual_type : Literal['conv','resize'] = 'resize',
+        x_residual_type : Literal['conv','resize'] = 'conv',
         padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate"
     ):
         """
