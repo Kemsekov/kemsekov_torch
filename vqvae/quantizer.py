@@ -1,8 +1,8 @@
 # taken from https://github.com/MishaLaskin/vqvae/blob/master/models/quantizer.py
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from kemsekov_torch.vqvae.rotate import rotate_to
 
 def rotation_trick(e, q):
     """
@@ -16,8 +16,8 @@ def rotation_trick(e, q):
         torch.Tensor: Transformed tensor q_result of shape (batch, height, width, hidden)
     """
     # Compute norms
-    e_norm = e.norm(p=2.0, dim=-1, keepdim=True).detach() + 1e-6  # (8, 32, 32, 1)
-    q_norm = q.norm(p=2.0, dim=-1, keepdim=True).detach() + 1e-6  # (8, 32, 32, 1)
+    e_norm = e.norm(p=2.0, dim=-1, keepdim=True).detach().clamp(1e-6)  # (8, 32, 32, 1)
+    q_norm = q.norm(p=2.0, dim=-1, keepdim=True).detach().clamp(1e-6)  # (8, 32, 32, 1)
     
     # Unit vectors
     e_hat = (e / e_norm).detach()  # (8, 32, 32, 5)
@@ -28,7 +28,7 @@ def rotation_trick(e, q):
     
     # Correct reflection vector
     e_hat_plus_q_hat = e_hat + q_hat  # (8, 32, 32, 5)
-    norm_e_hat_plus_q_hat = e_hat_plus_q_hat.norm(p=2.0, dim=-1, keepdim=True).detach() + 1e-6  # (8, 32, 32, 1)
+    norm_e_hat_plus_q_hat = e_hat_plus_q_hat.norm(p=2.0, dim=-1, keepdim=True).detach().clamp(1e-6)  # (8, 32, 32, 1)
     r = (e_hat_plus_q_hat / norm_e_hat_plus_q_hat).detach()  # (8, 32, 32, 5)
     
     # Compute r^T e directly as dot product
@@ -158,8 +158,10 @@ class VectorQuantizer(nn.Module):
         )
         
         # quantized_x_d_skip = skip_gradient_trick(x_permute,quantized_x)
-        quantized_x_d_rotate = rotate_to(x_permute,quantized_x)
+        quantized_x_d_rotate = rotation_trick(x_permute,quantized_x)
         quantized_x_d=quantized_x_d_rotate
+        
+      
         
         # quantized_x_d=quantized_x_d_rotate
         
