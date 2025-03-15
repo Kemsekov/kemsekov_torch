@@ -254,12 +254,8 @@ class ResidualBlock(torch.nn.Module):
         # for non-first layers
         out_channels_without_dilation = [1]
         kernel_sizes_without_dilation = [kernel_size[0]]
-        if kernel_sizes_without_dilation[0]%2==0:
-            kernel_sizes_without_dilation[0]-=1
             
         for c_size in list(kernel_size)[1:]:
-            if c_size%2==0:
-                c_size-=1
             if c_size==kernel_sizes_without_dilation[-1]:
                 out_channels_without_dilation[-1]+=1
             else:
@@ -309,7 +305,9 @@ class ResidualBlock(torch.nn.Module):
                 if ks%2==0:
                     if v==0:
                         assert stride_!=1,f"Impossible to use kernel_size={ks} with stride=1 to get same-shaped tensor"
-
+                    elif stride_==1:
+                        ks-=1
+                        
                 ks_with_dilation = ks + (ks - 1) * (dil[i] - 1)
                 
                 if ks_with_dilation%2==0:
@@ -328,25 +326,25 @@ class ResidualBlock(torch.nn.Module):
                 )
 
                 # for up-sampling use resize when possible
-                if self._is_transpose_conv and x_residual_type=='resize':
-                    conv_kwargs['stride']=1
+                # if self._is_transpose_conv and x_residual_type=='resize':
+                #     conv_kwargs['stride']=1
                     
-                    scale=stride_
-                    if ks%2==0:
-                        conv_kwargs['kernel_size'] -= 1
-                        conv_kwargs['padding'] = (conv_kwargs['kernel_size']  + (conv_kwargs['kernel_size']  - 1) * (dil[i] - 1))//2
+                #     scale=stride_
+                #     if ks%2==0:
+                #         conv_kwargs['kernel_size'] -= 1
+                #         conv_kwargs['padding'] = (conv_kwargs['kernel_size']  + (conv_kwargs['kernel_size']  - 1) * (dil[i] - 1))//2
                     
-                    convs_.append(x_corr_conv_impl(**conv_kwargs))
+                #     convs_.append(x_corr_conv_impl(**conv_kwargs))
                     
-                    self.input_resize[v] = ResizeConv(
-                        in_ch,
-                        in_ch,
-                        scale,
-                        self.dimensions,
-                        normalization=self.normalization,
-                        mode='nearest-exact'
-                    )
-                    continue
+                #     self.input_resize[v] = ResizeConv(
+                #         in_ch,
+                #         in_ch,
+                #         scale,
+                #         self.dimensions,
+                #         normalization=self.normalization,
+                #         mode='nearest-exact'
+                #     )
+                #     continue
                 
                 conv__ = x_corr_conv_impl
                 # for downsampling use convolutions to extract features
@@ -394,7 +392,7 @@ class ResidualBlock(torch.nn.Module):
     def _conv_x_correct(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
         # number of channels or some stride
-        correct_x_ksize = 1 if stride==1 and self.added_pad==0 else min(self.kernel_size)
+        correct_x_ksize = 1 if stride==1 and self.added_pad==0 else (1+stride)//2 *2 + 2
         correct_x_padding= correct_x_ksize // 2 + self.added_pad
         if correct_x_ksize%2==0:
             compensation = -1
@@ -452,10 +450,7 @@ class ResidualBlock(torch.nn.Module):
         
         for convs,norm,act,resize in zip(self.convs,self.norms,self.activation,self.input_resize):
             out_v=resize(out_v)
-            # Fork to parallelize each convolution operation
-            futures = [torch.jit.fork(conv, out_v) for conv in convs]
-            # Wait for all operations to complete and collect the results
-            results = [torch.jit.wait(future) for future in futures]
+            results = [conv(out_v) for conv in convs]
             out_v = torch.cat(results, dim=1)
             out_v = act(norm(out_v))
         
