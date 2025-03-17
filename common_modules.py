@@ -69,14 +69,48 @@ class ResizeConv(nn.Module):
         x = self.channel_adjust(x)
 
         return x
+
+@torch.compile
+def resize_tensor(input,output_size,dimension_resize_mode = 'nearest-exact',channel_resize_mode='nearest-exact'):
+    """
+    Resizes input 1d,2d,3d tensor to given size, all up to channels
+    """
+    is_unsqueeze = False
+    if len(input.shape)==2:
+        input=input.unsqueeze(1)
+        output_size=torch.Size([1]+output_size)
+        is_unsqueeze=True
+        
+    if input.shape[1:]==torch.Size(output_size):
+        return input
+        
+    dim_size = output_size[1:]
+    resize_dim = nn.functional.interpolate(input,dim_size,mode=dimension_resize_mode).transpose(1,2)
+
+    ch_size    = list(output_size[1:])
+    ch_size[0] = output_size[0]
+    
+    resize_channel = nn.functional.interpolate(resize_dim,ch_size,mode=channel_resize_mode).transpose(1,2)
+    if is_unsqueeze:
+        return resize_channel[:,0,:]
+    return resize_channel
+
 class Residual(torch.nn.Module):
-    """Simple residual block that sums outputs of module with it's input"""
+    """
+    Residual block that sums outputs of module with it's input. It supports any model that outputs any shape
+    
+    """
     def __init__(self,m):
+        """
+        m - module that takes some input and spits output
+        """
         super().__init__()
         self.m = m
         self.alpha = torch.nn.Parameter(torch.tensor(0.0))
     def forward(self,x):
-        return self.alpha*self.m(x)+x
+        out = self.m(x)
+        x_resize = resize_tensor(x,out.shape[1:])
+        return self.alpha*out+x_resize
 
 def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance', 'group', None]):
     """Get normalization for given dimensions from its name.
