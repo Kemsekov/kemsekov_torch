@@ -64,6 +64,7 @@ class ResidualBlock(torch.nn.Module):
         
         norm_impl = get_normalization_from_name(dimensions,normalization)
         self.dimensions=dimensions
+        self._conv_x_linear(in_channels, out_channels[-1], stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
         
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels[0]
@@ -198,7 +199,49 @@ class ResidualBlock(torch.nn.Module):
         # for each layer create it's own activation function
         self.activation = nn.ModuleList([create_activation(activation) for i in self.convs])
         self.alpha = torch.nn.Parameter(torch.tensor(0.0))
-
+    
+    def _conv_x_linear(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
+        # compute x_size correction convolution arguments so we could do residual addition when we have changed
+        # number of channels or some stride
+        correct_x_ksize = 1 if stride==1 else (1+stride)//2 *2 + 2
+        correct_x_padding= correct_x_ksize // 2
+        if correct_x_ksize%2==0:
+            compensation = -1
+        else:
+            compensation = 0
+            
+        correct_x_dilation = 1
+        
+        # make cheap downscale
+        x_corr_kwargs=dict(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size = correct_x_ksize,
+            dilation=correct_x_dilation,
+            stride = stride,
+            padding = correct_x_padding+compensation,
+            padding_mode=self.padding_mode
+            # groups=gcd(in_channels,out_channels)
+        )
+        
+        x_conv_impl = x_corr_conv_impl
+        if self._is_transpose_conv:
+            x_conv_impl = x_corr_conv_impl_T
+            x_corr_kwargs['output_padding'] = stride - 1 + compensation
+            x_corr_kwargs['groups'] = 1
+        
+        # if we have different output tensor size, apply linear x_linearion
+        # to make sure we can add it with output
+        if stride>1 or in_channels!=out_channels:
+            # there is many ways to linearly downsample x, but max pool with conv2d works best of all
+            self.x_linear = \
+                torch.nn.Sequential(
+                    x_conv_impl(**x_corr_kwargs),
+                    norm_impl(out_channels)
+                )
+        else:
+            self.x_linear = torch.nn.Identity()
+        
     def forward(self, x):
         """
         Applies the residual block transformation to the input tensor.
@@ -219,8 +262,8 @@ class ResidualBlock(torch.nn.Module):
             results = [conv(out) for conv in convs]
             out = torch.cat(results, dim=1)
             out = act(norm(out))
-        x_resize = resize_tensor(x,out.shape[1:])
-        return self.alpha*out+x_resize
+        out_linear = self.x_linear(x)
+        return self.alpha*(out)+out_linear
     
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
     def transpose(self):
