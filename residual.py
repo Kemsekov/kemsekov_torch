@@ -235,7 +235,7 @@ class MultiConvBlock(torch.nn.Module):
         transposed convolution implementation, enabling the block to perform upsampling operations.
 
         Returns:
-            ResidualBlock: A new `ResidualBlock` instance configured for transposed convolutions.
+            MultiConvBlock: A new `MultiConvBlock` instance configured for transposed convolutions.
         """
         return MultiConvBlock(
             in_channels=self.in_channels,
