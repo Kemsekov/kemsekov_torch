@@ -29,7 +29,7 @@ class Residual(torch.nn.Module):
         x_resize = resize_tensor(x,out.shape[1:])
         return self.alpha*out+x_resize
 
-class MultiConvBlock(torch.nn.Module):
+class ResidualBlock(torch.nn.Module):
     def __init__(
         self,
         in_channels,
@@ -197,6 +197,7 @@ class MultiConvBlock(torch.nn.Module):
                 return activation_class()
         # for each layer create it's own activation function
         self.activation = nn.ModuleList([create_activation(activation) for i in self.convs])
+        self.alpha = torch.nn.Parameter(torch.tensor(0.0))
 
     def forward(self, x):
         """
@@ -212,19 +213,14 @@ class MultiConvBlock(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape (batch_size, out_channels, new_height, new_width).
         """
+        out = x
         for convs,norm,act,resize in zip(self.convs,self.norms,self.activation,self.input_resize):
-            x=resize(x)
-            results = [conv(x) for conv in convs]
-            x = torch.cat(results, dim=1)
-            x = act(norm(x))
-        
-        return x
-    
-    def residual(self):
-        """
-        Wraps current block into residual wrapper, so module will have residual connection with it's inputs
-        """
-        return Residual(self)
+            out=resize(out)
+            results = [conv(out) for conv in convs]
+            out = torch.cat(results, dim=1)
+            out = act(norm(out))
+        x_resize = resize_tensor(x,out.shape[1:])
+        return self.alpha*out+x_resize
     
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
     def transpose(self):
@@ -235,9 +231,9 @@ class MultiConvBlock(torch.nn.Module):
         transposed convolution implementation, enabling the block to perform upsampling operations.
 
         Returns:
-            MultiConvBlock: A new `MultiConvBlock` instance configured for transposed convolutions.
+            ResidualBlock: A new `ResidualBlock` instance configured for transposed convolutions.
         """
-        return MultiConvBlock(
+        return ResidualBlock(
             in_channels=self.in_channels,
             out_channels=self.out_channels,
             kernel_size = self.kernel_size,

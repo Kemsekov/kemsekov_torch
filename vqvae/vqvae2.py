@@ -25,7 +25,6 @@ class VQVAE2Scale3(nn.Module):
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         common = {
             "normalization":'batch',
-            'x_residual_type':'conv'
         }
         res_dim = embedding_dim//2
         

@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import List, Literal, Tuple
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
@@ -13,14 +13,15 @@ class ConstModule(torch.nn.Module):
 
 
 # @torch.compile
-def resize_tensor(input,output_size,dimension_resize_mode = 'nearest-exact',channel_resize_mode='nearest-exact'):
+def resize_tensor(input : torch.Tensor,output_size : List[int],dimension_resize_mode : str = 'nearest-exact',channel_resize_mode : str='nearest-exact'):
     """
     Resizes input 1d,2d,3d tensor to given size, all up to channels
     """
+    output_size=list(output_size)
     is_unsqueeze = False
     if len(input.shape)==2:
         input=input.unsqueeze(1)
-        output_size=torch.Size([1]+output_size)
+        output_size=[1]+list(output_size)
         is_unsqueeze=True
         
     if input.shape[1:]==torch.Size(output_size):
@@ -32,7 +33,7 @@ def resize_tensor(input,output_size,dimension_resize_mode = 'nearest-exact',chan
     ch_size    = list(output_size[1:])
     ch_size[0] = output_size[0]
     
-    resize_channel = nn.functional.interpolate(resize_dim,ch_size,mode=channel_resize_mode).transpose(1,2)
+    resize_channel = nn.functional.interpolate(resize_dim,torch.Size(ch_size),mode=channel_resize_mode).transpose(1,2)
     if is_unsqueeze:
         return resize_channel[:,0,:]
     return resize_channel
