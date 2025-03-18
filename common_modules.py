@@ -29,11 +29,11 @@ def resize_tensor(input : torch.Tensor,output_size : List[int],dimension_resize_
         
     dim_size = output_size[1:]
     resize_dim = nn.functional.interpolate(input,dim_size,mode=dimension_resize_mode).transpose(1,2)
-
+    
     ch_size    = list(output_size[1:])
     ch_size[0] = output_size[0]
-    
     resize_channel = nn.functional.interpolate(resize_dim,torch.Size(ch_size),mode=channel_resize_mode).transpose(1,2)
+    
     if is_unsqueeze:
         return resize_channel[:,0,:]
     return resize_channel

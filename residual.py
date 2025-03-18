@@ -199,11 +199,25 @@ class ResidualBlock(torch.nn.Module):
         # for each layer create it's own activation function
         self.activation = nn.ModuleList([create_activation(activation) for i in self.convs])
         self.alpha = torch.nn.Parameter(torch.tensor(0.0))
+        
+        # self.out_conv = nn.Sequential(
+        #     x_corr_conv_impl(in_channels,out_channels[-1],kernel_size=3,padding_mode=padding_mode,padding=1),
+        #     norm_impl(out_channels[-1])
+        #     )
     
     def _conv_x_linear(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
         # number of channels or some stride
-        correct_x_ksize = 1 if stride==1 else (1+stride)//2 *2 + 2
+        correct_x_ksize = 1
+        if stride!=1:
+            if stride%2==0:
+                correct_x_ksize=stride+1
+            else:
+                correct_x_ksize=stride*2-1
+                
+            if self._is_transpose_conv:
+                correct_x_ksize=stride*2
+            
         correct_x_padding= correct_x_ksize // 2
         if correct_x_ksize%2==0:
             compensation = -1
@@ -263,6 +277,7 @@ class ResidualBlock(torch.nn.Module):
             out = torch.cat(results, dim=1)
             out = act(norm(out))
         out_linear = self.x_linear(x)
+        # out_linear = self.out_conv(resize_tensor(x,[x.shape[1]]+list(out.shape[2:])))
         return self.alpha*(out)+out_linear
     
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
