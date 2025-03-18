@@ -7,7 +7,7 @@ from kemsekov_torch.conv_modules import SCSEModule
 class VQVAE2Scale3(nn.Module):
     # encoder(image with shape (BATCH,3,H,W)) -> z with shape (BATCH,latent_dim,h_small,w_small)
     # decoder(z)=reconstructed image with shape (BATCH,3,H,W)
-    def __init__(self,embedding_dim,codebook_size=[256,256,256],embedding_scale=1,decay=0.99,epsilon=1e-5):
+    def __init__(self,embedding_dim,codebook_size=[256,256,256],embedding_scale=1,decay=0.99,epsilon=1e-5,dimensions=2):
         """
         Creates new vqvae2.
         embedding_dim:
@@ -21,7 +21,6 @@ class VQVAE2Scale3(nn.Module):
         self.quantizer_mid    = VectorQuantizer(embedding_dim,codebook_size[1],decay,epsilon,embedding_scale)
         self.quantizer_top    = VectorQuantizer(embedding_dim,codebook_size[2],decay,epsilon,embedding_scale)
         
-        dimensions=2
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         common = {
             "normalization":'batch',
