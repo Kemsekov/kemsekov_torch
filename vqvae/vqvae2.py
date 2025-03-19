@@ -64,7 +64,7 @@ class VQVAE2Scale3(nn.Module):
             ResidualBlock(3*embedding_dim,[res_dim,embedding_dim],**common),
             SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
-            ResidualBlock(embedding_dim,[embedding_dim]**(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common).transpose(),
+            ResidualBlock(embedding_dim,[embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common).transpose(),
             # SCSEModule(embedding_dim),
             conv(embedding_dim,in_channels,1)
         )
@@ -155,13 +155,13 @@ class Discriminator(nn.Module):
         common = dict(
             kernel_size=3,
             stride=2,
-            normalization='spectral',
+            normalization='batch',
             dimensions=dimensions
         )
         
         pool_to_1 = [nn.AdaptiveAvgPool1d,nn.AdaptiveAvgPool2d,nn.AdaptiveAvgPool3d][dimensions-1]([1]*dimensions)
         self.m = nn.Sequential(
-            ResidualBlock(in_channels,[64,64],kernel_size=3,stride=4,normalization='spectral',dimensions=dimensions),
+            ResidualBlock(in_channels,[64,64],kernel_size=3,stride=4,normalization='batch',dimensions=dimensions),
             ResidualBlock(64,128,**common),
             ResidualBlock(128,128,**common),
             ResidualBlock(128,256,dilation=[1]+[2]+[4]+[8],**common),
