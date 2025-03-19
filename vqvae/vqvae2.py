@@ -149,6 +149,31 @@ class VQVAE2Scale3(nn.Module):
         z = torch.concat(total_quant,1)
         return self.decoder_bottom(z)
 
+class Discriminator(nn.Module):
+    def __init__(self,in_channels,out_classes = 2,dimensions=2):
+        super().__init__()
+        common = dict(
+            kernel_size=3,
+            stride=2,
+            normalization='spectral',
+            dimensions=dimensions
+        )
+        
+        pool_to_1 = [nn.AdaptiveAvgPool1d,nn.AdaptiveAvgPool2d,nn.AdaptiveAvgPool3d][dimensions-1]([1]*dimensions)
+        self.m = nn.Sequential(
+            ResidualBlock(in_channels,[64,64],kernel_size=3,stride=4,normalization='spectral',dimensions=dimensions),
+            ResidualBlock(64,128,**common),
+            ResidualBlock(128,128,**common),
+            ResidualBlock(128,256,dilation=[1]+[2]+[4]+[8],**common),
+            pool_to_1,
+            nn.Flatten(1),
+            nn.Linear(256,out_classes)
+        )
+    
+    def forward(self,x):
+        return self.m(x)
+
+
 import torchvision.transforms as T
 def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     """

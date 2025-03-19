@@ -399,6 +399,7 @@ def train(
                     model_script=load_last_checkpoint(model_script,save_results_dir,log=False)
                     model_script.save(model_save_path)
         on_epoch_end(epoch,model)
+    return model
 
 def save_plot_metric_history(plot_dir, train_metric_history,test_metric_history,source):
     metrics_count = len(train_metric_history.keys())
