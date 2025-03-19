@@ -38,7 +38,7 @@ class ResidualBlock(torch.nn.Module):
         stride = 1,
         dilation = 1,
         activation=torch.nn.ReLU,
-        normalization : Literal['batch','instance','group',None] = 'batch',
+        normalization : Literal['batch','instance','group','spectral',None] = 'batch',
         dimensions : Literal[1,2,3] = 2,
         is_transpose = False,
         padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate"
@@ -61,8 +61,15 @@ class ResidualBlock(torch.nn.Module):
 
         self.kernel_size = kernel_size
         
-        
-        norm_impl = get_normalization_from_name(dimensions,normalization)
+        # handle spectral normalization
+        if normalization=='spectral':
+            norm_impl=lambda *x: nn.Identity()
+            old_x_corr = x_corr_conv_impl
+            x_corr_conv_impl=lambda *x,**y: nn.utils.spectral_norm(old_x_corr(*x,**y))
+            old_x_corr_T = x_corr_conv_impl_T
+            x_corr_conv_impl_T=lambda *x,**y: nn.utils.spectral_norm(old_x_corr_T(*x,**y))
+        else:    
+            norm_impl = get_normalization_from_name(dimensions,normalization)
         self.dimensions=dimensions
         self._conv_x_linear(in_channels, out_channels[-1], stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
         

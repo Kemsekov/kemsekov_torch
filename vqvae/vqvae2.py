@@ -7,7 +7,7 @@ from kemsekov_torch.conv_modules import SCSEModule
 class VQVAE2Scale3(nn.Module):
     # encoder(image with shape (BATCH,3,H,W)) -> z with shape (BATCH,latent_dim,h_small,w_small)
     # decoder(z)=reconstructed image with shape (BATCH,3,H,W)
-    def __init__(self,embedding_dim,codebook_size=[256,256,256],embedding_scale=1,decay=0.99,epsilon=1e-5,dimensions=2):
+    def __init__(self,in_channels,embedding_dim,codebook_size=[256,256,256],compression_ratio=4,embedding_scale=1,decay=0.99,epsilon=1e-5,dimensions=2):
         """
         Creates new vqvae2.
         embedding_dim:
@@ -29,7 +29,7 @@ class VQVAE2Scale3(nn.Module):
         
         # input_ch -> channels
         self.encoder_bottom = nn.Sequential(
-            ResidualBlock(3,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common),
+            ResidualBlock(in_channels,[embedding_dim,embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common),
             SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
@@ -64,9 +64,9 @@ class VQVAE2Scale3(nn.Module):
             ResidualBlock(3*embedding_dim,[res_dim,embedding_dim],**common),
             SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
-            ResidualBlock(embedding_dim,[embedding_dim,embedding_dim],kernel_size=4,stride=4,**common).transpose(),
+            ResidualBlock(embedding_dim,[embedding_dim]**(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common).transpose(),
             # SCSEModule(embedding_dim),
-            conv(embedding_dim,3,1)
+            conv(embedding_dim,in_channels,1)
         )
         self.combine_bottom_and_decode_mid = ResidualBlock(2*embedding_dim,embedding_dim,**common)
         self.combine_mid_and_decode_top = ResidualBlock(2*embedding_dim,embedding_dim,**common)
