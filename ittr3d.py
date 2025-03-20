@@ -13,7 +13,7 @@ def default(val, d):
     return val if exists(val) else d
 
 def l2norm(t):
-    return F.normalize(t, dim=-1)
+    return F.normalize(t, dim=1)
 
 # 3D channel layer norm (like the original ChanLayerNorm but for 3d)
 class ChanLayerNorm3d(nn.Module):
@@ -54,7 +54,6 @@ class DPSA3d(nn.Module):
         super().__init__()
         self.heads = heads
         self.dim_head = dim_head
-        self.scale = dim_head ** -0.5
         inner_dim = heads * dim_head
 
         self.norm = ChanLayerNorm3d(dim)

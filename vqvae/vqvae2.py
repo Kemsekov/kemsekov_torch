@@ -29,7 +29,7 @@ class VQVAE2Scale3(nn.Module):
         
         # input_ch -> channels
         self.encoder_bottom = nn.Sequential(
-            ResidualBlock(in_channels,[embedding_dim,embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common),
+            ResidualBlock(in_channels,[embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common),
             SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
@@ -155,19 +155,25 @@ class Discriminator(nn.Module):
         common = dict(
             kernel_size=3,
             stride=2,
-            normalization='batch',
+            normalization='group',
             dimensions=dimensions
         )
-        
-        pool_to_1 = [nn.AdaptiveAvgPool1d,nn.AdaptiveAvgPool2d,nn.AdaptiveAvgPool3d][dimensions-1]([1]*dimensions)
+        conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
+        # pool_to_1 = [nn.AdaptiveAvgPool1d,nn.AdaptiveAvgPool2d,nn.AdaptiveAvgPool3d][dimensions-1]([1]*dimensions)
+        dp = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         self.m = nn.Sequential(
             ResidualBlock(in_channels,[64,64],kernel_size=3,stride=4,normalization='batch',dimensions=dimensions),
+            dp(),
             ResidualBlock(64,128,**common),
-            ResidualBlock(128,128,**common),
-            ResidualBlock(128,256,dilation=[1]+[2]+[4]+[8],**common),
-            pool_to_1,
-            nn.Flatten(1),
-            nn.Linear(256,out_classes)
+            dp(),
+            ResidualBlock(128,256,**common),
+            dp(),
+            ResidualBlock(256,512,dilation=[1]+[2]+[4],**common),
+            dp(),
+            # pool_to_1,
+            # nn.Flatten(1),
+            conv(512,out_classes,kernel_size=1)
+            # nn.Linear(256,out_classes)
         )
     
     def forward(self,x):

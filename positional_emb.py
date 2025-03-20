@@ -2,6 +2,30 @@ from typing import Literal
 import numpy as np
 import torch
 import torch.nn as nn
+from kemsekov_torch.common_modules import get_normalization_from_name
+class ConcatPositionalEmbeddingPermute(torch.nn.Module):
+    """
+    Concat input with shape (batch_size, ch, ...N dimensions...) to positional embedding
+    """
+    def __init__(self,channels,dimensions=2,norm='batch'):
+        super().__init__()
+        conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
+        self.norm = get_normalization_from_name(dimensions,norm)(channels)
+        self.m = conv(2*channels,channels,kernel_size=1)
+        self.emb = PositionalEncodingPermute(channels)
+    def forward(self,x):
+        return self.norm(self.m(torch.concat([x,self.emb(x)],1)))
+
+class AddPositionalEmbeddingPermute(torch.nn.Module):
+    """
+    Adds input with shape (batch_size, ch, ...N dimensions...) to positional embedding
+    """
+    def __init__(self,channels,dimensions=2):
+        super().__init__()
+        conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
+        self.emb = PositionalEncodingPermute(channels)
+    def forward(self,x):
+        return x+self.emb(x)
 
 def get_emb(sin_inp):
     """

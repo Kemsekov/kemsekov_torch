@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch import nn, einsum
 from einops.layers.torch import Reduce, Rearrange
 
-from kemsekov_torch.residual import get_normalization_from_name
+from kemsekov_torch.residual import get_normalization_from_name, Residual
 
 # helper functions
 
@@ -18,17 +18,8 @@ def default(val, d):
     return val if exists(val) else d
 
 def l2norm(t):
-    return F.normalize(t, dim = -1)
+    return F.normalize(t, dim = 1)
 
-# helper classes
-
-class Residual(nn.Module):
-    def __init__(self, fn):
-        super().__init__()
-        self.fn = fn
-
-    def forward(self, x):
-        return self.fn(x) + x
 
 class ChanLayerNorm(nn.Module):
     def __init__(self, dim, eps = 1e-5):
@@ -52,8 +43,8 @@ class HPB(nn.Module):
         dim,
         out_dim,
         heads = 8,
-        attn_height_top_k = -1,
-        attn_width_top_k = -1,
+        attn_height_top_k = 16,
+        attn_width_top_k = 16,
         attn_dropout = 0.,
         ff_dropout = 0.,
         normalization='instance'
@@ -111,8 +102,8 @@ class DPSA(nn.Module):
         dim,
         out_dim,
         heads = 8,
-        height_top_k = -1,
-        width_top_k = -1,
+        height_top_k = 16,
+        width_top_k = 16,
         dropout = 0.
     ):
         super().__init__()
@@ -130,7 +121,7 @@ class DPSA(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.to_out = nn.Conv2d(inner_dim, out_dim, 1)
         self.fold_out_heads = Rearrange('b (h c) ... -> (b h) c ...', h = self.heads)
-        self.q_probe_reduce = Reduce('b c .. -> b c', 'sum')
+        self.q_probe_reduce = Reduce('b c ... -> b c', 'sum')
         self.k_sum_over_width = Reduce('b c height width -> b height c', 'sum')
         self.k_sum_over_height = Reduce('b c height width -> b c width', 'sum')
         self.flatten_to_hidden_dim=Rearrange('b d h w -> b (h w) d')
@@ -140,21 +131,15 @@ class DPSA(nn.Module):
         height_top_k = self.height_top_k
         width_top_k = self.width_top_k
         
-        if height_top_k==-1:
-            height_top_k=int(math.ceil(math.sqrt(height)))
-        
-        if width_top_k==-1:
-            width_top_k=int(math.ceil(math.sqrt(width)))
         x = self.norm(x)
-
         q, k, v = self.to_qkv(x).chunk(3, dim = 1)
-
-        # fold out heads
+        
 
         q = self.fold_out_heads(q)
         k = self.fold_out_heads(k)
         v = self.fold_out_heads(v)
-
+        
+        # fold out heads
         # they used l2 normalized queries and keys, cosine sim attention basically
 
         q, k = l2norm(q),l2norm(k)
