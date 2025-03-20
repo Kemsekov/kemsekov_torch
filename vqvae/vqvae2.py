@@ -1,8 +1,10 @@
 from typing import List
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
-from kemsekov_torch.residual import ResidualBlock
+from kemsekov_torch.residual import ResidualBlock, Residual
 from kemsekov_torch.conv_modules import SCSEModule
+from kemsekov_torch.dpsa import DPSA
+from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
 
 class VQVAE2Scale3(nn.Module):
     # encoder(image with shape (BATCH,3,H,W)) -> z with shape (BATCH,latent_dim,h_small,w_small)
@@ -31,8 +33,12 @@ class VQVAE2Scale3(nn.Module):
         self.encoder_bottom = nn.Sequential(
             ResidualBlock(in_channels,[embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common),
             SCSEModule(embedding_dim),
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            Residual(
+                nn.Sequential(
+                    ConcatPositionalEmbeddingPermute(embedding_dim),
+                    DPSA(embedding_dim,embedding_dim)
+                )
+            ),
         )
         # channels -> channels
         self.encoder_mid  = nn.Sequential(
@@ -61,9 +67,13 @@ class VQVAE2Scale3(nn.Module):
         )
         
         self.decoder_bottom = nn.Sequential(
-            ResidualBlock(3*embedding_dim,[res_dim,embedding_dim],**common),
-            SCSEModule(embedding_dim),
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            Residual(
+                nn.Sequential(
+                    ConcatPositionalEmbeddingPermute(3*embedding_dim),
+                    Residual(DPSA(3*embedding_dim,embedding_dim)),
+                )
+            ),
+            # ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             ResidualBlock(embedding_dim,[embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common).transpose(),
             # SCSEModule(embedding_dim),
             conv(embedding_dim,in_channels,1)
@@ -150,26 +160,26 @@ class VQVAE2Scale3(nn.Module):
         return self.decoder_bottom(z)
 
 class Discriminator(nn.Module):
-    def __init__(self,in_channels,out_classes = 2,dimensions=2):
+    def __init__(self,in_channels,out_classes = 2,dimensions=2,normalization='spectral'):
         super().__init__()
         common = dict(
-            kernel_size=3,
+            kernel_size=4,
             stride=2,
-            normalization='group',
+            normalization=normalization,
             dimensions=dimensions
         )
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         # pool_to_1 = [nn.AdaptiveAvgPool1d,nn.AdaptiveAvgPool2d,nn.AdaptiveAvgPool3d][dimensions-1]([1]*dimensions)
         dp = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         self.m = nn.Sequential(
-            ResidualBlock(in_channels,[64,64],kernel_size=3,stride=4,normalization='batch',dimensions=dimensions),
-            dp(),
+            ResidualBlock(in_channels,[64,64],kernel_size=3,stride=4,normalization=normalization,dimensions=dimensions),
+            dp(0.05),
             ResidualBlock(64,128,**common),
-            dp(),
+            dp(0.05),
             ResidualBlock(128,256,**common),
-            dp(),
+            dp(0.05),
             ResidualBlock(256,512,dilation=[1]+[2]+[4],**common),
-            dp(),
+            dp(0.05),
             # pool_to_1,
             # nn.Flatten(1),
             conv(512,out_classes,kernel_size=1)

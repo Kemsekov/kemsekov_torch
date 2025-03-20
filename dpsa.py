@@ -1,13 +1,10 @@
 # fixed implementation from https://github.com/lucidrains/ITTR-pytorch of paper
 # https://arxiv.org/pdf/2203.16015
 
-import math
 import torch
 import torch.nn.functional as F
-from torch import nn, einsum
+from torch import nn
 from einops.layers.torch import Reduce, Rearrange
-
-from kemsekov_torch.residual import get_normalization_from_name, Residual
 
 # helper functions
 
@@ -32,68 +29,6 @@ class ChanLayerNorm(nn.Module):
         var = torch.var(x, dim = 1, unbiased = False, keepdim = True)
         mean = torch.mean(x, dim = 1, keepdim = True)
         return (x - mean) / (var + self.eps).sqrt() * self.g + self.b
-
-# classes
-
-class HPB(nn.Module):
-    """ Hybrid Perception Block """
-
-    def __init__(
-        self,
-        dim,
-        out_dim,
-        heads = 8,
-        attn_height_top_k = 16,
-        attn_width_top_k = 16,
-        attn_dropout = 0.,
-        ff_dropout = 0.,
-        normalization='instance'
-    ):
-        super().__init__()
-
-        self.attn = DPSA(
-            dim = dim,
-            heads = heads,
-            out_dim = out_dim,
-            height_top_k = attn_height_top_k,
-            width_top_k = attn_width_top_k,
-            dropout = attn_dropout
-        )
-        self.dwconv = nn.Conv2d(dim, out_dim, 3, padding = 1, groups = math.gcd(dim,out_dim))
-        self.attn_parallel_combine_out = nn.Conv2d(out_dim * 2, out_dim, 1)
-        
-        # this method returns normalization implementation based on dimensions and normalization type
-        norm = get_normalization_from_name(dimensions=2,normalization=normalization)
-        f_inner = out_dim*4
-        self.ff = nn.Sequential(
-            nn.Conv2d(out_dim, f_inner, 1),
-            norm(f_inner),
-            nn.GELU(),
-            nn.Dropout(ff_dropout),
-            Residual(nn.Sequential(
-                nn.Conv2d(f_inner, f_inner, 3, padding = 1, groups = f_inner),
-                norm(f_inner),
-                nn.GELU(),
-                nn.Dropout(ff_dropout)
-            )),
-            nn.Conv2d(f_inner, out_dim, 1),
-            norm(out_dim)
-        )
-        self.x_residual = nn.Identity()
-        if dim!=out_dim:
-            self.x_residual = nn.Sequential(
-                nn.Conv2d(dim,out_dim,kernel_size=1),
-                norm(out_dim)
-            )
-
-    def forward(self, x):
-        attn_branch_out = self.attn(x)
-        conv_branch_out = self.dwconv(x)
-
-        concatted_branches = torch.cat((attn_branch_out, conv_branch_out), dim = 1)
-        attn_out = self.attn_parallel_combine_out(concatted_branches) + self.x_residual(x)
-
-        return self.ff(attn_out)
 
 class DPSA(nn.Module):
     """ Dual-pruned Self-attention Block """
