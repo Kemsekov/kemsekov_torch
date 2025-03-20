@@ -3,7 +3,9 @@ import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
 from kemsekov_torch.residual import ResidualBlock, Residual
 from kemsekov_torch.conv_modules import SCSEModule
-from kemsekov_torch.dpsa import DPSA
+from kemsekov_torch.dpsa import DPSA as DPSA2D
+from kemsekov_torch.dpsa1d import DPSA1D
+from kemsekov_torch.dpsa3d import DPSA3D
 from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
 
 class VQVAE2Scale3(nn.Module):
@@ -28,15 +30,15 @@ class VQVAE2Scale3(nn.Module):
             "normalization":'batch',
         }
         res_dim = embedding_dim//2
-        
+        dpsa = [DPSA1D,DPSA2D,DPSA3D][dimensions-1]
         # input_ch -> channels
         self.encoder_bottom = nn.Sequential(
             ResidualBlock(in_channels,[embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common),
             SCSEModule(embedding_dim),
             Residual(
                 nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(embedding_dim),
-                    DPSA(embedding_dim,embedding_dim)
+                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
+                    dpsa(embedding_dim,embedding_dim)
                 )
             ),
         )
@@ -69,8 +71,8 @@ class VQVAE2Scale3(nn.Module):
         self.decoder_bottom = nn.Sequential(
             Residual(
                 nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(3*embedding_dim),
-                    Residual(DPSA(3*embedding_dim,embedding_dim)),
+                    ConcatPositionalEmbeddingPermute(3*embedding_dim,dimensions=dimensions),
+                    Residual(dpsa(3*embedding_dim,embedding_dim)),
                 )
             ),
             # ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
@@ -173,13 +175,9 @@ class Discriminator(nn.Module):
         dp = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         self.m = nn.Sequential(
             ResidualBlock(in_channels,[64,64],kernel_size=3,stride=4,normalization=normalization,dimensions=dimensions),
-            dp(0.05),
             ResidualBlock(64,128,**common),
-            dp(0.05),
             ResidualBlock(128,256,**common),
-            dp(0.05),
             ResidualBlock(256,512,dilation=[1]+[2]+[4],**common),
-            dp(0.05),
             # pool_to_1,
             # nn.Flatten(1),
             conv(512,out_classes,kernel_size=1)

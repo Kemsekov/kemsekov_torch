@@ -63,8 +63,9 @@ class DPSA(nn.Module):
 
     def forward(self, x):
         b, c, height,width = x.shape
-        height_top_k = self.height_top_k
-        width_top_k = self.width_top_k
+        
+        height_top_k = self.height_top_k if self.height_top_k>0 else int(height**0.5)
+        width_top_k = self.width_top_k if self.width_top_k>0 else int(width**0.5)
         
         x = self.norm(x)
         q, k, v = self.to_qkv(x).chunk(3, dim = 1)

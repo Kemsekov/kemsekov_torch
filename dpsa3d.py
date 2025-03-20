@@ -26,9 +26,9 @@ class DPSA3D(nn.Module):
         dim,              # Input channel dimension
         out_dim,          # Output channel dimension
         heads=8,          # Number of attention heads
-        depth_top_k=16,   # Number of depth positions to keep
-        height_top_k=16,  # Number of height positions to keep
-        width_top_k=16,   # Number of width positions to keep
+        depth_top_k=-1,   # Number of depth positions to keep
+        height_top_k=-1,  # Number of height positions to keep
+        width_top_k=-1,   # Number of width positions to keep
         dropout=0.        # Dropout rate
     ):
         super().__init__()
@@ -64,11 +64,15 @@ class DPSA3D(nn.Module):
     def forward(self, x):
         # Input shape: (b, c, D, H, W)
         b, c, D, H, W = x.shape
-
+        depth_top_k = self.depth_top_k if self.depth_top_k>0 else int(D**0.5)
+        height_top_k = self.height_top_k if self.height_top_k>0 else int(H**0.5)
+        width_top_k = self.width_top_k if self.width_top_k>0 else int(W**0.5)
+        
+        
         # Determine if pruning is needed along each dimension
-        need_depth_select = self.depth_top_k < D
-        need_height_select = self.height_top_k < H
-        need_width_select = self.width_top_k < W
+        need_depth_select = depth_top_k < D
+        need_height_select= height_top_k < H
+        need_width_select = width_top_k < W
 
         # Normalize input
         x = self.norm(x)
@@ -93,7 +97,7 @@ class DPSA3D(nn.Module):
             if need_depth_select:
                 k_depth = self.k_sum_over_height_width(k_abs)  # (b * heads, dim_head, D)
                 score_d = einsum('b c, b c d -> b d', q_probe, k_depth)  # (b * heads, D)
-                top_d_indices = score_d.topk(k=self.depth_top_k, dim=-1).indices  # (b * heads, k_d)
+                top_d_indices = score_d.topk(k=depth_top_k, dim=-1).indices  # (b * heads, k_d)
                 top_d_indices = top_d_indices[:, None, :, None, None].expand(-1, self.dim_head, -1, H, W)
                 k = torch.gather(k, dim=2, index=top_d_indices)
                 v = torch.gather(v, dim=2, index=top_d_indices)  # k, v: (b * heads, dim_head, k_d, H, W)
@@ -101,7 +105,7 @@ class DPSA3D(nn.Module):
             if need_height_select:
                 k_height = self.k_sum_over_depth_width(k_abs)  # (b * heads, dim_head, H)
                 score_h = einsum('b c, b c h -> b h', q_probe, k_height)  # (b * heads, H)
-                top_h_indices = score_h.topk(k=self.height_top_k, dim=-1).indices  # (b * heads, k_h)
+                top_h_indices = score_h.topk(k=height_top_k, dim=-1).indices  # (b * heads, k_h)
                 top_h_indices = top_h_indices[:, None, None, :, None]
                 k = torch.gather(k, dim=3, index=top_h_indices.expand(-1, self.dim_head, k.shape[2], -1, W))
                 v = torch.gather(v, dim=3, index=top_h_indices.expand(-1, self.dim_head, v.shape[2], -1, W))
@@ -109,7 +113,7 @@ class DPSA3D(nn.Module):
             if need_width_select:
                 k_width = self.k_sum_over_depth_height(k_abs)  # (b * heads, dim_head, W)
                 score_w = einsum('b c, b c w -> b w', q_probe, k_width)  # (b * heads, W)
-                top_w_indices = score_w.topk(k=self.width_top_k, dim=-1).indices  # (b * heads, k_w)
+                top_w_indices = score_w.topk(k=width_top_k, dim=-1).indices  # (b * heads, k_w)
                 top_w_indices = top_w_indices[:, None, None, None, :]
                 k = torch.gather(k, dim=4, index=top_w_indices.expand(-1, self.dim_head, k.shape[2], k.shape[3], -1))
                 v = torch.gather(v, dim=4, index=top_w_indices.expand(-1, self.dim_head, v.shape[2], v.shape[3], -1))

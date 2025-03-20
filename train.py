@@ -195,6 +195,13 @@ def train(
             acc.load_state(load_state_dir)
             print(f"loaded training state from {load_state_dir}")
             
+                   
+        except Exception as e:
+            print("Failed to load state with error",e)
+            print("Ignoring state loading...")
+        
+        try:
+            
             load_report_path = os.path.join(load_checkpoint_dir,"report.json")
             if os.path.exists(load_report_path):
                 with open(load_report_path,'r') as f:
@@ -213,10 +220,9 @@ def train(
                     # from each metric history metric get best metrics
                     load_best_metric_from_history(best_train_metric, train_metric_history)
                     load_best_metric_from_history(best_test_metric, test_metric_history)
-                   
         except Exception as e:
-            print("Failed to load state with error",e)
-            print("Ignoring state loading...")
+            print("Failed to training history",e)
+            print("Ignoring training history loading...")
     
     if tie_weights:
         model.tie_weights()

@@ -2,7 +2,7 @@ from typing import List
 from residual import *
 from conv_modules import *
 from common_modules import Interpolate
-from ittr import HPB
+from tmp.vqvae.kemsekov_torch.dpsa import HPB
 class Encoder(torch.nn.Module):
     """
     Encoder module for the Residual U-Net architecture.
