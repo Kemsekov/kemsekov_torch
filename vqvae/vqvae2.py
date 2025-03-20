@@ -174,7 +174,7 @@ class Discriminator(nn.Module):
         # pool_to_1 = [nn.AdaptiveAvgPool1d,nn.AdaptiveAvgPool2d,nn.AdaptiveAvgPool3d][dimensions-1]([1]*dimensions)
         dp = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         self.m = nn.Sequential(
-            ResidualBlock(in_channels,[64,64],kernel_size=3,stride=4,normalization=normalization,dimensions=dimensions),
+            ResidualBlock(in_channels,[64,64],kernel_size=4,stride=4,normalization=normalization,dimensions=dimensions),
             ResidualBlock(64,128,**common),
             ResidualBlock(128,256,**common),
             ResidualBlock(256,512,dilation=[1]+[2]+[4],**common),

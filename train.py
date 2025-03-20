@@ -174,34 +174,10 @@ def train(
     if on_epoch_end is None: on_epoch_end             = lambda x,y: None
     if on_train_batch_end is None: on_train_batch_end = lambda x,y,w,z: None
     if on_test_batch_end is None: on_test_batch_end   = lambda x,y,w,z: None
-    
     acc = accelerator if accelerator is not None else Accelerator()
-    if acc.is_main_process:
-      try:
-          print("trying to capture model architecture...")
-          model_script = torch.jit.script(model)
-          model_save_path=os.path.join(save_results_dir,"model.pt")
-          model_script.save(model_save_path)
-          print(f"Saved model architecture at {model_save_path}. You can torch.load it and update it's weights with checkpoint")
-      except Exception as e:
-          print(f"failed to compile model: {e}")
-          model_script = None
     
-    model, train_loader, test_loader,optimizer, scheduler = acc.prepare(model,train_loader,test_loader,optimizer, scheduler)
-
     if load_checkpoint_dir is not None and os.path.exists(load_checkpoint_dir):
         try:
-            load_state_dir = os.path.join(load_checkpoint_dir,"state")
-            acc.load_state(load_state_dir)
-            print(f"loaded training state from {load_state_dir}")
-            
-                   
-        except Exception as e:
-            print("Failed to load state with error",e)
-            print("Ignoring state loading...")
-        
-        try:
-            
             load_report_path = os.path.join(load_checkpoint_dir,"report.json")
             if os.path.exists(load_report_path):
                 with open(load_report_path,'r') as f:
@@ -223,6 +199,33 @@ def train(
         except Exception as e:
             print("Failed to training history",e)
             print("Ignoring training history loading...")
+        if start_epoch>=num_epochs:
+            return model
+        
+        try:
+            load_state_dir = os.path.join(load_checkpoint_dir,"state")
+            acc.load_state(load_state_dir)
+            print(f"loaded training state from {load_state_dir}")
+            
+                   
+        except Exception as e:
+            print("Failed to load state with error",e)
+            print("Ignoring state loading...")
+
+    if acc.is_main_process:
+      try:
+          print("trying to capture model architecture...")
+          model_script = torch.jit.script(model)
+          model_save_path=os.path.join(save_results_dir,"model.pt")
+          model_script.save(model_save_path)
+          print(f"Saved model architecture at {model_save_path}. You can torch.load it and update it's weights with checkpoint")
+      except Exception as e:
+          print(f"failed to compile model: {e}")
+          model_script = None
+    
+    model, train_loader, test_loader,optimizer, scheduler = acc.prepare(model,train_loader,test_loader,optimizer, scheduler)
+
+
     
     if tie_weights:
         model.tie_weights()
