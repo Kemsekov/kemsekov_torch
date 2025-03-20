@@ -201,13 +201,13 @@ def train(
             print("Ignoring training history loading...")
         if start_epoch>=num_epochs:
             return model
+    model, train_loader, test_loader,optimizer, scheduler = acc.prepare(model,train_loader,test_loader,optimizer, scheduler)
         
+    if load_checkpoint_dir is not None and os.path.exists(load_checkpoint_dir):
         try:
             load_state_dir = os.path.join(load_checkpoint_dir,"state")
             acc.load_state(load_state_dir)
             print(f"loaded training state from {load_state_dir}")
-            
-                   
         except Exception as e:
             print("Failed to load state with error",e)
             print("Ignoring state loading...")
@@ -223,7 +223,6 @@ def train(
           print(f"failed to compile model: {e}")
           model_script = None
     
-    model, train_loader, test_loader,optimizer, scheduler = acc.prepare(model,train_loader,test_loader,optimizer, scheduler)
 
 
     
