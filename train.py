@@ -201,7 +201,7 @@ def train(
             print("Ignoring training history loading...")
         if start_epoch>=num_epochs:
             return model
-    model, train_loader, test_loader,optimizer, scheduler = acc.prepare(model,train_loader,test_loader,optimizer, scheduler)
+    model_acc, train_loader, test_loader,optimizer, scheduler = acc.prepare(model,train_loader,test_loader,optimizer, scheduler)
         
     if load_checkpoint_dir is not None and os.path.exists(load_checkpoint_dir):
         try:
@@ -222,7 +222,7 @@ def train(
       except Exception as e:
           print(f"failed to compile model: {e}")
           model_script = None
-    
+    model=model_acc
 
 
     
