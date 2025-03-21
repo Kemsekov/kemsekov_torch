@@ -32,8 +32,15 @@ class VQVAE2Scale3(nn.Module):
         res_dim = embedding_dim//2
         dpsa = [DPSA1D,DPSA2D,DPSA3D][dimensions-1]
         # input_ch -> channels
+        input_dim_expansion = [embedding_dim]*(compression_ratio//2)
+        for i in range(len(input_dim_expansion)):
+            input_dim_expansion[i]=2*in_channels*(i+2)**2
+            input_dim_expansion[i]=min(embedding_dim,input_dim_expansion[i])
+            
+        input_dim_expansion[-1]=embedding_dim
+        output_dim_expansion = list(reversed(input_dim_expansion))
         self.encoder_bottom = nn.Sequential(
-            ResidualBlock(in_channels,[embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common),
+            ResidualBlock(in_channels,input_dim_expansion,kernel_size=4,stride=compression_ratio,**common),
             SCSEModule(embedding_dim),
             Residual(
                 nn.Sequential(
@@ -76,9 +83,9 @@ class VQVAE2Scale3(nn.Module):
                 )
             ),
             # ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
-            ResidualBlock(embedding_dim,[embedding_dim]*(compression_ratio//2),kernel_size=4,stride=compression_ratio,**common).transpose(),
+            ResidualBlock(embedding_dim,output_dim_expansion,kernel_size=4,stride=compression_ratio,**common).transpose(),
             # SCSEModule(embedding_dim),
-            conv(embedding_dim,in_channels,1)
+            conv(output_dim_expansion[-1],in_channels,1)
         )
         self.combine_bottom_and_decode_mid = ResidualBlock(2*embedding_dim,embedding_dim,**common)
         self.combine_mid_and_decode_top = ResidualBlock(2*embedding_dim,embedding_dim,**common)
