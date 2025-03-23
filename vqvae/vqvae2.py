@@ -28,20 +28,30 @@ class VQVAE2Scale3(nn.Module):
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         common = {
             "normalization":'batch',
+            "dimensions":dimensions
         }
         res_dim = embedding_dim//2
         dpsa = [DPSA1D,DPSA2D,DPSA3D][dimensions-1]
-        # input_ch -> channels
-        input_dim_expansion = [embedding_dim]*(compression_ratio//2)
-        for i in range(len(input_dim_expansion)):
-            input_dim_expansion[i]=2*in_channels*(i+2)**2
+        
+        # data compression over single stride 2 convolution
+        compression_per_conv = 2**(dimensions)
+        
+        input_dim_expansion = [embedding_dim]*int(1+compression_ratio**0.5)
+        input_dim_expansion[0] = 2*in_channels*compression_per_conv
+        for i in range(1,len(input_dim_expansion)):
+            input_dim_expansion[i]=input_dim_expansion[i-1]*compression_per_conv
             input_dim_expansion[i]=min(embedding_dim,input_dim_expansion[i])
             
         input_dim_expansion[-1]=embedding_dim
+        
         output_dim_expansion = list(reversed(input_dim_expansion))
         self.encoder_bottom = nn.Sequential(
-            ResidualBlock(in_channels,input_dim_expansion,kernel_size=4,stride=compression_ratio,**common),
-            SCSEModule(embedding_dim),
+            *[
+                ResidualBlock(inp,outp,kernel_size=4,stride=2,normalization=common['normalization'],dimensions=dimensions)
+                for inp,outp in zip([in_channels]+input_dim_expansion,input_dim_expansion)
+            ],
+            
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
             Residual(
                 nn.Sequential(
                     ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
@@ -52,39 +62,62 @@ class VQVAE2Scale3(nn.Module):
         # channels -> channels
         self.encoder_mid  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
-            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            Residual(
+                nn.Sequential(
+                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
+                    dpsa(embedding_dim,embedding_dim)
+                )
+            ),
         )
         
         # channels -> channels
         self.encoder_top  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
-            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            Residual(
+                nn.Sequential(
+                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
+                    dpsa(embedding_dim,embedding_dim)
+                )
+            ),
         )
         
         self.decoder_top = nn.Sequential(
+            Residual(
+                nn.Sequential(
+                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
+                    dpsa(embedding_dim,embedding_dim)
+                )
+            ),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
-            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         self.decoder_mid = nn.Sequential(
+            Residual(
+                nn.Sequential(
+                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
+                    dpsa(embedding_dim,embedding_dim)
+                )
+            ),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
-            SCSEModule(embedding_dim),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
         )
         
         self.decoder_bottom = nn.Sequential(
+            ResidualBlock(3*embedding_dim,embedding_dim,**common),
             Residual(
                 nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(3*embedding_dim,dimensions=dimensions),
-                    Residual(dpsa(3*embedding_dim,embedding_dim)),
+                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
+                    Residual(dpsa(embedding_dim,embedding_dim)),
                 )
             ),
-            # ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
-            ResidualBlock(embedding_dim,output_dim_expansion,kernel_size=4,stride=compression_ratio,**common).transpose(),
-            # SCSEModule(embedding_dim),
+            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            *[
+                ResidualBlock(inp,outp,kernel_size=4,stride=2,**common).transpose()
+                for inp,outp in zip([embedding_dim]+output_dim_expansion,output_dim_expansion)
+            ],
             conv(output_dim_expansion[-1],in_channels,1)
         )
         self.combine_bottom_and_decode_mid = ResidualBlock(2*embedding_dim,embedding_dim,**common)

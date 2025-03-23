@@ -12,7 +12,7 @@ class ConstModule(torch.nn.Module):
         return self.constant
 
 
-# @torch.compile
+# @torch.jit.script
 def resize_tensor(input : torch.Tensor,output_size : List[int],dimension_resize_mode : str = 'nearest-exact',channel_resize_mode : str='nearest-exact'):
     """
     Resizes input 1d,2d,3d tensor to given size, all up to channels
@@ -26,13 +26,20 @@ def resize_tensor(input : torch.Tensor,output_size : List[int],dimension_resize_
         
     if input.shape[1:]==torch.Size(output_size):
         return input
-        
-    dim_size = output_size[1:]
-    resize_dim = nn.functional.interpolate(input,dim_size,mode=dimension_resize_mode).transpose(1,2)
+    
+    dim_size = torch.Size(output_size[1:])
+    if input.shape[2:]!=dim_size:
+        resize_dim = nn.functional.interpolate(input,dim_size,mode=dimension_resize_mode).transpose(1,2)
+    else:
+        resize_dim = input.transpose(1,2)
     
     ch_size    = list(output_size[1:])
     ch_size[0] = output_size[0]
-    resize_channel = nn.functional.interpolate(resize_dim,torch.Size(ch_size),mode=channel_resize_mode).transpose(1,2)
+    ch_size=torch.Size(ch_size)
+    if resize_dim.shape[2:]!=ch_size:
+        resize_channel = nn.functional.interpolate(resize_dim,ch_size,mode=channel_resize_mode).transpose(1,2)
+    else:
+        resize_channel = resize_dim.transpose(1,2)
     
     if is_unsqueeze:
         return resize_channel[:,0,:]
