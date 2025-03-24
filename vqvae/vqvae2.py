@@ -237,13 +237,8 @@ def vqvae2_loss(x,x_rec,z,z_q,beta=0.25):
     
     loss_ = lambda x,y : ((x-y)**2).mean()
     
-    rec_loss = 0
     # general mse reconstruction loss
-    rec_loss = 3*loss_(x,x_rec)
-    for sigma in [0.1,0.5,1]:
-        xgb = T.GaussianBlur(7,sigma)(x)
-        rec_loss+=loss_(x-xgb,x_rec-xgb)
-    rec_loss/=6
+    rec_loss = loss_(x,x_rec)
     
     commitment_loss = 0
     # commitment loss
