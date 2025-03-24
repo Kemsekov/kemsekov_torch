@@ -37,8 +37,8 @@ class DPSA(nn.Module):
         dim,
         out_dim,
         heads = 8,
-        height_top_k = 16,
-        width_top_k = 16,
+        height_top_k = -1,
+        width_top_k = -1,
         dropout = 0.
     ):
         super().__init__()

@@ -1,3 +1,4 @@
+from functools import partial
 from typing import List
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
@@ -33,6 +34,16 @@ class VQVAE2Scale3(nn.Module):
         res_dim = embedding_dim//2
         dpsa = [DPSA1D,DPSA2D,DPSA3D][dimensions-1]
         
+        # make dpsa work use fixed amount of processed tokens, to be around 1024
+        if dimensions==1:
+            dpsa = partial(dpsa,length_top_k=1024)
+            
+        if dimensions==2:
+            dpsa = partial(dpsa,height_top_k=32,width_top_k=32)
+        
+        if dimensions==3:
+            dpsa = partial(dpsa,height_top_k=10,width_top_k=10,depth_top_k=10)
+        
         # data compression over single stride 2 convolution
         compression_per_conv = 2**(dimensions)
         
@@ -43,8 +54,11 @@ class VQVAE2Scale3(nn.Module):
             input_dim_expansion[i]=min(embedding_dim,input_dim_expansion[i])
             
         input_dim_expansion[-1]=embedding_dim
-        
         output_dim_expansion = list(reversed(input_dim_expansion))
+        
+        print("input_dim_expansion",input_dim_expansion)
+        print("output_dim_expansion",output_dim_expansion)
+        
         self.encoder_bottom = nn.Sequential(
             *[
                 ResidualBlock(inp,outp,kernel_size=4,stride=2,normalization=common['normalization'],dimensions=dimensions)
@@ -211,14 +225,14 @@ class Discriminator(nn.Module):
             dimensions=dimensions
         )
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
-        # pool_to_1 = [nn.AdaptiveAvgPool1d,nn.AdaptiveAvgPool2d,nn.AdaptiveAvgPool3d][dimensions-1]([1]*dimensions)
+        pool_to_1 = [nn.AdaptiveAvgPool1d,nn.AdaptiveAvgPool2d,nn.AdaptiveAvgPool3d][dimensions-1]([1]*dimensions)
         self.m = nn.Sequential(
             ResidualBlock(in_channels,[64,64],kernel_size=4,stride=4,normalization=normalization,dimensions=dimensions),
             ResidualBlock(64,128,**common),
             ResidualBlock(128,256,**common),
             ResidualBlock(256,512,dilation=[1]+[2]+[4],**common),
-            # pool_to_1,
-            # nn.Flatten(1),
+            pool_to_1,
+            nn.Flatten(1),
             conv(512,out_classes,kernel_size=1)
             # nn.Linear(256,out_classes)
         )
