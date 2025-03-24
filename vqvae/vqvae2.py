@@ -1,4 +1,5 @@
 from functools import partial
+import math
 from typing import List
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
@@ -47,7 +48,7 @@ class VQVAE2Scale3(nn.Module):
         # data compression over single stride 2 convolution
         compression_per_conv = 2**(dimensions)
         
-        input_dim_expansion = [embedding_dim]*int(1+compression_ratio**0.5)
+        input_dim_expansion = [embedding_dim]*int(1+math.log2(compression_ratio))
         input_dim_expansion[0] = 2*in_channels*compression_per_conv
         for i in range(1,len(input_dim_expansion)):
             input_dim_expansion[i]=input_dim_expansion[i-1]*compression_per_conv
