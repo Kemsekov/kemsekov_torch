@@ -13,19 +13,25 @@ from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
 class VQVAE2Scale3(nn.Module):
     # encoder(image with shape (BATCH,3,H,W)) -> z with shape (BATCH,latent_dim,h_small,w_small)
     # decoder(z)=reconstructed image with shape (BATCH,3,H,W)
-    def __init__(self,in_channels,embedding_dim,codebook_size=[256,256,256],compression_ratio=4,embedding_scale=1,decay=0.99,epsilon=1e-5,dimensions=2):
+    def __init__(self,in_channels,embedding_dim,codebook_size=[256,256,256],compression_ratio=4,decay=0.99,epsilon=1e-5,dimensions=2):
         """
         Creates new vqvae2.
+        
+        in_channels: input tensor channels
         embedding_dim:
             channels count of encoder output
-        codebook_size: list[int]
+        codebook_size: codebook size per scaling layer, `[bottom_codebook_size,mid_codebook_size,top_codebook_size]`. It is common to use larger codebooks for bottom and mid and use small codebook for top scales.
             What is codebook size for three layers, high,middle,low
         embedding_scale: desired norm of initialization vectors in codebooks
+        compression_ratio: defines how much we want to compress input image, compression_ratio=4 with 256x256 image will be compressed to 64x64 latent tensor
+        decay: decay for EMA update of codebook
+        epsilon: used to update codebook
+        dimensions: input dimension shape, so if we use dimensions=1 we can process sequence, if we use dimensions=2 we can process images, if we use dimensions=3 we can process video, etc
         """
         super().__init__()
-        self.quantizer_bottom = VectorQuantizer(embedding_dim,codebook_size[0],decay,epsilon,embedding_scale)
-        self.quantizer_mid    = VectorQuantizer(embedding_dim,codebook_size[1],decay,epsilon,embedding_scale)
-        self.quantizer_top    = VectorQuantizer(embedding_dim,codebook_size[2],decay,epsilon,embedding_scale)
+        self.quantizer_bottom = VectorQuantizer(embedding_dim,codebook_size[0],decay,epsilon,1)
+        self.quantizer_mid    = VectorQuantizer(embedding_dim,codebook_size[1],decay,epsilon,1)
+        self.quantizer_top    = VectorQuantizer(embedding_dim,codebook_size[2],decay,epsilon,1)
         
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         common = {
@@ -36,19 +42,22 @@ class VQVAE2Scale3(nn.Module):
         dpsa = [DPSA1D,DPSA2D,DPSA3D][dimensions-1]
         
         # make dpsa work use fixed amount of processed tokens, to be around 1024
+        tokens = 1024
         if dimensions==1:
-            dpsa = partial(dpsa,length_top_k=1024)
+            dpsa = partial(dpsa,length_top_k=tokens)
             
         if dimensions==2:
-            dpsa = partial(dpsa,height_top_k=32,width_top_k=32)
+            t = int(tokens**0.5)
+            dpsa = partial(dpsa,height_top_k=t,width_top_k=t)
         
         if dimensions==3:
-            dpsa = partial(dpsa,height_top_k=10,width_top_k=10,depth_top_k=10)
+            t = int(tokens**0.333)
+            dpsa = partial(dpsa,height_top_k=t,width_top_k=t,depth_top_k=t)
         
         # data compression over single stride 2 convolution
         compression_per_conv = 2**(dimensions)
         
-        input_dim_expansion = [embedding_dim]*int(1+math.log2(compression_ratio))
+        input_dim_expansion = [embedding_dim]*int(math.log2(compression_ratio))
         input_dim_expansion[0] = 2*in_channels*compression_per_conv
         for i in range(1,len(input_dim_expansion)):
             input_dim_expansion[i]=input_dim_expansion[i-1]*compression_per_conv
