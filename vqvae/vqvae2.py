@@ -9,11 +9,22 @@ from kemsekov_torch.dpsa import DPSA as DPSA2D
 from kemsekov_torch.dpsa1d import DPSA1D
 from kemsekov_torch.dpsa3d import DPSA3D
 from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
+from kemsekov_torch.common_modules import get_normalization_from_name
 
 class VQVAE2Scale3(nn.Module):
     # encoder(image with shape (BATCH,3,H,W)) -> z with shape (BATCH,latent_dim,h_small,w_small)
     # decoder(z)=reconstructed image with shape (BATCH,3,H,W)
-    def __init__(self,in_channels,embedding_dim,codebook_size=[256,256,256],compression_ratio=4,decay=0.99,epsilon=1e-5,dimensions=2):
+    def __init__(
+        self,
+        in_channels,
+        embedding_dim,
+        codebook_size=[256,256,256],
+        compression_ratio=4,
+        decay=0.99,
+        epsilon=1e-5,
+        dimensions=2,
+        num_residual_layers=3,
+        ):
         """
         Creates new vqvae2.
         
@@ -27,6 +38,7 @@ class VQVAE2Scale3(nn.Module):
         decay: decay for EMA update of codebook
         epsilon: used to update codebook
         dimensions: input dimension shape, so if we use dimensions=1 we can process sequence, if we use dimensions=2 we can process images, if we use dimensions=3 we can process video, etc
+        num_residual_layers: how many residual layers to use
         """
         super().__init__()
         self.quantizer_bottom = VectorQuantizer(embedding_dim,codebook_size[0],decay,epsilon,1)
@@ -35,24 +47,14 @@ class VQVAE2Scale3(nn.Module):
         
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         common = {
-            "normalization":'batch',
-            "dimensions":dimensions
+            "normalization":None,
+            "dimensions":dimensions,
+            'activation':torch.nn.SiLU
         }
-        res_dim = embedding_dim//2
-        dpsa = [DPSA1D,DPSA2D,DPSA3D][dimensions-1]
         
-        # make dpsa work use fixed amount of processed tokens, to be around 1024
-        tokens = 1024
-        if dimensions==1:
-            dpsa = partial(dpsa,length_top_k=tokens)
-            
-        if dimensions==2:
-            t = int(tokens**0.5)
-            dpsa = partial(dpsa,height_top_k=t,width_top_k=t)
-        
-        if dimensions==3:
-            t = int(tokens**0.333)
-            dpsa = partial(dpsa,height_top_k=t,width_top_k=t,depth_top_k=t)
+        # make residual layers to be very cheap by not computing full emb_dim to emb_dim conv
+        # but by using internal small dim like emb_dim -> res_dim -> emb_dim
+        res_dim = embedding_dim//4
         
         # data compression over single stride 2 convolution
         compression_per_conv = 2**(dimensions)
@@ -70,74 +72,44 @@ class VQVAE2Scale3(nn.Module):
         print("output_dim_expansion",output_dim_expansion)
         
         self.encoder_bottom = nn.Sequential(
+            get_normalization_from_name(dimensions,common['normalization'])(in_channels),
             *[
-                ResidualBlock(inp,outp,kernel_size=4,stride=2,normalization=common['normalization'],dimensions=dimensions)
+                ResidualBlock(inp,outp,kernel_size=4,stride=2,normalization=common['normalization'],dimensions=dimensions, activation=common['activation'])
                 for inp,outp in zip([in_channels]+input_dim_expansion,input_dim_expansion)
             ],
             
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
-            Residual(
-                nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
-                    dpsa(embedding_dim,embedding_dim)
-                )
-            ),
+            *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
         )
         # channels -> channels
         self.encoder_mid  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
-            Residual(
-                nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
-                    dpsa(embedding_dim,embedding_dim)
-                )
-            ),
+            *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
+            
         )
         
         # channels -> channels
         self.encoder_top  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
-            Residual(
-                nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
-                    dpsa(embedding_dim,embedding_dim)
-                )
-            ),
+            *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
         )
         
         self.decoder_top = nn.Sequential(
-            Residual(
-                nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
-                    dpsa(embedding_dim,embedding_dim)
-                )
-            ),
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
+            
         )
         
         self.decoder_mid = nn.Sequential(
-            Residual(
-                nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
-                    dpsa(embedding_dim,embedding_dim)
-                )
-            ),
+            *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            
+
         )
         
         self.decoder_bottom = nn.Sequential(
             ResidualBlock(3*embedding_dim,embedding_dim,**common),
-            Residual(
-                nn.Sequential(
-                    ConcatPositionalEmbeddingPermute(embedding_dim,dimensions=dimensions),
-                    Residual(dpsa(embedding_dim,embedding_dim)),
-                )
-            ),
-            ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common),
+            *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
+
             *[
                 ResidualBlock(inp,outp,kernel_size=4,stride=2,**common).transpose()
                 for inp,outp in zip([embedding_dim]+output_dim_expansion,output_dim_expansion)
