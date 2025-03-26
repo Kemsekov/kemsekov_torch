@@ -105,9 +105,9 @@ class VQVAE2Scale3(nn.Module):
             
 
         )
-        
+        self.combine_scales = ResidualBlock(3*embedding_dim,embedding_dim,**common)
         self.decoder_bottom = nn.Sequential(
-            ResidualBlock(3*embedding_dim,embedding_dim,**common),
+            
             *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
 
             *[
@@ -170,6 +170,7 @@ class VQVAE2Scale3(nn.Module):
         zd_bottom = F.normalize(zd_bottom, p=2.0, dim=1)        
         total_quant = [zd_bottom,self.upsample_mid(zd_mid),self.upsample_top(zd_top)]
         z = torch.concat(total_quant,1)
+        z = self.combine_scales(z)
         # z=F.normalize(z, p=2.0, dim=1)
 
         all_zd_emb.append(zd_bottom)
@@ -195,6 +196,7 @@ class VQVAE2Scale3(nn.Module):
         
         total_quant = [zd_bottom,self.upsample_mid(zd_mid),self.upsample_top(zd_top)]
         z = torch.concat(total_quant,1)
+        z = self.combine_scales(z)
         return self.decoder_bottom(z)
 
 class Discriminator(nn.Module):

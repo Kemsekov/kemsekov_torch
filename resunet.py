@@ -2,7 +2,6 @@ from typing import List
 from residual import *
 from conv_modules import *
 from common_modules import Interpolate
-from tmp.vqvae.kemsekov_torch.dpsa import HPB
 class Encoder(torch.nn.Module):
     """
     Encoder module for the Residual U-Net architecture.
@@ -29,7 +28,6 @@ class Encoder(torch.nn.Module):
         dimensions = 2,
         normalization : Literal['batch','instance','group',None] = 'batch',
         kernel_size=3,
-        x_residual_type='conv'
     ):
         """
         Initializes the Encoder module.
@@ -48,7 +46,6 @@ class Encoder(torch.nn.Module):
             dimensions (int, optional): Dimensionality of the input tensor (1, 2, or 3). Default is 2.
             normalization (Literal['batch','instance',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', or None). Default is 'batch'.
             kernel_size (int, optional): Kernel size for convolutions in ResidualBlocks. Default is 3.
-            x_residual_type (Literal['conv','resize'], optional): Type of residual connection in ResidualBlocks ('conv' for convolutional correction, 'resize' for interpolation-based resizing). Default is 'conv'.
 
         **Raises:**
             ValueError: If the lengths of `in_channels_`, `out_channels_`, `dilations`, or `block_sizes` do not match.
@@ -65,7 +62,6 @@ class Encoder(torch.nn.Module):
                 stride = 2,
                 dilation=dilations[i],
                 normalization=normalization,
-                x_residual_type=x_residual_type,
                 dimensions=dimensions
             )
             attn = attention[i]
@@ -148,7 +144,6 @@ class Decoder(torch.nn.Module):
         dimensions = 2,
         normalization : Literal['batch','instance','group',None] = 'batch',
         kernel_size=3,
-        x_residual_type='conv'
     ):
         """
         Initializes the Decoder module.
@@ -166,7 +161,6 @@ class Decoder(torch.nn.Module):
             dimensions (int, optional): Dimensionality of the input tensor (1, 2, or 3). Default is 2.
             normalization (Literal['batch','instance',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', or None). Default is 'batch'.
             kernel_size (int, optional): Kernel size for convolutions in ResidualBlocks. Default is 3.
-            x_residual_type (Literal['conv','resize'], optional): Type of residual connection in ResidualBlocks ('conv' for convolutional correction, 'resize' for interpolation-based resizing). Default is 'conv'.
 
         **Raises:**
             ValueError: If the lengths of `up_in_channels`, `up_out_channels`, or `block_sizes` do not match.
@@ -185,7 +179,6 @@ class Decoder(torch.nn.Module):
                 dilation=1,
                 dimensions=dimensions,
                 normalization=normalization,
-                x_residual_type=x_residual_type
             ).transpose()
             attn = attention[i]
             if attn is None:
@@ -284,7 +277,6 @@ class ResidualUnet(torch.nn.Module):
         dropout_p=0.5,
         normalization : Literal['batch','instance','group',None] = 'batch',
         kernel_size=3,
-        x_residual_type : Literal['conv','resize'] = 'conv'
         ):
         """
         Initializes the ResidualUnet.
@@ -345,7 +337,6 @@ class ResidualUnet(torch.nn.Module):
             dropout_p=dropout_p,
             dimensions=dimensions,
             normalization=normalization,
-            x_residual_type=x_residual_type,
             kernel_size=kernel_size
         )
         
@@ -357,7 +348,6 @@ class ResidualUnet(torch.nn.Module):
             dropout_p=dropout_p,
             dimensions=dimensions,
             normalization=normalization,
-            x_residual_type=x_residual_type,
             kernel_size=kernel_size
         )
 

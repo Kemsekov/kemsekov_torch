@@ -56,6 +56,15 @@ class Resize(nn.Module):
     def forward(self, x):
         return resize_tensor(x,self.output_size)
 
+class Interpolate(nn.Module):
+    def __init__(self, scale_factor):
+        super().__init__()
+        self.scale_factor=scale_factor
+        
+    def forward(self,x):
+        shape =  x.shape
+        shape = torch.Size(list(shape[:2])+[int(v*self.scale_factor) for v in shape[2:]])[1:]
+        return resize_tensor(x,shape)
 
 def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance', 'group', None]):
     """Get normalization for given dimensions from its name.
