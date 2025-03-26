@@ -83,6 +83,7 @@ class DPSA1D(nn.Module):
 
         # Projection to queries, keys, values using a 1x1 convolution
         self.to_qkv = nn.Conv1d(dim, inner_dim * 3, kernel_size=1, bias=False)
+        self.to_out = nn.Conv1d(inner_dim, dim, kernel_size=1, bias=False)
 
         # Pruning parameter
         self.length_top_k = length_top_k
@@ -91,6 +92,7 @@ class DPSA1D(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         self.gamma = nn.Parameter(torch.zeros(1))
+        
 
         # Tensor rearrangement utilities
         self.fold_out_heads = Rearrange('b (h c) L -> (b h) c L', h=heads)
@@ -148,7 +150,8 @@ class DPSA1D(nn.Module):
         out = out.view(b, self.heads, L, self.dim_head)
         out = out.permute(0, 1, 3, 2).contiguous()  # (b, heads, dim_head, L)
         out = out.view(b, self.heads * self.dim_head, L)
-
+        out = self.to_out(out)
+        
         # Final projection
         return self.gamma*out+x
 
@@ -184,6 +187,7 @@ class DPSA2D(nn.Module):
 
         self.norm = ChanLayerNorm2D(dim)
         self.to_qkv = nn.Conv2d(dim, inner_dim * 3, 1, bias = False)
+        self.to_out = nn.Conv2d(inner_dim, dim, kernel_size=1, bias=False)
 
         self.height_top_k = height_top_k
         self.width_top_k = width_top_k
@@ -268,6 +272,7 @@ class DPSA2D(nn.Module):
         out = out.view(b, self.heads, height, width, self.dim_head)
         out = out.permute(0, 1, 4, 2, 3).contiguous()
         out = out.view(b, self.heads * self.dim_head, height, width)
+        out = self.to_out(out)
         
         return self.gamma*out+x
 
@@ -304,6 +309,7 @@ class DPSA3D(nn.Module):
 
         # Projection to queries, keys, values using a 1x1x1 convolution
         self.to_qkv = nn.Conv3d(dim, inner_dim * 3, kernel_size=1, bias=False)
+        self.to_out = nn.Conv3d(inner_dim, dim, kernel_size=1, bias=False)
 
         # Pruning parameters
         self.depth_top_k = depth_top_k
@@ -394,6 +400,7 @@ class DPSA3D(nn.Module):
         out = out.view(b, self.heads, D, H, W, self.dim_head)
         out = out.permute(0, 1, 5, 2, 3, 4).contiguous()  # (b, heads, dim_head, D, H, W)
         out = out.view(b, self.heads * self.dim_head, D, H, W)
-
+        out = self.to_out(out)
+        
         # Final projection
         return self.gamma*out+x
