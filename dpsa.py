@@ -6,6 +6,9 @@ import torch.nn.functional as F
 from torch import nn, einsum
 from einops.layers.torch import Reduce, Rearrange
 
+def l2norm(t):
+    return F.normalize(t, dim = 1)
+
 class DPSA(nn.Module):
     def __init__(
         self,
@@ -73,9 +76,6 @@ class DPCA(nn.Module):
     def forward(self,context, query_source):
         return self.DPCA(context, query_source)
         
-
-def l2norm(t):
-    return F.normalize(t, dim = 1)
 
 # Channel-wise Layer Normalization for 1D inputs
 class ChanLayerNorm1D(nn.Module):
@@ -407,10 +407,11 @@ class DPCA3D(nn.Module):
         # Pruning along depth, height, and width
         if need_depth_select or need_height_select or need_width_select:
             q_abs = torch.abs(q)
-            k_abs = torch.abs(k)
             q_probe = self.q_probe_reduce(q_abs)  # (b * heads, dim_head)
+            # k_abs = torch.abs(k)
 
             if need_depth_select:
+                k_abs = torch.abs(k)
                 k_depth = self.k_sum_over_height_width(k_abs)  # (b * heads, dim_head, D_context)
                 score_d = einsum('b c, b c d -> b d', q_probe, k_depth)  # (b * heads, D_context)
                 top_d_indices = score_d.topk(k=depth_top_k, dim=-1).indices  # (b * heads, k_d)
@@ -420,6 +421,7 @@ class DPCA3D(nn.Module):
                 v = torch.gather(v, dim=2, index=top_d_indices)
 
             if need_height_select:
+                # k_abs = torch.abs(k)
                 k_height = self.k_sum_over_depth_width(k_abs)  # (b * heads, dim_head, H_context)
                 score_h = einsum('b c, b c h -> b h', q_probe, k_height)  # (b * heads, H_context)
                 top_h_indices = score_h.topk(k=height_top_k, dim=-1).indices  # (b * heads, k_h)
@@ -428,6 +430,7 @@ class DPCA3D(nn.Module):
                 v = torch.gather(v, dim=3, index=top_h_indices)
 
             if need_width_select:
+                # k_abs = torch.abs(k)
                 k_width = self.k_sum_over_depth_height(k_abs)  # (b * heads, dim_head, W_context)
                 score_w = einsum('b c, b c w -> b w', q_probe, k_width)  # (b * heads, W_context)
                 top_w_indices = score_w.topk(k=width_top_k, dim=-1).indices  # (b * heads, k_w)
