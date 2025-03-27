@@ -129,65 +129,73 @@ class DPCA1D(nn.Module):
         self.flatten_to_hidden_dim = Rearrange('b d L -> b L d')
 
     def forward(self, context, query_source):
-        #context is used to compute KV
-        #condition is used to compute Q
+        """
+        Args:
+            context: Tensor of shape (b, c, L_context) - source of keys and values
+            query_source: Tensor of shape (b, c, L_query) - source of queries
+        Returns:
+            Tensor of shape (b, dim, L_query)
+        """
+        # Unpack shapes separately
+        b, c, L_query = query_source.shape
+        _, _, L_context = context.shape
         
-        # Input shape: (b, c, L)
-        b, c, L = query_source.shape
-        length_top_k = self.length_top_k if self.length_top_k>0 else int(L**0.5)
-        # Determine if pruning is needed
-        need_select = length_top_k < L
+        # Set top-k value based on context sequence length
+        length_top_k = self.length_top_k if self.length_top_k > 0 else int(L_context ** 0.5)
+        
+        # Determine if pruning is needed based on context sequence length
+        need_select = length_top_k < L_context
 
-        # Normalize input
-        context = self.context_norm(context)
-        query_source = self.query_source_norm(query_source)
+        # Normalize inputs
+        context = self.context_norm(context)        # (b, c, L_context)
+        query_source = self.query_source_norm(query_source)  # (b, c, L_query)
 
         # Project to queries, keys, values
-        k, v = self.to_kv(context).chunk(2, dim=1)  # Each: (b, inner_dim, L)
-        q = self.to_q(query_source)
+        k, v = self.to_kv(context).chunk(2, dim=1)  # Each: (b, inner_dim, L_context)
+        q = self.to_q(query_source)                 # (b, inner_dim, L_query)
 
         # Fold out heads: (b, inner_dim, L) -> (b * heads, dim_head, L)
-        q = self.fold_out_heads(q)
-        k = self.fold_out_heads(k)
-        v = self.fold_out_heads(v)
+        q = self.fold_out_heads(q)  # (b * heads, dim_head, L_query)
+        k = self.fold_out_heads(k)  # (b * heads, dim_head, L_context)
+        v = self.fold_out_heads(v)  # (b * heads, dim_head, L_context)
 
         # L2 normalize queries and keys
         q, k = l2norm(q), l2norm(k)
 
-        # Pruning along the sequence length
+        # Pruning along the context sequence length
         if need_select:
-            q_abs = torch.abs(q)
-            k_abs = torch.abs(k)
+            q_abs = torch.abs(q)    # (b * heads, dim_head, L_query)
+            k_abs = torch.abs(k)    # (b * heads, dim_head, L_context)
             q_probe = self.q_probe_reduce(q_abs)  # (b * heads, dim_head)
-            # Compute scores for each position
-            score_l = einsum('b c, b c L -> b L', q_probe, k_abs)  # (b * heads, L)
+            # Compute scores for each position in context
+            score_l = einsum('b c, b c L -> b L', q_probe, k_abs)  # (b * heads, L_context)
             # Select top-k indices
-            top_l_indices = score_l.topk(k=length_top_k, dim=-1).indices  # (b * heads, k_l)
+            top_l_indices = score_l.topk(k=length_top_k, dim=-1).indices  # (b * heads, length_top_k)
             # Expand indices for gathering
-            top_l_indices = top_l_indices[:, None, :].expand(-1, self.dim_head, -1)  # (b * heads, dim_head, k_l)
+            top_l_indices = top_l_indices[:, None, :].expand(-1, self.dim_head, -1)  # (b * heads, dim_head, length_top_k)
             # Gather k and v
-            k = torch.gather(k, dim=2, index=top_l_indices)
-            v = torch.gather(v, dim=2, index=top_l_indices)  # k, v: (b * heads, dim_head, k_l)
+            k = torch.gather(k, dim=2, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
+            v = torch.gather(v, dim=2, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
 
         # Flatten spatial dimension
-        q = self.flatten_to_hidden_dim(q)  # (b * heads, L, dim_head)
-        k = self.flatten_to_hidden_dim(k)  # (b * heads, k_l, dim_head) if pruned, else (b * heads, L, dim_head)
-        v = self.flatten_to_hidden_dim(v)
+        q = self.flatten_to_hidden_dim(q)  # (b * heads, L_query, dim_head)
+        k = self.flatten_to_hidden_dim(k)  # (b * heads, L_k, dim_head), L_k = length_top_k if pruned, else L_context
+        v = self.flatten_to_hidden_dim(v)  # Same as k
 
         # Compute attention
-        sim = einsum('b i d, b j d -> b i j', q, k)  # (b * heads, L, k_l) or (b * heads, L, L)
+        sim = einsum('b i d, b j d -> b i j', q, k)  # (b * heads, L_query, L_k)
         attn = sim.softmax(dim=-1)
         attn = self.dropout(attn)
-        out = einsum('b i j, b j d -> b i d', attn, v)  # (b * heads, L, dim_head)
+        out = einsum('b i j, b j d -> b i d', attn, v)  # (b * heads, L_query, dim_head)
 
         # Reshape back to 1D spatial dimension
-        out = out.view(b, self.heads, L, self.dim_head)
-        out = out.permute(0, 1, 3, 2).contiguous()  # (b, heads, dim_head, L)
-        out = out.view(b, self.heads * self.dim_head, L)
-        out = self.to_out(out)
+        out = out.view(b, self.heads, L_query, self.dim_head)
+        out = out.permute(0, 1, 3, 2).contiguous()  # (b, heads, dim_head, L_query)
+        out = out.view(b, self.heads * self.dim_head, L_query)
+        out = self.to_out(out)  # (b, dim, L_query)
         
-        # Final projection
-        return self.gamma*out+query_source
+        # Final output with residual connection
+        return self.gamma * out + query_source
 
 class ChanLayerNorm2D(nn.Module):
     def __init__(self, dim, eps = 1e-5):
@@ -238,10 +246,13 @@ class DPCA2D(nn.Module):
         self.flatten_to_hidden_dim=Rearrange('b d h w -> b (h w) d')
 
     def forward(self, context, query_source):
-        b, c, height,width = query_source.shape
+        # Unpack shapes for query_source and context separately
+        b, c, height_query, width_query = query_source.shape
+        _, _, height_context, width_context = context.shape
         
-        height_top_k = self.height_top_k if self.height_top_k>0 else int(height**0.5)
-        width_top_k = self.width_top_k if self.width_top_k>0 else int(width**0.5)
+        # Set top-k values based on context dimensions
+        height_top_k = self.height_top_k if self.height_top_k > 0 else int(height_context ** 0.5)
+        width_top_k = self.width_top_k if self.width_top_k > 0 else int(width_context ** 0.5)
         
         # Normalize input
         context = self.context_norm(context)
@@ -261,9 +272,8 @@ class DPCA2D(nn.Module):
         q, k = l2norm(q),l2norm(k)
 
         # calculate whether to select and rank along height and width
-
-        need_height_select_and_rank = height_top_k < height
-        need_width_select_and_rank = width_top_k < width
+        need_height_select_and_rank = height_top_k < height_context
+        need_width_select_and_rank = width_top_k < width_context
 
         # select and rank keys / values, probing with query (reduced along height and width) and keys reduced along row and column respectively
 
@@ -280,23 +290,21 @@ class DPCA2D(nn.Module):
 
             # gather along height, then width
             if need_height_select_and_rank:
-                # k_abs = torch.abs(k)
                 # sum over width
                 k_height = self.k_sum_over_width(k_abs)
 
                 score_r = einsum('b c, b h c -> b h', q_probe, k_height)
                 top_h_indices = score_r.topk(k = height_top_k, dim = -1).indices
-                top_h_indices = top_h_indices[:,None,:,None].expand(-1, k.shape[1], -1, k.shape[-1])
+                top_h_indices = top_h_indices[:,None,:,None].expand(-1, self.dim_head, -1, width_context)
                 k, v = torch.gather(k, dim=2, index=top_h_indices),torch.gather(v, dim=2, index=top_h_indices)
             
             if need_width_select_and_rank:
-                # k_abs = torch.abs(k)
                 # sum over height
                 k_width = self.k_sum_over_height(k_abs)
 
                 score_c = einsum('b h, b c w -> b w', q_probe, k_width)
                 top_w_indices = score_c.topk(k = width_top_k, dim = -1).indices
-                top_w_indices = top_w_indices[:,None,None,:].expand(-1, k.shape[1], k.shape[2], -1)
+                top_w_indices = top_w_indices[:,None,None,:].expand(-1, self.dim_head, k.shape[2], -1)
                 k, v = torch.gather(k, dim=3, index=top_w_indices),torch.gather(v, dim=3, index=top_w_indices)
             
         q, k, v = self.flatten_to_hidden_dim(q),self.flatten_to_hidden_dim(k),self.flatten_to_hidden_dim(v)
@@ -312,9 +320,9 @@ class DPCA2D(nn.Module):
         out = einsum('b i j, b j d -> b i d', attn, v)
 
         # merge heads and combine out
-        out = out.view(b, self.heads, height, width, self.dim_head)
+        out = out.view(b, self.heads, height_query, width_query, self.dim_head)
         out = out.permute(0, 1, 4, 2, 3).contiguous()
-        out = out.view(b, self.heads * self.dim_head, height, width)
+        out = out.view(b, self.heads * self.dim_head, height_query, width_query)
         out = self.to_out(out)
         
         return self.gamma*out+query_source
