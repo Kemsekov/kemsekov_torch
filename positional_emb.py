@@ -14,7 +14,7 @@ class ConcatPositionalEmbeddingPermute(torch.nn.Module):
         self.m = conv(2*channels,channels,kernel_size=1)
         self.emb = PositionalEncodingPermute(channels)
     def forward(self,x):
-        return self.norm(self.m(torch.concat([x,self.emb(x)],1)))
+        return self.norm(self.m(torch.concat([x,self.emb(x)],1)))+x
 
 class AddPositionalEmbeddingPermute(torch.nn.Module):
     """

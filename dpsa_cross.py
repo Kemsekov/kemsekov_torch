@@ -1,5 +1,4 @@
-# fixed implementation from https://github.com/lucidrains/ITTR-pytorch of paper
-# https://arxiv.org/pdf/2203.16015
+#DPSA cross attention
 
 import torch
 import torch.nn.functional as F
@@ -16,32 +15,7 @@ class DPSA(nn.Module):
         dropout=0.0,   # Dropout rate
         ):
         """
-        DPSA module that performs double pruned self-attention
-        
-        **Args:**
-            dim: input dimension
-            dim_head: dimensions per head
-            heads: heads count
-            top_k: tuple that defines input dimensions, must be of length 1,2 or 3, specifies how many elements per head to take for attention in each spatial dimension. When left to -1, will use sqrt of input shape.
-            dropout: dropout to use
-        """
-        super().__init__()
-        self.dpca = DPCA(dim,dim_head,heads,top_k)
-    
-    def forward(self,x):
-        return self.dpca(x,x)
-
-class DPCA(nn.Module):
-    def __init__(
-        self,
-        dim,           # Input channel dimension
-        dim_head,      # Output channel dimension
-        heads=8,       # Number of attention heads
-        top_k=(-1,-1), # top k values that is selected
-        dropout=0.0,   # Dropout rate
-        ):
-        """
-        DPCA module that performs double pruned cross-attention
+        DPSA module that performs double pruned self attention
         
         **Args:**
             dim: input dimension
@@ -56,24 +30,23 @@ class DPCA(nn.Module):
         dimensions = len(top_k)
         
         if dimensions==1:
-            self.DPCA = DPCA1D(
+            self.dpsa = DPSA1D(
                 dim,dim_head,heads,top_k[0],dropout
             )
         
         if dimensions==2:
-            self.DPCA = DPCA2D(
+            self.dpsa = DPSA2D(
                 dim,dim_head,heads,top_k[0],top_k[1],dropout
             )
         
         if dimensions==3:
-            self.DPCA = DPCA3D(
+            self.dpsa = DPSA3D(
                 dim,dim_head,heads,top_k[0],top_k[1],top_k[2],dropout
             )
     
-    def forward(self,context, query_source):
-        return self.DPCA(context, query_source)
+    def forward(self,x):
+        return self.dpsa(x)
         
-
 def l2norm(t):
     return F.normalize(t, dim = 1)
 
@@ -89,8 +62,7 @@ class ChanLayerNorm1D(nn.Module):
         mean = torch.mean(x, dim=1, keepdim=True)
         return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
 
-class DPCA1D(nn.Module):
-    """ Dual-pruned Cross-attention Block """
+class DPSA1D(nn.Module):
     def __init__(
         self,
         dim,              # Input channel dimension
@@ -105,13 +77,10 @@ class DPCA1D(nn.Module):
         inner_dim = dim_head * heads  # Total dimension after projection
 
         # Channel normalization
-        self.context_norm = ChanLayerNorm1D(dim)
-        self.query_source_norm = ChanLayerNorm1D(dim)
+        self.norm = ChanLayerNorm1D(dim)
 
         # Projection to queries, keys, values using a 1x1 convolution
-        self.to_kv = nn.Conv1d(dim, inner_dim * 2, kernel_size=1, bias=False)
-        self.to_q = nn.Conv1d(dim, inner_dim, kernel_size=1, bias=False)
-        
+        self.to_qkv = nn.Conv1d(dim, inner_dim * 3, kernel_size=1, bias=False)
         self.to_out = nn.Conv1d(inner_dim, dim, kernel_size=1, bias=False)
 
         # Pruning parameter
@@ -128,23 +97,18 @@ class DPCA1D(nn.Module):
         self.q_probe_reduce = Reduce('b c L -> b c', 'sum')
         self.flatten_to_hidden_dim = Rearrange('b d L -> b L d')
 
-    def forward(self, context, query_source):
-        #context is used to compute KV
-        #condition is used to compute Q
-        
+    def forward(self, x):
         # Input shape: (b, c, L)
-        b, c, L = query_source.shape
+        b, c, L = x.shape
         length_top_k = self.length_top_k if self.length_top_k>0 else int(L**0.5)
         # Determine if pruning is needed
         need_select = length_top_k < L
 
         # Normalize input
-        context = self.context_norm(context)
-        query_source = self.query_source_norm(query_source)
+        x = self.norm(x)
 
         # Project to queries, keys, values
-        k, v = self.to_kv(context).chunk(2, dim=1)  # Each: (b, inner_dim, L)
-        q = self.to_q(query_source)
+        q, k, v = self.to_qkv(x).chunk(3, dim=1)  # Each: (b, inner_dim, L)
 
         # Fold out heads: (b, inner_dim, L) -> (b * heads, dim_head, L)
         q = self.fold_out_heads(q)
@@ -158,9 +122,13 @@ class DPCA1D(nn.Module):
         if need_select:
             q_abs = torch.abs(q)
             k_abs = torch.abs(k)
+            
+            # q_probe contains importance of each channel in dim_head
             q_probe = self.q_probe_reduce(q_abs)  # (b * heads, dim_head)
+            
             # Compute scores for each position
             score_l = einsum('b c, b c L -> b L', q_probe, k_abs)  # (b * heads, L)
+            
             # Select top-k indices
             top_l_indices = score_l.topk(k=length_top_k, dim=-1).indices  # (b * heads, k_l)
             # Expand indices for gathering
@@ -168,7 +136,6 @@ class DPCA1D(nn.Module):
             # Gather k and v
             k = torch.gather(k, dim=2, index=top_l_indices)
             v = torch.gather(v, dim=2, index=top_l_indices)  # k, v: (b * heads, dim_head, k_l)
-
         # Flatten spatial dimension
         q = self.flatten_to_hidden_dim(q)  # (b * heads, L, dim_head)
         k = self.flatten_to_hidden_dim(k)  # (b * heads, k_l, dim_head) if pruned, else (b * heads, L, dim_head)
@@ -187,7 +154,7 @@ class DPCA1D(nn.Module):
         out = self.to_out(out)
         
         # Final projection
-        return self.gamma*out+query_source
+        return self.gamma*out+x
 
 class ChanLayerNorm2D(nn.Module):
     def __init__(self, dim, eps = 1e-5):
@@ -201,8 +168,8 @@ class ChanLayerNorm2D(nn.Module):
         mean = torch.mean(x, dim = 1, keepdim = True)
         return (x - mean) / (var + self.eps).sqrt() * self.g + self.b
 
-class DPCA2D(nn.Module):
-    """ Dual-pruned Cross-attention Block """
+class DPSA2D(nn.Module):
+    """ Dual-pruned Self-attention Block """
     def __init__(
         self,
         dim,
@@ -219,12 +186,8 @@ class DPCA2D(nn.Module):
         inner_dim = dim_head*heads
         self.gamma = torch.nn.Parameter(torch.zeros(1))
 
-        self.context_norm = ChanLayerNorm2D(dim)
-        self.query_source_norm = ChanLayerNorm2D(dim)
-        
-        self.to_kv = nn.Conv2d(dim, inner_dim * 2, 1, bias = False)
-        self.to_q = nn.Conv2d(dim, inner_dim, kernel_size=1, bias=False)
-        
+        self.norm = ChanLayerNorm2D(dim)
+        self.to_qkv = nn.Conv2d(dim, inner_dim * 3, 1, bias = False)
         self.to_out = nn.Conv2d(inner_dim, dim, kernel_size=1, bias=False)
 
         self.height_top_k = height_top_k
@@ -237,19 +200,15 @@ class DPCA2D(nn.Module):
         self.k_sum_over_height = Reduce('b c height width -> b c width', 'sum')
         self.flatten_to_hidden_dim=Rearrange('b d h w -> b (h w) d')
 
-    def forward(self, context, query_source):
-        b, c, height,width = query_source.shape
+    def forward(self, x):
+        b, c, height,width = x.shape
         
         height_top_k = self.height_top_k if self.height_top_k>0 else int(height**0.5)
         width_top_k = self.width_top_k if self.width_top_k>0 else int(width**0.5)
         
-        # Normalize input
-        context = self.context_norm(context)
-        query_source = self.query_source_norm(query_source)
-
-        # Project to queries, keys, values
-        k, v = self.to_kv(context).chunk(2, dim=1)
-        q = self.to_q(query_source)
+        x = self.norm(x)
+        q, k, v = self.to_qkv(x).chunk(3, dim = 1)
+        
 
         q = self.fold_out_heads(q)
         k = self.fold_out_heads(k)
@@ -316,7 +275,7 @@ class DPCA2D(nn.Module):
         out = out.view(b, self.heads * self.dim_head, height, width)
         out = self.to_out(out)
         
-        return self.gamma*out+query_source
+        return self.gamma*out+x
 
 # Channel-wise Layer Normalization for 3D inputs
 class ChanLayerNorm3D(nn.Module):
@@ -330,8 +289,7 @@ class ChanLayerNorm3D(nn.Module):
         mean = torch.mean(x, dim=1, keepdim=True)
         return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
 
-class DPCA3D(nn.Module):
-    """ Dual-pruned Cross-attention Block """
+class DPSA3D(nn.Module):
     def __init__(
         self,
         dim,              # Input channel dimension
@@ -348,13 +306,10 @@ class DPCA3D(nn.Module):
         inner_dim = dim_head * heads  # Total dimension after projection
 
         # Channel normalization
-        self.context_norm = ChanLayerNorm3D(dim)
-        self.query_source_norm = ChanLayerNorm3D(dim)
+        self.norm = ChanLayerNorm3D(dim)
 
         # Projection to queries, keys, values using a 1x1x1 convolution
-        self.to_kv = nn.Conv3d(dim, inner_dim * 2, kernel_size=1, bias=False)
-        self.to_q = nn.Conv3d(dim, inner_dim, kernel_size=1, bias=False)
-        
+        self.to_qkv = nn.Conv3d(dim, inner_dim * 3, kernel_size=1, bias=False)
         self.to_out = nn.Conv3d(inner_dim, dim, kernel_size=1, bias=False)
 
         # Pruning parameters
@@ -374,36 +329,33 @@ class DPCA3D(nn.Module):
         self.k_sum_over_depth_height = Reduce('b c d h w -> b c w', 'sum')  # For width scores
         self.flatten_to_hidden_dim = Rearrange('b d ... -> b (...) d')
 
-    def forward(self, context, query_source):
+    def forward(self, x):
         # Input shape: (b, c, D, H, W)
-        b, c, D_query, H_query, W_query = query_source.shape  # query_source dimensions
-        _, _, D_context, H_context, W_context = context.shape  # context dimensions
+        b, c, D, H, W = x.shape
+        depth_top_k = self.depth_top_k if self.depth_top_k>0 else int(D**0.5)
+        height_top_k = self.height_top_k if self.height_top_k>0 else int(H**0.5)
+        width_top_k = self.width_top_k if self.width_top_k>0 else int(W**0.5)
         
-        # Set top-k values (using context dimensions where appropriate)
-        depth_top_k = self.depth_top_k if self.depth_top_k > 0 else int(D_context ** 0.5)  # e.g., int(16**0.5)=4
-        height_top_k = self.height_top_k if self.height_top_k > 0 else int(H_context ** 0.5)  # e.g., int(24**0.5)≈4
-        width_top_k = self.width_top_k if self.width_top_k > 0 else int(W_context ** 0.5)  # e.g., int(32**0.5)≈5
+        
+        # Determine if pruning is needed along each dimension
+        need_depth_select = depth_top_k < D
+        need_height_select= height_top_k < H
+        need_width_select = width_top_k < W
+
         # Normalize input
-        context = self.context_norm(context)
-        query_source = self.query_source_norm(query_source)
+        x = self.norm(x)
 
         # Project to queries, keys, values
-        k, v = self.to_kv(context).chunk(2, dim=1)
-        q = self.to_q(query_source)
-        
-        # Fold out heads
+        q, k, v = self.to_qkv(x).chunk(3, dim=1)  # Each: (b, inner_dim, D, H, W)
+
+        # Fold out heads: (b, inner_dim, ...) -> (b * heads, dim_head, ...)
         q = self.fold_out_heads(q)  # (b * heads, dim_head, D, H, W)
         k = self.fold_out_heads(k)
         v = self.fold_out_heads(v)
 
         # L2 normalize queries and keys
         q, k = l2norm(q), l2norm(k)
-        
-        # Determine if pruning is needed
-        need_depth_select = depth_top_k < D_context
-        need_height_select = height_top_k < H_context
-        need_width_select = width_top_k < W_context
-        
+
         # Pruning along depth, height, and width
         if need_depth_select or need_height_select or need_width_select:
             q_abs = torch.abs(q)
@@ -411,44 +363,45 @@ class DPCA3D(nn.Module):
             q_probe = self.q_probe_reduce(q_abs)  # (b * heads, dim_head)
 
             if need_depth_select:
-                k_depth = self.k_sum_over_height_width(k_abs)  # (b * heads, dim_head, D_context)
-                score_d = einsum('b c, b c d -> b d', q_probe, k_depth)  # (b * heads, D_context)
+                k_depth = self.k_sum_over_height_width(k_abs)  # (b * heads, dim_head, D)
+                score_d = einsum('b c, b c d -> b d', q_probe, k_depth)  # (b * heads, D)
                 top_d_indices = score_d.topk(k=depth_top_k, dim=-1).indices  # (b * heads, k_d)
-                # Fix: Use H_context and W_context instead of H and W
-                top_d_indices = top_d_indices[:, None, :, None, None].expand(-1, self.dim_head, -1, H_context, W_context)
-                k = torch.gather(k, dim=2, index=top_d_indices)  # (b * heads, dim_head, k_d, H_context, W_context)
-                v = torch.gather(v, dim=2, index=top_d_indices)
+                top_d_indices = top_d_indices[:, None, :, None, None].expand(-1, self.dim_head, -1, H, W)
+                k = torch.gather(k, dim=2, index=top_d_indices)
+                v = torch.gather(v, dim=2, index=top_d_indices)  # k, v: (b * heads, dim_head, k_d, H, W)
 
             if need_height_select:
-                k_height = self.k_sum_over_depth_width(k_abs)  # (b * heads, dim_head, H_context)
-                score_h = einsum('b c, b c h -> b h', q_probe, k_height)  # (b * heads, H_context)
+                k_height = self.k_sum_over_depth_width(k_abs)  # (b * heads, dim_head, H)
+                score_h = einsum('b c, b c h -> b h', q_probe, k_height)  # (b * heads, H)
                 top_h_indices = score_h.topk(k=height_top_k, dim=-1).indices  # (b * heads, k_h)
-                top_h_indices = top_h_indices[:, None, None, :, None].expand(-1, self.dim_head, k.shape[2], -1, k.shape[4])
-                k = torch.gather(k, dim=3, index=top_h_indices)  # (b * heads, dim_head, k_d, k_h, W_context)
-                v = torch.gather(v, dim=3, index=top_h_indices)
+                top_h_indices = top_h_indices[:, None, None, :, None]
+                k = torch.gather(k, dim=3, index=top_h_indices.expand(-1, self.dim_head, k.shape[2], -1, W))
+                v = torch.gather(v, dim=3, index=top_h_indices.expand(-1, self.dim_head, v.shape[2], -1, W))
 
             if need_width_select:
-                k_width = self.k_sum_over_depth_height(k_abs)  # (b * heads, dim_head, W_context)
-                score_w = einsum('b c, b c w -> b w', q_probe, k_width)  # (b * heads, W_context)
+                k_width = self.k_sum_over_depth_height(k_abs)  # (b * heads, dim_head, W)
+                score_w = einsum('b c, b c w -> b w', q_probe, k_width)  # (b * heads, W)
                 top_w_indices = score_w.topk(k=width_top_k, dim=-1).indices  # (b * heads, k_w)
-                top_w_indices = top_w_indices[:, None, None, None, :].expand(-1, self.dim_head, k.shape[2], k.shape[3], -1)
-                k = torch.gather(k, dim=4, index=top_w_indices)  # (b * heads, dim_head, k_d, k_h, k_w)
-                v = torch.gather(v, dim=4, index=top_w_indices)
+                top_w_indices = top_w_indices[:, None, None, None, :]
+                k = torch.gather(k, dim=4, index=top_w_indices.expand(-1, self.dim_head, k.shape[2], k.shape[3], -1))
+                v = torch.gather(v, dim=4, index=top_w_indices.expand(-1, self.dim_head, v.shape[2], v.shape[3], -1))
+
         # Flatten spatial dimensions
         q = self.flatten_to_hidden_dim(q)  # (b * heads, D * H * W, dim_head)
         k = self.flatten_to_hidden_dim(k)  # (b * heads, k_d * k_h * k_w, dim_head)
         v = self.flatten_to_hidden_dim(v)
 
         # Compute attention
-        sim = einsum('b i d, b j d -> b i j', q, k)
+        sim = einsum('b i d, b j d -> b i j', q, k)  # (b * heads, D * H * W, k_d * k_h * k_w)
         attn = sim.softmax(dim=-1)
         attn = self.dropout(attn)
-        out = einsum('b i j, b j d -> b i d', attn, v)
+        out = einsum('b i j, b j d -> b i d', attn, v)  # (b * heads, D * H * W, dim_head)
 
-        # Reshape back to 3D
-        out = out.view(b, self.heads, D_query, H_query, W_query, self.dim_head)
+        # Reshape back to 3D spatial dimensions
+        out = out.view(b, self.heads, D, H, W, self.dim_head)
         out = out.permute(0, 1, 5, 2, 3, 4).contiguous()  # (b, heads, dim_head, D, H, W)
-        out = out.view(b, self.heads * self.dim_head, D_query, H_query, W_query)
+        out = out.view(b, self.heads * self.dim_head, D, H, W)
         out = self.to_out(out)
         
-        return self.gamma * out + query_source
+        # Final projection
+        return self.gamma*out+x
