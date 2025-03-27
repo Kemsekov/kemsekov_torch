@@ -15,7 +15,8 @@ class DPSA(nn.Module):
         dim,           # Input channel dimension
         dim_head,      # Output channel dimension
         heads=8,       # Number of attention heads
-        top_k=(-1,-1), # top k values that is selected
+        dimensions=2,
+        top_k=-1, # top k values that is selected
         dropout=0.0,   # Dropout rate
         ):
         """
@@ -25,11 +26,11 @@ class DPSA(nn.Module):
             dim: input dimension
             dim_head: dimensions per head
             heads: heads count
-            top_k: tuple that defines input dimensions, must be of length 1,2 or 3, specifies how many elements per head to take for attention in each spatial dimension. When left to -1, will use sqrt of input shape.
+            top_k: specifies how many elements per head to take for attention in each spatial dimension. When left to -1, will use sqrt of input dimensions shape. When set to infinity, computes ordinary cross attention
             dropout: dropout to use
         """
         super().__init__()
-        self.dpca = DPCA(dim,dim_head,heads,top_k)
+        self.dpca = DPCA(dim,dim_head,heads,dimensions,top_k,dropout)
     
     def forward(self,x):
         return self.dpca(x,x)
@@ -40,7 +41,8 @@ class DPCA(nn.Module):
         dim,           # Input channel dimension
         dim_head,      # Output channel dimension
         heads=8,       # Number of attention heads
-        top_k=(-1,-1), # top k values that is selected
+        dimensions=2,
+        top_k=-1, # top k values that is selected
         dropout=0.0,   # Dropout rate
         ):
         """
@@ -50,27 +52,26 @@ class DPCA(nn.Module):
             dim: input dimension
             dim_head: dimensions per head
             heads: heads count
-            top_k: tuple that defines input dimensions, must be of length 1,2 or 3, specifies how many elements per head to take for attention in each spatial dimension. When left to -1, will use sqrt of input shape.
+            dimensions: input shapes spatial dimensions
+            top_k: specifies how many elements per head to take for attention in each spatial dimension. When left to -1, will use sqrt of input dimensions shape. When set to infinity, computes ordinary cross attention
             dropout: dropout to use
         """
         super().__init__()
-        assert len(top_k) in [1,2,3],"top_k must be at most of length 3"
-        
-        dimensions = len(top_k)
+        assert dimensions in [1,2,3],"top_k must be at most of length 3"
         
         if dimensions==1:
             self.DPCA = DPCA1D(
-                dim,dim_head,heads,top_k[0],dropout
+                dim,dim_head,heads,top_k,dropout
             )
         
         if dimensions==2:
             self.DPCA = DPCA2D(
-                dim,dim_head,heads,top_k[0],top_k[1],dropout
+                dim,dim_head,heads,top_k,top_k,dropout
             )
         
         if dimensions==3:
             self.DPCA = DPCA3D(
-                dim,dim_head,heads,top_k[0],top_k[1],top_k[2],dropout
+                dim,dim_head,heads,top_k,top_k,top_k,dropout
             )
     
     def forward(self,context, query_source):
