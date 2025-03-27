@@ -24,6 +24,7 @@ def train(
         scheduler = None,
         model_wrapper = None,
         accelerator : Accelerator = None,
+        accelerate_args : dict = None,
         tie_weights=False, 
         cast_batch_to_mixed_precision_dtype = False,
         on_epoch_end = None,
@@ -79,6 +80,8 @@ def train(
     accelerator : accelerate.Accelerator, optional
         An instance of `Accelerator` from the `accelerate` library for distributed training and mixed-precision
         optimizations. If None, a default instance will be created. Default is None.
+
+    accelerate_args: dict that contains arguments passed to accelerator. Default is None. For available arguments see https://huggingface.co/docs/accelerate/en/package_reference/accelerator
 
     tie_weights : bool, optional
         If True, calls `model.tie_weights()` at the start of training, useful for models with shared weights.
@@ -174,7 +177,9 @@ def train(
     if on_epoch_end is None: on_epoch_end             = lambda x,y: None
     if on_train_batch_end is None: on_train_batch_end = lambda x,y,w,z: None
     if on_test_batch_end is None: on_test_batch_end   = lambda x,y,w,z: None
-    acc = accelerator if accelerator is not None else Accelerator()
+    
+    if accelerate_args is None: accelerate_args = {}
+    acc = accelerator if accelerator is not None else Accelerator(**accelerate_args)
     
     if load_checkpoint_dir is not None and os.path.exists(load_checkpoint_dir):
         try:
