@@ -273,13 +273,14 @@ class DPCA2D(nn.Module):
         if need_width_select_and_rank or need_height_select_and_rank:
             # use abs for queries to get relative importance
             q_abs = torch.abs(q)
+            k_abs = torch.abs(k)
             
             # sum over abs of height and width
             q_probe = self.q_probe_reduce(q_abs)
 
             # gather along height, then width
             if need_height_select_and_rank:
-                k_abs = torch.abs(k)
+                # k_abs = torch.abs(k)
                 # sum over width
                 k_height = self.k_sum_over_width(k_abs)
 
@@ -289,11 +290,11 @@ class DPCA2D(nn.Module):
                 k, v = torch.gather(k, dim=2, index=top_h_indices),torch.gather(v, dim=2, index=top_h_indices)
             
             if need_width_select_and_rank:
-                k_abs = torch.abs(k)
+                # k_abs = torch.abs(k)
                 # sum over height
                 k_width = self.k_sum_over_height(k_abs)
 
-                score_c = einsum('bh, bcw -> bw', q_probe, k_width)
+                score_c = einsum('b h, b c w -> b w', q_probe, k_width)
                 top_w_indices = score_c.topk(k = width_top_k, dim = -1).indices
                 top_w_indices = top_w_indices[:,None,None,:].expand(-1, k.shape[1], k.shape[2], -1)
                 k, v = torch.gather(k, dim=3, index=top_w_indices),torch.gather(v, dim=3, index=top_w_indices)
@@ -408,10 +409,10 @@ class DPCA3D(nn.Module):
         if need_depth_select or need_height_select or need_width_select:
             q_abs = torch.abs(q)
             q_probe = self.q_probe_reduce(q_abs)  # (b * heads, dim_head)
-            # k_abs = torch.abs(k)
+            k_abs = torch.abs(k)
 
             if need_depth_select:
-                k_abs = torch.abs(k)
+                # k_abs = torch.abs(k)
                 k_depth = self.k_sum_over_height_width(k_abs)  # (b * heads, dim_head, D_context)
                 score_d = einsum('b c, b c d -> b d', q_probe, k_depth)  # (b * heads, D_context)
                 top_d_indices = score_d.topk(k=depth_top_k, dim=-1).indices  # (b * heads, k_d)
