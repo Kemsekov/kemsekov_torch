@@ -17,15 +17,15 @@ def train(
         compute_loss_and_metric,
         save_results_dir="runs/train",
         load_checkpoint_dir = None,
-        optimizer = None,
         num_epochs = 10,
+        checkpoints_count = 5,
+        save_on_metric_improve = 'any',
+        optimizer = None,
+        scheduler = None,
+        model_wrapper = None,
         accelerator : Accelerator = None,
         tie_weights=False, 
-        save_on_metric_improve = 'any',
         cast_batch_to_mixed_precision_dtype = False,
-        scheduler = None,
-        checkpoints_count = 5,
-        model_wrapper = None,
         on_epoch_end = None,
         on_train_batch_end = None,
         on_test_batch_end = None
@@ -44,9 +44,6 @@ def train(
     test_loader : torch.utils.data.DataLoader or None
         DataLoader for the test dataset, providing batched data. If None, the testing step is skipped.
 
-    optimizer : torch.optim.Optimizer
-        Optimizer for updating model weights.
-
     compute_loss_and_metric : Callable
         A function that computes the loss and performance metric for each batch. It should accept `model,batch`
         as input and return a tuple of `(loss, metric)`, where `metric` is a dictionary like `{'r2': 0.1, 'iou': 0.4, ...}`.
@@ -60,6 +57,25 @@ def train(
     num_epochs : int, optional
         Number of epochs for training. Default is 10.
 
+    checkpoints_count : int, optional
+        Number of last best checkpoints to save. Default is 5.
+
+    save_on_metric_improve: 'any', 'all', list[metric_name]
+        When `'any'` a checkpoint will be saved when any of the metrics improve. If one or more metrics show improvement, a new checkpoint will be saved.
+        
+        When `'all'` a checkpoint will be saved only if all of the metrics improves.
+        
+        When `list[metric_name]` the checkpoint will only be saved if all of the metrics in the list show improvement.
+    
+    optimizer : torch.optim.Optimizer
+        Optimizer for updating model weights.
+
+    scheduler : optional
+        Learning rate scheduler to update during the training loop. Default is None.
+
+    model_wrapper : torch.nn.DataParallel, optional
+        Wrapper for the model (e.g., for multi-GPU training). Default is None.
+
     accelerator : accelerate.Accelerator, optional
         An instance of `Accelerator` from the `accelerate` library for distributed training and mixed-precision
         optimizations. If None, a default instance will be created. Default is None.
@@ -68,25 +84,9 @@ def train(
         If True, calls `model.tie_weights()` at the start of training, useful for models with shared weights.
         Default is False.
 
-    save_on_metric_improve: 'any', 'all', list[metric_name]
-        When `'any'` a checkpoint will be saved when any of the specified metrics improve. If one or more metrics show improvement, a new checkpoint will be saved.
-        
-        When `'all'` a checkpoint will be saved only if all of the specified metrics improve. Every metric listed in the save_on_metric_improve list must improve for the checkpoint to be saved.
-        
-        When `list[metric_name]` the checkpoint will only be saved if all the metrics in the list show improvement. For each specified metric in the list, its value must increase in order to save a new checkpoint.
-    
     cast_batch_to_mixed_precision_dtype : bool, optional
         If True, explicitly casts input batches to the model's mixed-precision data type to ensure compatibility
         with mixed-precision training. Default is False.
-
-    scheduler : optional
-        Learning rate scheduler to update during the training loop. Default is None.
-
-    checkpoints_count : int, optional
-        Number of last best checkpoints to save. Default is 5.
-
-    model_wrapper : torch.nn.DataParallel, optional
-        Wrapper for the model (e.g., for multi-GPU training). Default is None.
 
     on_epoch_end : Callable(int, torch.nn.Module), optional
         Method that is called at the end of each epoch. The epoch index and model are passed to this method.
