@@ -20,7 +20,7 @@ class DPSA(nn.Module):
         dropout=0.0,   # Dropout rate
         ):
         """
-        DPSA module that performs double pruned self-attention
+        DPSA module that performs double pruned multihead self-attention
         
         **Args:**
             dim: input dimension
@@ -33,6 +33,9 @@ class DPSA(nn.Module):
         self.dpca = DPCA(dim,dim_head,heads,dimensions,top_k,dropout)
     
     def forward(self,x):
+        """
+        Computes multihead self-attention on given input tensor x.
+        """
         return self.dpca(x,x)
 
 class DPCA(nn.Module):
@@ -46,7 +49,7 @@ class DPCA(nn.Module):
         dropout=0.0,   # Dropout rate
         ):
         """
-        DPCA module that performs double pruned cross-attention
+        DPCA module that performs double pruned multihead cross-attention
         
         **Args:**
             dim: input dimension
@@ -74,8 +77,18 @@ class DPCA(nn.Module):
                 dim,dim_head,heads,top_k,top_k,top_k,dropout
             )
     
-    def forward(self,context, query_source):
-        return self.DPCA(context, query_source)
+    def forward(self,query_source, context):
+        """
+        Computes multihead cross attention for given context and query source.
+        
+        query_source: sequence that we need to embed information from context. Output shape will be equal to query_source shape.
+        context: additional information that we need to embed into query_source.
+        
+        query_source shape can be != context shape, only batch and channel dimensions needs to match.
+        
+        When context==query_source, the results will be same as self-attention.
+        """
+        return self.DPCA(query_source, context)
         
 
 # Channel-wise Layer Normalization for 1D inputs
@@ -129,7 +142,7 @@ class DPCA1D(nn.Module):
         self.q_probe_reduce = Reduce('b c L -> b c', 'sum')
         self.flatten_to_hidden_dim = Rearrange('b d L -> b L d')
 
-    def forward(self, context, query_source):
+    def forward(self, query_source, context):
         """
         Args:
             context: Tensor of shape (b, c, L_context) - source of keys and values
@@ -246,7 +259,7 @@ class DPCA2D(nn.Module):
         self.k_sum_over_height = Reduce('b c height width -> b c width', 'sum')
         self.flatten_to_hidden_dim=Rearrange('b d h w -> b (h w) d')
 
-    def forward(self, context, query_source):
+    def forward(self, query_source, context):
         # Unpack shapes for query_source and context separately
         b, c, height_query, width_query = query_source.shape
         _, _, height_context, width_context = context.shape
@@ -384,7 +397,7 @@ class DPCA3D(nn.Module):
         self.k_sum_over_depth_height = Reduce('b c d h w -> b c w', 'sum')  # For width scores
         self.flatten_to_hidden_dim = Rearrange('b d ... -> b (...) d')
 
-    def forward(self, context, query_source):
+    def forward(self, query_source, context):
         # Input shape: (b, c, D, H, W)
         b, c, D_query, H_query, W_query = query_source.shape  # query_source dimensions
         _, _, D_context, H_context, W_context = context.shape  # context dimensions
