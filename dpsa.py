@@ -81,8 +81,10 @@ class DPCA(nn.Module):
         """
         Computes multihead cross attention for given context and query source.
         
-        query_source: sequence that we need to embed information from context. Output shape will be equal to query_source shape.
-        context: additional information that we need to embed into query_source.
+        query_source: tensor that is used to compute query(Q) of attention. 
+        We need to embed information from context in this tensor. Output shape will be equal to query_source shape.
+        
+        context: tensor that is used to compute keys(K) and values(V) of attention. It is additional information that we need to embed into query_source.
         
         query_source shape can be != context shape, only batch and channel dimensions needs to match.
         
