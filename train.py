@@ -3,11 +3,10 @@ from matplotlib import pyplot as plt
 import torch
 from tqdm import tqdm
 import json
-from accelerate import Accelerator
+from accelerate import Accelerator, load_checkpoint_and_dispatch
 import math
 import shutil
 import time
-from accelerate import load_checkpoint_and_dispatch
 import tabulate
 
 def train(
@@ -147,7 +146,7 @@ def train(
     5. **Checkpointing and Plotting:** Saves the model checkpoint if the test metric improves. At the end of training,
        generates and saves loss and metric plots in the `plots` folder.
     """
-
+    
     if optimizer is None:
         optimizer = torch.optim.AdamW(model.parameters())
         
