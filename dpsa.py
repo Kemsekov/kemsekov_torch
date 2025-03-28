@@ -121,6 +121,7 @@ class DPCA1D(nn.Module):
         # Channel normalization
         self.context_norm = ChanLayerNorm1D(dim)
         self.query_source_norm = ChanLayerNorm1D(dim)
+        self.out_norm = ChanLayerNorm1D(dim)
 
         # Projection to queries, keys, values using a 1x1 convolution
         self.to_kv = nn.Conv1d(dim, inner_dim * 2, kernel_size=1, bias=False)
@@ -207,6 +208,7 @@ class DPCA1D(nn.Module):
         out = out.permute(0, 1, 3, 2).contiguous()  # (b, heads, dim_head, L_query)
         out = out.view(b, self.heads * self.dim_head, L_query)
         out = self.to_out(out)  # (b, dim, L_query)
+        out = self.out_norm(out)
         
         # Final output with residual connection
         return self.gamma * out + query_source
@@ -243,6 +245,7 @@ class DPCA2D(nn.Module):
 
         self.context_norm = ChanLayerNorm2D(dim)
         self.query_source_norm = ChanLayerNorm2D(dim)
+        self.out_norm = ChanLayerNorm2D(dim)
         
         self.to_kv = nn.Conv2d(dim, inner_dim * 2, 1, bias = False)
         self.to_q = nn.Conv2d(dim, inner_dim, kernel_size=1, bias=False)
@@ -338,6 +341,7 @@ class DPCA2D(nn.Module):
         out = out.permute(0, 1, 4, 2, 3).contiguous()
         out = out.view(b, self.heads * self.dim_head, height_query, width_query)
         out = self.to_out(out)
+        out = self.out_norm(out)
         
         return self.gamma*out+query_source
 
@@ -373,6 +377,7 @@ class DPCA3D(nn.Module):
         # Channel normalization
         self.context_norm = ChanLayerNorm3D(dim)
         self.query_source_norm = ChanLayerNorm3D(dim)
+        self.out_norm = ChanLayerNorm3D(dim)
 
         # Projection to queries, keys, values using a 1x1x1 convolution
         self.to_kv = nn.Conv3d(dim, inner_dim * 2, kernel_size=1, bias=False)
@@ -476,5 +481,6 @@ class DPCA3D(nn.Module):
         out = out.permute(0, 1, 5, 2, 3, 4).contiguous()  # (b, heads, dim_head, D, H, W)
         out = out.view(b, self.heads * self.dim_head, D_query, H_query, W_query)
         out = self.to_out(out)
+        out = self.out_norm(out)
         
         return self.gamma * out + query_source
