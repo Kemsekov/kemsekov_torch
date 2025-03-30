@@ -406,10 +406,7 @@ def train(
                 # copy current saved state from last to checkpoint
                 print(f"saved epoch-{epoch+1}")
                 shutil.copytree(save_last_dir, checkpoints_dir_with_epoch,dirs_exist_ok=True)
-                # update base model
-                if model_script is not None:
-                    model_script=load_last_checkpoint(model_script,save_results_dir,log=False)
-                    model_script.save(model_save_path)
+
         on_epoch_end(epoch,model)
     return model
 
