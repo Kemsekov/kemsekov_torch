@@ -22,6 +22,9 @@ class Residual(torch.nn.Module):
         m - module that takes some input and spits output
         """
         super().__init__()
+        if isinstance(m,list) or isinstance(m,tuple):
+            m = torch.nn.Sequential(*m)
+        
         self.m = m
         self.alpha = torch.nn.Parameter(torch.tensor(0.0))
     def forward(self,x):

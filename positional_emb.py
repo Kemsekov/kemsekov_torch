@@ -7,12 +7,16 @@ class ConcatPositionalEmbeddingPermute(torch.nn.Module):
     """
     Concat input with shape (batch_size, ch, ...N dimensions...) to positional embedding
     """
-    def __init__(self,channels,dimensions=2,norm='batch'):
+    def __init__(self,channels,freq=1000,dimensions=2,norm='batch'):
+        """
+        channels: input channels
+        freq: embedding frequency, must equal to around input size
+        """
         super().__init__()
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         self.norm = get_normalization_from_name(dimensions,norm)(channels)
         self.m = conv(2*channels,channels,kernel_size=1)
-        self.emb = PositionalEncodingPermute(channels)
+        self.emb = PositionalEncodingPermute(channels,freq=freq)
     def forward(self,x):
         return self.norm(self.m(torch.concat([x,self.emb(x)],1)))+x
 
@@ -20,10 +24,14 @@ class AddPositionalEmbeddingPermute(torch.nn.Module):
     """
     Adds input with shape (batch_size, ch, ...N dimensions...) to positional embedding
     """
-    def __init__(self,channels,dimensions=2):
+    def __init__(self,channels,freq=1000,dimensions=2):
+        """
+        channels: input channels
+        freq: embedding frequency, must equal to around input size
+        """
         super().__init__()
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
-        self.emb = PositionalEncodingPermute(channels)
+        self.emb = PositionalEncodingPermute(channels,freq=freq)
     def forward(self,x):
         return x+self.emb(x)
 
@@ -43,7 +51,7 @@ class PositionalEncoding(nn.Module):
         (batch_size, ...N dimensions..., ch)
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         :param dtype_override: If set, overrides the dtype of the output embedding.
-        :param freq: Embedding frequency
+        :param freq: Embedding frequency. Must be around the same as average input length
         """
         super().__init__()
         self.positional_encodings = nn.ModuleList([
@@ -73,7 +81,7 @@ class PositionalEncodingPermute(nn.Module):
         Accepts (batchsize, ch, ...dimensions...)
         :param channels: The last dimension of the tensor you want to apply pos emb to.
         :param dtype_override: If set, overrides the dtype of the output embedding.
-        :param freq: Embedding frequency
+        :param freq: Embedding frequency. Must be around the same as average input length
         """
         super().__init__()
         self.positional_encodings = nn.ModuleList([

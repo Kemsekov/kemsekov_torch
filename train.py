@@ -24,11 +24,12 @@ def train(
         model_wrapper = None,
         accelerator : Accelerator = None,
         accelerate_args : dict = None,
+        gradient_clipping_max_norm=None,
         tie_weights=False, 
         cast_batch_to_mixed_precision_dtype = False,
         on_epoch_end = None,
         on_train_batch_end = None,
-        on_test_batch_end = None
+        on_test_batch_end = None,
     ):
     """
     Train and evaluate a model, saving checkpoints, plots, and metric history during the training process.
@@ -80,7 +81,28 @@ def train(
         An instance of `Accelerator` from the `accelerate` library for distributed training and mixed-precision
         optimizations. If None, a default instance will be created. Default is None.
 
-    accelerate_args: dict that contains arguments passed to accelerator. Default is None. For available arguments see https://huggingface.co/docs/accelerate/en/package_reference/accelerator
+    accelerate_args: dict 
+        contains arguments passed to accelerator. Default is None. For available arguments see https://huggingface.co/docs/accelerate/en/package_reference/accelerator\n
+        `device_placement`: bool = True,\n
+        `split_batches`: bool = _split_batches,\n
+        `mixed_precision`: PrecisionType | str | None = None,\n
+        `gradient_accumulation_steps`: int = 1,\n
+        `cpu`: bool = False,\n
+        `dataloader_config`: DataLoaderConfiguration | None = None,\n
+        `deepspeed_plugin`: DeepSpeedPlugin | dict[str, DeepSpeedPlugin] | None = None,\n
+        `fsdp_plugin`: FullyShardedDataParallelPlugin | None = None,\n
+        `megatron_lm_plugin`: MegatronLMPlugin | None = None,\n
+        `rng_types`: list[str | RNGType] | None = None,\n
+        `log_with`: str | LoggerType | GeneralTracker | list[str | LoggerType | GeneralTracker] | None = None,\n
+        `project_dir`: str | PathLike | None = None,\n
+        `project_config`: ProjectConfiguration | None = None,\n
+        `gradient_accumulation_plugin`: GradientAccumulationPlugin | None = None,\n
+        `step_scheduler_with_optimizer`: bool = True,\n
+        `kwargs_handlers`: list[KwargsHandler] | None = None,\n
+        `dynamo_backend`: DynamoBackend | str | None = None,\n
+        `deepspeed_plugins`: DeepSpeedPlugin | dict[str, DeepSpeedPlugin] | None = None\n
+
+    gradient_clipping_max_norm: when not set to None will perform gradient clipping by limiting gradient norm to specified value
 
     tie_weights : bool, optional
         If True, calls `model.tie_weights()` at the start of training, useful for models with shared weights.
@@ -264,6 +286,11 @@ def train(
                 add_batch_metric(metric, batch_metric)
                         
                 acc.backward(loss)
+                
+                if gradient_clipping_max_norm is not None and acc.sync_gradients: 
+                    # Only clip when gradients are synced
+                    acc.clip_grad_norm_(model.parameters(), max_norm=float(gradient_clipping_max_norm))
+                
                 optimizer.step()
                 optimizer.zero_grad()
                 
