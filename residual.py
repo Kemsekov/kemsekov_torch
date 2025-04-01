@@ -46,6 +46,10 @@ class ResidualBlock(torch.nn.Module):
         is_transpose = False,
         padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate"
     ):
+        """
+        Creates general-use residual block
+        
+        """
         super().__init__()
         
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
@@ -66,6 +70,7 @@ class ResidualBlock(torch.nn.Module):
 
         self.kernel_size = kernel_size
         
+
         # handle spectral normalization
         if normalization=='spectral':
             norm_impl=lambda *x: nn.Identity()
@@ -80,7 +85,9 @@ class ResidualBlock(torch.nn.Module):
         
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels[0]
-
+        assert len(kernel_size)==dimensions,f'kernel_size length expected to have {dimensions} elements, found {kernel_size}'
+        assert len(stride)==dimensions,f'stride length expected to have {dimensions} elements, found {stride}'
+        
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.stride = stride
