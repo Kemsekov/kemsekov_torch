@@ -406,8 +406,6 @@ class ResidualUnet(torch.nn.Module):
         skip = [torch.jit.fork(t,skip[i]) for i,t in enumerate(self.connectors)]
         skip = [torch.jit.wait(s) for s in skip]
         
-        print([s.shape for s in skip],x.shape)
-        
         x = self.decoder.forward_with_skip(x,skip)
         
         return x
