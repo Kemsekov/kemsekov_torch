@@ -47,8 +47,18 @@ class ResidualBlock(torch.nn.Module):
         padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate"
     ):
         """
-        Creates general-use residual block
+        Creates general-use residual block.
         
+        * in_channels: size of input channels
+        * out_channels: expected output channels. It can be integer or a list, defining a chain of convolutions, like [16,32,8], which will produce three internal convolutions `input_channels -> 16 -> 32-> 8`
+        * kernel_size: integer, or tuple/list with dimensions-wise kernel size for convolutions.
+        * stride: integer, or tuple/list with dimensions-wise stride for convolutions.
+        * dilation: List that defines required dilations. Applied only to first convolution. Example: `[1]+[2]+[4]*3` will do 1/5 convolutions with dilation 1, 1/5 with dilation 2 and 3/5 with dilation 4
+        * activation: activation function
+        * normalization: one of `['batch','instance','group','spectral',None]`, applies required normalization. `'group'` will use hubristic to determine optimal number of groups.
+        * dimensions: input tensor dimensions, selects one of conv1d conv2d conv3d implementation for convolutions
+        * is_transpose: do we need to use transpose convolutions. I advice you to use method `ResidualBlock.transpose(self)` instead of setting this argument manually
+        * padding_mode: what padding to use in convolutions, by default will use `'replicate'` when possible
         """
         super().__init__()
         
@@ -214,15 +224,7 @@ class ResidualBlock(torch.nn.Module):
         # number of channels or some stride
         # correct_x_ksize = [1]*self.dimensions
         correct_x_ksize = self.kernel_size
-        # for d in range(self.dimensions):
-        #     if stride[d]!=1:
-        #         if stride[d]%2==0:
-        #             correct_x_ksize[d]=stride[d]+1
-        #         else:
-        #             correct_x_ksize[d]=stride[d]*2-1
-                    
-        #         if self._is_transpose_conv:
-        #             correct_x_ksize[d]=stride[d]*2
+
         
         correct_x_ksize = torch.tensor(correct_x_ksize)
         correct_x_padding= correct_x_ksize // 2
