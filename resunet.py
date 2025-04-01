@@ -27,7 +27,8 @@ class Encoder(torch.nn.Module):
         attention = SCSEModule,
         dimensions = 2,
         normalization : Literal['batch','instance','group',None] = 'batch',
-        kernel_size=3,
+        kernel_size=4,
+        stride = 2,
     ):
         """
         Initializes the Encoder module.
@@ -45,7 +46,8 @@ class Encoder(torch.nn.Module):
             attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block. If a single constructor is provided, it is applied to all blocks.
             dimensions (int, optional): Dimensionality of the input tensor (1, 2, or 3). Default is 2.
             normalization (Literal['batch','instance',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', or None). Default is 'batch'.
-            kernel_size (int, optional): Kernel size for convolutions in ResidualBlocks. Default is 3.
+            kernel_size (int,tuple, optional): Kernel size for convolutions in ResidualBlocks. Default is 4.
+            stride (int,tuple, optional): what stride to use for convolutions, default is 2
 
         **Raises:**
             ValueError: If the lengths of `in_channels_`, `out_channels_`, `dilations`, or `block_sizes` do not match.
@@ -59,7 +61,7 @@ class Encoder(torch.nn.Module):
                 in_channels=in_channels_[i],
                 out_channels=[out_channels_[i]]*block_sizes[i],
                 kernel_size = kernel_size,
-                stride = 2,
+                stride = stride,
                 dilation=dilations[i],
                 normalization=normalization,
                 dimensions=dimensions
@@ -143,7 +145,8 @@ class Decoder(torch.nn.Module):
         attention = SCSEModule,
         dimensions = 2,
         normalization : Literal['batch','instance','group',None] = 'batch',
-        kernel_size=3,
+        kernel_size=4,
+        stride = 2,
     ):
         """
         Initializes the Decoder module.
@@ -160,7 +163,8 @@ class Decoder(torch.nn.Module):
             attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block. If a single constructor is provided, it is applied to all blocks.
             dimensions (int, optional): Dimensionality of the input tensor (1, 2, or 3). Default is 2.
             normalization (Literal['batch','instance',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', or None). Default is 'batch'.
-            kernel_size (int, optional): Kernel size for convolutions in ResidualBlocks. Default is 3.
+            kernel_size (int,tuple, optional): Kernel size for convolutions in ResidualBlocks. Default is 4.
+            stride (int,tuple, optional): what stride to use, default is 2
 
         **Raises:**
             ValueError: If the lengths of `up_in_channels`, `up_out_channels`, or `block_sizes` do not match.
@@ -175,7 +179,7 @@ class Decoder(torch.nn.Module):
                 in_channels=up_in_channels[i],
                 out_channels=[up_out_channels[i]]*block_sizes[i],
                 kernel_size=kernel_size,
-                stride = 2,
+                stride = stride,
                 dilation=1,
                 dimensions=dimensions,
                 normalization=normalization,
@@ -276,7 +280,8 @@ class ResidualUnet(torch.nn.Module):
         attention = SCSEModule,
         dropout_p=0.5,
         normalization : Literal['batch','instance','group',None] = 'batch',
-        kernel_size=3,
+        kernel_size=4,
+        stride = 2,
         ):
         """
         Initializes the ResidualUnet.
@@ -294,7 +299,8 @@ class ResidualUnet(torch.nn.Module):
             attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block in the Encoder and Decoder. If a single constructor is provided, it is applied to all blocks.
             dropout_p (float, optional): Dropout probability applied in the Encoder, Decoder, and connectors. Default is 0.5.
             normalization (Literal['batch','instance','group',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', 'group', or None). Default is 'batch'.
-            kernel_size (int, optional): Kernel size for convolutions in ResidualBlocks. Default is 3.
+            kernel_size (int,tuple, optional): Kernel size for convolutions in ResidualBlocks. Default is 4.
+            stride (int,tuple,optional): Stride to use for convolutions. Must be even number
 
         **Raises:**
             ValueError: If `output_scale` is not a positive power of 2.
@@ -311,8 +317,8 @@ class ResidualUnet(torch.nn.Module):
             1,
             1,
             # aspp block
-            [1]*128+[2]*64+[4]*64,
-            [1]*256+[2]*128+[4]*128,
+            [1,1,2,4],
+            [1,1,2,4],
             # 1,1
         ]
         
@@ -337,7 +343,8 @@ class ResidualUnet(torch.nn.Module):
             dropout_p=dropout_p,
             dimensions=dimensions,
             normalization=normalization,
-            kernel_size=kernel_size
+            kernel_size=kernel_size,
+            stride=stride
         )
         
         self.decoder = Decoder(
@@ -348,7 +355,8 @@ class ResidualUnet(torch.nn.Module):
             dropout_p=dropout_p,
             dimensions=dimensions,
             normalization=normalization,
-            kernel_size=kernel_size
+            kernel_size=kernel_size,
+            stride=stride
         )
 
         self.scaler = Interpolate(scale_factor=output_scale)
@@ -364,8 +372,8 @@ class ResidualUnet(torch.nn.Module):
             nn.Sequential(
                 ResidualBlock(
                     in_channels=ch,
-                    out_channels=ch,
-                    kernel_size= kernel_size,
+                    out_channels=[ch//4,ch],
+                    kernel_size=3,
                     normalization=normalization,
                     dimensions=dimensions
                 ),
@@ -397,6 +405,8 @@ class ResidualUnet(torch.nn.Module):
 
         skip = [torch.jit.fork(t,skip[i]) for i,t in enumerate(self.connectors)]
         skip = [torch.jit.wait(s) for s in skip]
+        
+        print([s.shape for s in skip],x.shape)
         
         x = self.decoder.forward_with_skip(x,skip)
         
