@@ -24,7 +24,7 @@ def train(
         model_wrapper = None,
         accelerator : Accelerator = None,
         accelerate_args : dict = None,
-        gradient_clipping_max_norm=None,
+        gradient_clipping_max_norm = 1.0,
         tie_weights=False, 
         cast_batch_to_mixed_precision_dtype = False,
         on_epoch_end = None,
@@ -261,7 +261,24 @@ def train(
     mixed_precision = dtype_map[acc.mixed_precision]
 
     is_testing = test_loader is not None and len(test_loader)
-
+    
+    def limit_grad():
+        if acc.sync_gradients: 
+            # Only clip when gradients are synced
+            acc.clip_grad_norm_(model.parameters(), max_norm=gradient_clipping_max_norm)
+    
+    if gradient_clipping_max_norm is not None:
+        gradient_clipping_max_norm = float(gradient_clipping_max_norm)
+        grad_norm = limit_grad
+    else:
+        grad_norm = lambda : 0
+    
+    if scheduler is not None:
+        step_scheduler = scheduler.step
+    else:
+        step_scheduler = lambda: 0
+    
+    
     for epoch in range(start_epoch,num_epochs):
         if acc.is_main_process:
             print(f'\nEpoch {epoch+1}/{num_epochs}')
@@ -287,15 +304,12 @@ def train(
                         
                 acc.backward(loss)
                 
-                if gradient_clipping_max_norm is not None and acc.sync_gradients: 
-                    # Only clip when gradients are synced
-                    acc.clip_grad_norm_(model.parameters(), max_norm=float(gradient_clipping_max_norm))
+                grad_norm()
                 
                 optimizer.step()
                 optimizer.zero_grad()
                 
-                if scheduler is not None:
-                    scheduler.step()
+                step_scheduler()
                 
                 batch_loss = loss.item()
                 
