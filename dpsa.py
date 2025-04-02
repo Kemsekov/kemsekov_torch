@@ -6,8 +6,59 @@ import torch.nn.functional as F
 from torch import nn, einsum
 from einops.layers.torch import Reduce, Rearrange
 
-def l2norm(t):
-    return F.normalize(t, dim = 1)
+class DPCABlock(torch.nn.Module):
+    def __init__(self,dim,heads=8,dimensions=2,freq=128):
+        """
+        Somewhat optimal cross-attention DPCA block
+        
+        dim: input dimensions
+        heads: heads for attention
+        dimensions: dimensions count
+        freq: frequency for positional embedding, must be equal to average input sequence length
+        """
+        super().__init__()
+        self.emb = ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions)
+        self.dpca = DPCA(dim,dim//heads,heads,dimensions=dimensions)
+        self.mlp = torch.nn.Sequential(
+            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+        )
+        self.gamma = torch.nn.Parameter(torch.tensor(0.0))
+    def forward(self,query_source, context):
+        """
+        Computes multihead cross attention for given context and query source.
+        
+        query_source: tensor that is used to compute query(Q) of attention. 
+        We need to embed information from context in this tensor. Output shape will be equal to query_source shape.
+        
+        context: tensor that is used to compute keys(K) and values(V) of attention. It is additional information that we need to embed into query_source.
+        
+        query_source shape can be != context shape, only batch and channel dimensions needs to match.
+        
+        When context==query_source, the results will be same as self-attention.
+        """
+        query_source_emb = self.emb(query_source)
+        context_emb = self.emb(context)
+        attn = self.dpca(query_source_emb,context_emb)
+        return self.mlp(attn)*self.gamma + query_source
+class DPSABlock(torch.nn.Module):
+    def __init__(self,dim,heads=8,dimensions=2,freq=128):
+        """
+        Somewhat optimal self-attention DPSA block
+        
+        dim: input dimensions
+        heads: heads for attention
+        dimensions: dimensions count
+        freq: frequency for positional embedding, must be equal to average input sequence length
+        """
+        
+        super().__init__()
+        self.dpca = DPCABlock(dim,heads,dimensions,freq)
+    
+    def forward(self,x):
+        """Computes self-attention of x"""
+        return self.dpca(x,x)
+
 
 class DPSA(nn.Module):
     def __init__(
@@ -92,6 +143,10 @@ class DPCA(nn.Module):
         """
         return self.DPCA(query_source, context)
         
+
+
+def l2norm(t):
+    return F.normalize(t, dim = 1)
 
 # Channel-wise Layer Normalization for 1D inputs
 class ChanLayerNorm1D(nn.Module):
@@ -480,3 +535,22 @@ class DPCA3D(nn.Module):
         out = self.out_norm(out)
         
         return self.gamma * out + query_source
+
+
+from kemsekov_torch.residual import Residual, ResidualBlock
+from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
+def dpsa_block(dim,heads=8,dimensions=2,freq=128):
+    """
+    Get optimal self-attention DPSA block
+    
+    dim: input dimensions
+    heads: heads for attention
+    dimensions: dimensions count
+    freq: frequency for positional embedding, must be equal to average input sequence length
+    """
+    return Residual([
+        ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions),
+        DPSA(dim,dim//heads,heads,dimensions=dimensions),
+        ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+        ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+    ])

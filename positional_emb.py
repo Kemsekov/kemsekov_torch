@@ -17,8 +17,11 @@ class ConcatPositionalEmbeddingPermute(torch.nn.Module):
         self.norm = get_normalization_from_name(dimensions,norm)(channels)
         self.m = conv(2*channels,channels,kernel_size=1)
         self.emb = PositionalEncodingPermute(channels,freq=freq)
+        self.gamma = torch.nn.Parameter(torch.tensor(0.0))
+        
     def forward(self,x):
-        return self.norm(self.m(torch.concat([x,self.emb(x)],1)))+x
+        emb = self.norm(self.m(torch.concat([x,self.emb(x)],1)))
+        return emb*self.gamma+x
 
 class AddPositionalEmbeddingPermute(torch.nn.Module):
     """
@@ -30,10 +33,11 @@ class AddPositionalEmbeddingPermute(torch.nn.Module):
         freq: embedding frequency, must equal to around input size
         """
         super().__init__()
-        conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         self.emb = PositionalEncodingPermute(channels,freq=freq)
+        self.gamma = torch.nn.Parameter(torch.tensor(0.0))
+        
     def forward(self,x):
-        return x+self.emb(x)
+        return self.emb(x)*self.gamma+x
 
 def get_emb(sin_inp):
     """
