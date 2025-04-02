@@ -181,9 +181,8 @@ class DPCA1D(nn.Module):
 
         # Pruning along the context sequence length
         if need_select:
-            q_abs = torch.abs(q)    # (b * heads, dim_head, L_query)
             k_abs = torch.abs(k)    # (b * heads, dim_head, L_context)
-            q_probe = self.q_probe_reduce(q_abs)  # (b * heads, dim_head)
+            q_probe = self.q_probe_reduce(q)  # (b * heads, dim_head)
             # Compute scores for each position in context
             score_l = einsum('b c, b c L -> b L', q_probe, k_abs)  # (b * heads, L_context)
             # Select top-k indices
@@ -301,11 +300,10 @@ class DPCA2D(nn.Module):
         
         if need_width_select_and_rank or need_height_select_and_rank:
             # use abs for queries to get relative importance
-            q_abs = torch.abs(q)
             k_abs = torch.abs(k)
             
             # sum over abs of height and width
-            q_probe = self.q_probe_reduce(q_abs)
+            q_probe = self.q_probe_reduce(q)
 
             # gather along height, then width
             if need_height_select_and_rank:
@@ -436,12 +434,10 @@ class DPCA3D(nn.Module):
         
         # Pruning along depth, height, and width
         if need_depth_select or need_height_select or need_width_select:
-            q_abs = torch.abs(q)
-            q_probe = self.q_probe_reduce(q_abs)  # (b * heads, dim_head)
+            q_probe = self.q_probe_reduce(q)  # (b * heads, dim_head)
             k_abs = torch.abs(k)
 
             if need_depth_select:
-                # k_abs = torch.abs(k)
                 k_depth = self.k_sum_over_height_width(k_abs)  # (b * heads, dim_head, D_context)
                 score_d = einsum('b c, b c d -> b d', q_probe, k_depth)  # (b * heads, D_context)
                 top_d_indices = score_d.topk(k=depth_top_k, dim=-1).indices  # (b * heads, k_d)
@@ -451,7 +447,6 @@ class DPCA3D(nn.Module):
                 v = torch.gather(v, dim=2, index=top_d_indices)
 
             if need_height_select:
-                # k_abs = torch.abs(k)
                 k_height = self.k_sum_over_depth_width(k_abs)  # (b * heads, dim_head, H_context)
                 score_h = einsum('b c, b c h -> b h', q_probe, k_height)  # (b * heads, H_context)
                 top_h_indices = score_h.topk(k=height_top_k, dim=-1).indices  # (b * heads, k_h)
@@ -460,7 +455,6 @@ class DPCA3D(nn.Module):
                 v = torch.gather(v, dim=3, index=top_h_indices)
 
             if need_width_select:
-                # k_abs = torch.abs(k)
                 k_width = self.k_sum_over_depth_height(k_abs)  # (b * heads, dim_head, W_context)
                 score_w = einsum('b c, b c w -> b w', q_probe, k_width)  # (b * heads, W_context)
                 top_w_indices = score_w.topk(k=width_top_k, dim=-1).indices  # (b * heads, k_w)
