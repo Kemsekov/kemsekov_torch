@@ -20,8 +20,7 @@ class ConcatPositionalEmbeddingPermute(torch.nn.Module):
         # self.gamma = torch.nn.Parameter(torch.tensor(0.0))
         
     def forward(self,x):
-        emb = self.norm(self.m(torch.concat([x,self.emb(x)],1)))
-        return emb
+        return self.norm(self.m(torch.concat([x,self.emb(x)],1)))
 
 class AddPositionalEmbeddingPermute(torch.nn.Module):
     """

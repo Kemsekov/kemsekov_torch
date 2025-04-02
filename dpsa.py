@@ -6,6 +6,9 @@ import torch.nn.functional as F
 from torch import nn, einsum
 from einops.layers.torch import Reduce, Rearrange
 
+from kemsekov_torch.residual import ResidualBlock
+from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute, AddPositionalEmbeddingPermute
+
 class DPCABlock(torch.nn.Module):
     def __init__(self,dim,heads=8,dimensions=2,freq=128):
         """
@@ -542,20 +545,5 @@ class DPCA3D(nn.Module):
         return self.gamma * out + query_source
 
 
-from kemsekov_torch.residual import Residual, ResidualBlock
-from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
-def dpsa_block(dim,heads=8,dimensions=2,freq=128):
-    """
-    Get optimal self-attention DPSA block
-    
-    dim: input dimensions
-    heads: heads for attention
-    dimensions: dimensions count
-    freq: frequency for positional embedding, must be equal to average input sequence length
-    """
-    return Residual([
-        ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions),
-        DPSA(dim,dim//heads,heads,dimensions=dimensions),
-        ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
-        ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
-    ])
+
+
