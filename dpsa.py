@@ -24,7 +24,7 @@ class DPSA(nn.Module):
         
         **Args:**
             dim: input dimension
-            dim_head: dimensions per head
+            dim_head: dimensions per head. I advice you to use it as dim//heads
             heads: heads count
             top_k: specifies how many elements per head to take for attention in each spatial dimension. When left to -1, will use sqrt of input dimensions shape. When set to infinity, computes ordinary cross attention
             dropout: dropout to use
@@ -53,7 +53,7 @@ class DPCA(nn.Module):
         
         **Args:**
             dim: input dimension
-            dim_head: dimensions per head
+            dim_head: dimensions per head. I advice you to use it as dim//heads
             heads: heads count
             dimensions: input shapes spatial dimensions
             top_k: specifies how many elements per head to take for attention in each spatial dimension. When left to -1, will use sqrt of input dimensions shape. When set to infinity, computes ordinary cross attention
