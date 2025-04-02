@@ -2,7 +2,9 @@ import math
 from typing import List
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
-from kemsekov_torch.residual import ResidualBlock
+from kemsekov_torch.residual import Residual, ResidualBlock
+from kemsekov_torch.dpsa import DPSABlock
+from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
 from kemsekov_torch.conv_modules import SCSEModule
 from kemsekov_torch.common_modules import get_normalization_from_name
 
@@ -13,6 +15,7 @@ class VQVAE2Scale3(nn.Module):
         self,
         in_channels,
         embedding_dim,
+        latent_dim,
         codebook_size=[256,256,256],
         compression_ratio=4,
         decay=0.99,
@@ -24,15 +27,21 @@ class VQVAE2Scale3(nn.Module):
         Creates new vqvae2.
         
         in_channels: input tensor channels
-        embedding_dim:
-            channels count of encoder output
+        
+        embedding_dim: dimensions for internal computation
+        
+        latent_dim: output latent space channels
+        
         codebook_size: codebook size per scaling layer, `[bottom_codebook_size,mid_codebook_size,top_codebook_size]`. It is common to use larger codebooks for bottom and mid and use small codebook for top scales.
-            What is codebook size for three layers, high,middle,low
-        embedding_scale: desired norm of initialization vectors in codebooks
+        
         compression_ratio: defines how much we want to compress input image, compression_ratio=4 with 256x256 image will be compressed to 64x64 latent tensor
+        
         decay: decay for EMA update of codebook
+        
         epsilon: used to update codebook
+        
         dimensions: input dimension shape, so if we use dimensions=1 we can process sequence, if we use dimensions=2 we can process images, if we use dimensions=3 we can process video, etc
+        
         num_residual_layers: how many residual layers to use
         """
         super().__init__()
@@ -75,11 +84,11 @@ class VQVAE2Scale3(nn.Module):
             
             *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
         )
+        
         # channels -> channels
         self.encoder_mid  = nn.Sequential(
             ResidualBlock(embedding_dim,embedding_dim,kernel_size=4,stride=2,**common),
             *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
-            
         )
         
         # channels -> channels
@@ -97,12 +106,15 @@ class VQVAE2Scale3(nn.Module):
         self.decoder_mid = nn.Sequential(
             *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
             ResidualBlock(embedding_dim,[res_dim,embedding_dim],kernel_size=4,stride=2,**common).transpose(),
-            
-
         )
-        self.combine_scales = ResidualBlock(3*embedding_dim,embedding_dim,**common)
+        
+        self.combine_scales = nn.Sequential(
+            ResidualBlock(3*embedding_dim,embedding_dim,**common),
+            ResidualBlock(embedding_dim,latent_dim,**common)
+        )
+        
         self.decoder_bottom = nn.Sequential(
-            
+            ResidualBlock(latent_dim,embedding_dim,**common),
             *[ResidualBlock(embedding_dim,[res_dim,embedding_dim],**common) for i in range(num_residual_layers)],
 
             *[
@@ -192,6 +204,7 @@ class VQVAE2Scale3(nn.Module):
         total_quant = [zd_bottom,self.upsample_mid(zd_mid),self.upsample_top(zd_top)]
         z = torch.concat(total_quant,1)
         z = self.combine_scales(z)
+        
         return self.decoder_bottom(z)
 
 class Discriminator(nn.Module):

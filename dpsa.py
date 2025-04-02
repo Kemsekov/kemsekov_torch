@@ -10,7 +10,7 @@ from kemsekov_torch.residual import ResidualBlock
 from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute, AddPositionalEmbeddingPermute
 
 class DPCABlock(torch.nn.Module):
-    def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1):
+    def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
         """
         Somewhat optimal cross-attention DPCA block
         
@@ -28,9 +28,9 @@ class DPCABlock(torch.nn.Module):
         super().__init__()
         self.dpca = DPCA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
-            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions,normalization=normalization),
             dropout_impl(dropout),
-            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions,normalization=normalization),
         )
     def forward(self,query_source, context):
         """
@@ -49,7 +49,7 @@ class DPCABlock(torch.nn.Module):
         return self.mlp(attn) + query_source
 
 class DPSABlock(torch.nn.Module):
-    def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1):
+    def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
         """
         Somewhat optimal self-attention DPSA block
         
@@ -67,9 +67,9 @@ class DPSABlock(torch.nn.Module):
         dropout_impl = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         self.dpsa = DPSA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
-            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions,normalization=normalization),
             dropout_impl(dropout),
-            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions,normalization=normalization),
         )
     def forward(self,x):
         """
