@@ -1,14 +1,9 @@
-from functools import partial
 import math
 from typing import List
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
-from kemsekov_torch.residual import ResidualBlock, Residual
+from kemsekov_torch.residual import ResidualBlock
 from kemsekov_torch.conv_modules import SCSEModule
-from kemsekov_torch.dpsa import DPSA as DPSA2D
-from kemsekov_torch.dpsa1d import DPSA1D
-from kemsekov_torch.dpsa3d import DPSA3D
-from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
 from kemsekov_torch.common_modules import get_normalization_from_name
 
 class VQVAE2Scale3(nn.Module):

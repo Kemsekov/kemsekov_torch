@@ -24,7 +24,7 @@ def train(
         model_wrapper = None,
         accelerator : Accelerator = None,
         accelerate_args : dict = None,
-        gradient_clipping_max_norm = 1.0,
+        gradient_clipping_max_norm = None,
         tie_weights=False, 
         cast_batch_to_mixed_precision_dtype = False,
         on_epoch_end = None,
