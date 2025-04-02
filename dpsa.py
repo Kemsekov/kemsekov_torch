@@ -10,7 +10,7 @@ from kemsekov_torch.residual import ResidualBlock
 from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute, AddPositionalEmbeddingPermute
 
 class DPCABlock(torch.nn.Module):
-    def __init__(self,dim,heads=8,dimensions=2,freq=128):
+    def __init__(self,dim,heads=8,dimensions=2,freq=128,dropout=0.0,top_k=-1):
         """
         Somewhat optimal cross-attention DPCA block
         
@@ -18,10 +18,12 @@ class DPCABlock(torch.nn.Module):
         heads: heads for attention
         dimensions: dimensions count
         freq: frequency for positional embedding, must be equal to average input sequence length
+        dropout: dropout to apply to attention layer
+        top_k: count of elements to compute per dimension for each token
         """
         super().__init__()
         self.emb = ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions)
-        self.dpca = DPCA(dim,dim//heads,heads,dimensions=dimensions)
+        self.dpca = DPCA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
@@ -43,8 +45,9 @@ class DPCABlock(torch.nn.Module):
         context_emb = self.emb(context)
         attn = self.dpca(query_source_emb,context_emb)
         return self.mlp(attn) + query_source
+
 class DPSABlock(torch.nn.Module):
-    def __init__(self,dim,heads=8,dimensions=2,freq=128):
+    def __init__(self,dim,heads=8,dimensions=2,freq=128,dropout=0.0,top_k=-1):
         """
         Somewhat optimal self-attention DPSA block
         
@@ -52,10 +55,12 @@ class DPSABlock(torch.nn.Module):
         heads: heads for attention
         dimensions: dimensions count
         freq: frequency for positional embedding, must be equal to average input sequence length
+        dropout: dropout to apply to attention layer
+        top_k: count of elements to compute per dimension for each token
         """
         super().__init__()
         self.emb = ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions)
-        self.dpsa = DPSA(dim,dim//heads,heads,dimensions=dimensions)
+        self.dpsa = DPSA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
