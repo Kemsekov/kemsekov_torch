@@ -15,17 +15,24 @@ class DPCABlock(torch.nn.Module):
         Somewhat optimal cross-attention DPCA block
         
         dim: input dimensions
+        
         heads: heads for attention
+        
         dimensions: dimensions count
+        
         freq: frequency for positional embedding, must be equal to average input sequence length
+        
         dropout: dropout to apply to attention layer
+        
         top_k: count of elements to compute per dimension for each token
         """
+        dropout_impl = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         super().__init__()
         self.emb = ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions)
         self.dpca = DPCA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+            dropout_impl(dropout),
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
         )
     def forward(self,query_source, context):
@@ -52,17 +59,24 @@ class DPSABlock(torch.nn.Module):
         Somewhat optimal self-attention DPSA block
         
         dim: input dimensions
+        
         heads: heads for attention
+        
         dimensions: dimensions count
+        
         freq: frequency for positional embedding, must be equal to average input sequence length
+        
         dropout: dropout to apply to attention layer
+        
         top_k: count of elements to compute per dimension for each token
         """
         super().__init__()
+        dropout_impl = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         self.emb = ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions)
         self.dpsa = DPSA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+            dropout_impl(dropout),
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
         )
     def forward(self,x):
