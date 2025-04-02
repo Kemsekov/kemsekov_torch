@@ -23,7 +23,6 @@ class DPCABlock(torch.nn.Module):
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
         )
-        self.gamma = torch.nn.Parameter(torch.tensor(0.0))
     def forward(self,query_source, context):
         """
         Computes multihead cross attention for given context and query source.
@@ -40,7 +39,7 @@ class DPCABlock(torch.nn.Module):
         query_source_emb = self.emb(query_source)
         context_emb = self.emb(context)
         attn = self.dpca(query_source_emb,context_emb)
-        return self.mlp(attn)*self.gamma + query_source
+        return self.mlp(attn) + query_source
 class DPSABlock(torch.nn.Module):
     def __init__(self,dim,heads=8,dimensions=2,freq=128):
         """
@@ -58,14 +57,13 @@ class DPSABlock(torch.nn.Module):
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
         )
-        self.gamma = torch.nn.Parameter(torch.tensor(0.0))
     def forward(self,x):
         """
-        Computes multihead self-attention for given context and query source.
+        Computes multihead self-attention for given input x.
         """
         x_emb = self.emb(x)
         attn = self.dpsa(x_emb)
-        return self.mlp(attn)*self.gamma + x
+        return self.mlp(attn) + x
 
 class DPSA(nn.Module):
     def __init__(
