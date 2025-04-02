@@ -40,7 +40,7 @@ class ResidualBlock(torch.nn.Module):
         kernel_size = 3,
         stride = 1,
         dilation = 1,
-        activation=torch.nn.ReLU,
+        activation=torch.nn.SiLU,
         normalization : Literal['batch','instance','group','spectral',None] = 'batch',
         dimensions : Literal[1,2,3] = 2,
         is_transpose = False,
