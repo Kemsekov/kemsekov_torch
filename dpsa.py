@@ -51,14 +51,21 @@ class DPSABlock(torch.nn.Module):
         dimensions: dimensions count
         freq: frequency for positional embedding, must be equal to average input sequence length
         """
-        
         super().__init__()
-        self.dpca = DPCABlock(dim,heads,dimensions,freq)
-    
+        self.emb = ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions)
+        self.dpsa = DPSA(dim,dim//heads,heads,dimensions=dimensions)
+        self.mlp = torch.nn.Sequential(
+            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
+        )
+        self.gamma = torch.nn.Parameter(torch.tensor(0.0))
     def forward(self,x):
-        """Computes self-attention of x"""
-        return self.dpca(x,x)
-
+        """
+        Computes multihead self-attention for given context and query source.
+        """
+        x_emb = self.emb(x)
+        attn = self.dpsa(x_emb)
+        return self.mlp(attn)*self.gamma + x
 
 class DPSA(nn.Module):
     def __init__(
