@@ -10,7 +10,7 @@ from kemsekov_torch.residual import ResidualBlock
 from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute, AddPositionalEmbeddingPermute
 
 class DPCABlock(torch.nn.Module):
-    def __init__(self,dim,heads=8,dimensions=2,freq=128,dropout=0.0,top_k=-1):
+    def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1):
         """
         Somewhat optimal cross-attention DPCA block
         
@@ -20,15 +20,12 @@ class DPCABlock(torch.nn.Module):
         
         dimensions: dimensions count
         
-        freq: frequency for positional embedding, must be equal to average input sequence length
-        
         dropout: dropout to apply to attention layer
         
         top_k: count of elements to compute per dimension for each token
         """
         dropout_impl = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         super().__init__()
-        self.emb = ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions)
         self.dpca = DPCA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
@@ -48,13 +45,11 @@ class DPCABlock(torch.nn.Module):
         
         When context==query_source, the results will be same as self-attention.
         """
-        query_source_emb = self.emb(query_source)
-        context_emb = self.emb(context)
-        attn = self.dpca(query_source_emb,context_emb)
+        attn = self.dpca(query_source,context)
         return self.mlp(attn) + query_source
 
 class DPSABlock(torch.nn.Module):
-    def __init__(self,dim,heads=8,dimensions=2,freq=128,dropout=0.0,top_k=-1):
+    def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1):
         """
         Somewhat optimal self-attention DPSA block
         
@@ -64,15 +59,12 @@ class DPSABlock(torch.nn.Module):
         
         dimensions: dimensions count
         
-        freq: frequency for positional embedding, must be equal to average input sequence length
-        
         dropout: dropout to apply to attention layer
         
         top_k: count of elements to compute per dimension for each token
         """
         super().__init__()
         dropout_impl = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
-        self.emb = ConcatPositionalEmbeddingPermute(dim,freq=freq,dimensions=dimensions)
         self.dpsa = DPSA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(dim,[dim//4,dim],dimensions=dimensions),
@@ -83,8 +75,7 @@ class DPSABlock(torch.nn.Module):
         """
         Computes multihead self-attention for given input x.
         """
-        x_emb = self.emb(x)
-        attn = self.dpsa(x_emb)
+        attn = self.dpsa(x)
         return self.mlp(attn) + x
 
 class DPSA(nn.Module):
