@@ -51,7 +51,7 @@ class VQVAE2Scale3(nn.Module):
         
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         common = {
-            "normalization":None,
+            "normalization":'batch',
             "dimensions":dimensions,
             'activation':torch.nn.SiLU
         }
