@@ -280,8 +280,6 @@ class ResidualUnet(torch.nn.Module):
         attention = SCSEModule,
         dropout_p=0.5,
         normalization : Literal['batch','instance','group',None] = 'batch',
-        kernel_size=4,
-        stride = 2,
         ):
         """
         Initializes the ResidualUnet.
@@ -299,8 +297,6 @@ class ResidualUnet(torch.nn.Module):
             attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block in the Encoder and Decoder. If a single constructor is provided, it is applied to all blocks.
             dropout_p (float, optional): Dropout probability applied in the Encoder, Decoder, and connectors. Default is 0.5.
             normalization (Literal['batch','instance','group',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', 'group', or None). Default is 'batch'.
-            kernel_size (int,tuple, optional): Kernel size for convolutions in ResidualBlocks. Default is 4.
-            stride (int,tuple,optional): Stride to use for convolutions. Must be even number
 
         **Raises:**
             ValueError: If `output_scale` is not a positive power of 2.
@@ -308,6 +304,8 @@ class ResidualUnet(torch.nn.Module):
 
         super().__init__()
         # self.input_self_attn = VisualMultiheadSelfAttentionFull(in_channels,in_channels)
+        kernel_size=4
+        stride = 2
         
         output_scale=float(output_scale)
         in_channels_ =  [in_channels,32, 64, 128, 256]
@@ -316,10 +314,8 @@ class ResidualUnet(torch.nn.Module):
             1,
             1,
             1,
-            # aspp block
-            [1,1,2,4],
-            [1,1,2,4],
-            # 1,1
+            1,
+            1
         ]
         
         if output_scale==1:
@@ -375,7 +371,8 @@ class ResidualUnet(torch.nn.Module):
                     out_channels=[ch//4,ch],
                     kernel_size=3,
                     normalization=normalization,
-                    dimensions=dimensions
+                    dimensions=dimensions,
+                    dilation=[1]+[2]+[4]
                 ),
                 get_attn(ch),
                 [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1](p=dropout_p),
