@@ -46,7 +46,7 @@ class DPCABlock(torch.nn.Module):
         When context==query_source, the results will be same as self-attention.
         """
         attn = self.dpca(query_source,context)
-        return self.mlp(attn) + query_source
+        return self.mlp(attn)
 
 class DPSABlock(torch.nn.Module):
     def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
@@ -76,7 +76,7 @@ class DPSABlock(torch.nn.Module):
         Computes multihead self-attention for given input x.
         """
         attn = self.dpsa(x)
-        return self.mlp(attn) + x
+        return self.mlp(attn)
 
 class DPSA(nn.Module):
     def __init__(
@@ -238,11 +238,11 @@ class DPCA1D(nn.Module):
 
         # Normalize inputs
         context = self.context_norm(context)        # (b, c, L_context)
-        query_source = self.query_source_norm(query_source)  # (b, c, L_query)
+        query_source_n = self.query_source_norm(query_source)  # (b, c, L_query)
 
         # Project to queries, keys, values
         k, v = self.to_kv(context).chunk(2, dim=1)  # Each: (b, inner_dim, L_context)
-        q = self.to_q(query_source)                 # (b, inner_dim, L_query)
+        q = self.to_q(query_source_n)                 # (b, inner_dim, L_query)
 
         # Fold out heads: (b, inner_dim, L) -> (b * heads, dim_head, L)
         q = self.fold_out_heads(q)  # (b * heads, dim_head, L_query)
@@ -347,11 +347,11 @@ class DPCA2D(nn.Module):
         
         # Normalize input
         context = self.context_norm(context)
-        query_source = self.query_source_norm(query_source)
+        query_source_n = self.query_source_norm(query_source)
 
         # Project to queries, keys, values
         k, v = self.to_kv(context).chunk(2, dim=1)
-        q = self.to_q(query_source)
+        q = self.to_q(query_source_n)
 
         q = self.fold_out_heads(q)
         k = self.fold_out_heads(k)
@@ -486,11 +486,11 @@ class DPCA3D(nn.Module):
         width_top_k = self.width_top_k if self.width_top_k > 0 else int(W_context ** 0.5)  # e.g., int(32**0.5)≈5
         # Normalize input
         context = self.context_norm(context)
-        query_source = self.query_source_norm(query_source)
+        query_source_n = self.query_source_norm(query_source)
 
         # Project to queries, keys, values
         k, v = self.to_kv(context).chunk(2, dim=1)
-        q = self.to_q(query_source)
+        q = self.to_q(query_source_n)
         
         # Fold out heads
         q = self.fold_out_heads(q)  # (b * heads, dim_head, D, H, W)
