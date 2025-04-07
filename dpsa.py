@@ -160,7 +160,8 @@ class DPCA(nn.Module):
         When context==query_source, the results will be same as self-attention.
         """
         return self.DPCA(query_source, context)
-        
+    
+# prototypes
 from fast_pytorch_kmeans.kmeans import KMeans
 def select_best_ind(q : torch.Tensor,k: torch.Tensor,v: torch.Tensor,top_k: int):
     """
@@ -171,7 +172,7 @@ def select_best_ind(q : torch.Tensor,k: torch.Tensor,v: torch.Tensor,top_k: int)
     # q (B,L,C)
     B = q.shape[0]
     q_flat = q.reshape(q.shape[0]*q.shape[1],q.shape[2]) # (B*L,C)
-    kmeans = KMeans(top_k)
+    kmeans = KMeans(top_k,tol=0.1,max_iter=10,mode='cosine')
     q_cluster = kmeans.fit_predict(q_flat).view(q.shape[:-1]) #(B,L)
     # how many times cluster have occurred in each batch of q
     cluster_size = torch.zeros(B, top_k, dtype=torch.long).to(q.device)
@@ -191,6 +192,19 @@ def select_best_ind(q : torch.Tensor,k: torch.Tensor,v: torch.Tensor,top_k: int)
     best_k = k_dist_to_center.argsort(descending=True)[:,:top_k]
     # best_k = k_element_cluster_size.argsort(descending=True)[:,:top_k]
     
+    best_k_expanded=best_k.unsqueeze(-1).expand(-1, -1, k.shape[-1])
+    k = torch.gather(k, dim=1, index=best_k_expanded)
+    v = torch.gather(v, dim=1, index=best_k_expanded)
+    return k,v
+def get_clustered_k(k: torch.Tensor,v: torch.Tensor,top_k: int):
+    if top_k<=0:
+        top_k = int((k.shape[0]*k.shape[1])**0.5)
+    k_flat = k.reshape(k.shape[0]*k.shape[1],k.shape[2]) # (B*L,C)
+    kmeans = KMeans(top_k,tol=0.1,max_iter=10,mode='cosine')
+    k_cluster_ind = kmeans.fit_predict(k_flat).view(k.shape[:-1]) #(B,L)
+    k_cluster_centers = kmeans.centroids[k_cluster_ind]
+    k_dist_to_center = (k_cluster_centers-k).abs().sum(-1)
+    best_k = k_dist_to_center.argsort(descending=True)[:,:top_k]
     best_k_expanded=best_k.unsqueeze(-1).expand(-1, -1, k.shape[-1])
     k = torch.gather(k, dim=1, index=best_k_expanded)
     v = torch.gather(v, dim=1, index=best_k_expanded)
@@ -302,7 +316,7 @@ class DPCA1D(nn.Module):
         q = self.flatten_to_hidden_dim(q)  # (b * heads, L_query, dim_head)
         k = self.flatten_to_hidden_dim(k)  # (b * heads, L_k, dim_head), L_k = length_top_k if pruned, else L_context
         v = self.flatten_to_hidden_dim(v)  # Same as k
-        k,v = select_best_ind(q,k,v,self.top_k)
+        # k,v = get_clustered_k(k,v,self.top_k)
         
         # Compute attention
         sim = einsum('b i d, b j d -> b i j', q, k)  # (b * heads, L_query, L_k)
