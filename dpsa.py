@@ -138,12 +138,12 @@ class DPCA(nn.Module):
         
         if dimensions==2:
             self.DPCA = DPCA2D(
-                dim,dim_head,heads,top_k,top_k,dropout
+                dim,dim_head,heads,top_k,dropout
             )
         
         if dimensions==3:
             self.DPCA = DPCA3D(
-                dim,dim_head,heads,top_k,top_k,top_k,dropout
+                dim,dim_head,heads,top_k,dropout
             )
     
     def forward(self,query_source, context):
@@ -161,6 +161,40 @@ class DPCA(nn.Module):
         """
         return self.DPCA(query_source, context)
         
+from fast_pytorch_kmeans.kmeans import KMeans
+def select_best_ind(q,k,v,top_k):
+    """
+    Selects subset of items from query(q) and keys(k) in such a way, that minimizes difference between full attention and pruned
+    """
+    if top_k<=0:
+        top_k = int((k.shape[0]*k.shape[1])**0.5)
+    # q (B,L,C)
+    B = q.shape[0]
+    q_flat = q.reshape(q.shape[0]*q.shape[1],q.shape[2]) # (B*L,C)
+    kmeans = KMeans(top_k)
+    q_cluster = kmeans.fit_predict(q_flat).view(q.shape[:-1]) #(B,L)
+    # how many times cluster have occurred in each batch of q
+    cluster_size = torch.zeros(B, top_k, dtype=torch.long)
+    # (B,top_k)
+    # contains counts of cluster occurring in each batch of q
+    cluster_size.scatter_add_(1, q_cluster, torch.ones_like(q_cluster, dtype=torch.long))
+
+    k_flat = k.reshape(k.shape[0]*k.shape[1],k.shape[2]) # (B*L,C)
+    k_cluster_ind = kmeans.predict(k_flat).view(k.shape[:-1])
+    
+    # k_element_cluster_size have associated count elements in cluster
+    # k_element_cluster_size = torch.gather(cluster_size, dim=1, index=k_cluster_ind)
+
+    k_cluster_centers = kmeans.centroids[k_cluster_ind]
+    k_dist_to_center = (k_cluster_centers-k).abs().sum(-1)
+    
+    best_k = k_dist_to_center.argsort(descending=True)[:,:top_k]
+    # best_k = k_element_cluster_size.argsort(descending=True)[:,:top_k]
+    
+    best_k_expanded=best_k.unsqueeze(-1).expand(-1, -1, k.shape[-1])
+    k = torch.gather(k, dim=1, index=best_k_expanded)
+    v = torch.gather(v, dim=1, index=best_k_expanded)
+    return k,v
 
 
 def l2norm(t):
@@ -185,7 +219,7 @@ class DPCA1D(nn.Module):
         dim,              # Input channel dimension
         dim_head,          # Output channel dimension
         heads=8,          # Number of attention heads
-        length_top_k=-1,  # Number of sequence positions to keep
+        top_k=-1,  # Number of sequence positions to keep
         dropout=0.        # Dropout rate
     ):
         super().__init__()
@@ -205,7 +239,7 @@ class DPCA1D(nn.Module):
         self.to_out = nn.Conv1d(inner_dim, dim, kernel_size=1, bias=False)
 
         # Pruning parameter
-        self.length_top_k = length_top_k
+        self.top_k = top_k
 
         # Dropout for attention weights
         self.dropout = nn.Dropout(dropout)
@@ -228,14 +262,7 @@ class DPCA1D(nn.Module):
         """
         # Unpack shapes separately
         b, c, L_query = query_source.shape
-        _, _, L_context = context.shape
-        
-        # Set top-k value based on context sequence length
-        length_top_k = self.length_top_k if self.length_top_k > 0 else int(L_context ** 0.5)
-        
-        # Determine if pruning is needed based on context sequence length
-        need_select = length_top_k < L_context
-
+    
         # Normalize inputs
         context = self.context_norm(context)        # (b, c, L_context)
         query_source_n = self.query_source_norm(query_source)  # (b, c, L_query)
@@ -252,25 +279,11 @@ class DPCA1D(nn.Module):
         # L2 normalize queries and keys
         q, k = l2norm(q), l2norm(k)
 
-        # Pruning along the context sequence length
-        if need_select:
-            k_abs = torch.abs(k)    # (b * heads, dim_head, L_context)
-            q_probe = self.q_probe_reduce(q)  # (b * heads, dim_head)
-            # Compute scores for each position in context
-            score_l = einsum('b c, b c L -> b L', q_probe, k_abs)  # (b * heads, L_context)
-            # Select top-k indices
-            top_l_indices = score_l.topk(k=length_top_k, dim=-1).indices  # (b * heads, length_top_k)
-            # Expand indices for gathering
-            top_l_indices = top_l_indices[:, None, :].expand(-1, self.dim_head, -1)  # (b * heads, dim_head, length_top_k)
-            # Gather k and v
-            k = torch.gather(k, dim=2, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
-            v = torch.gather(v, dim=2, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
-
-        # Flatten spatial dimension
         q = self.flatten_to_hidden_dim(q)  # (b * heads, L_query, dim_head)
         k = self.flatten_to_hidden_dim(k)  # (b * heads, L_k, dim_head), L_k = length_top_k if pruned, else L_context
         v = self.flatten_to_hidden_dim(v)  # Same as k
-
+        k,v = select_best_ind(q,k,v,self.top_k)
+        
         # Compute attention
         sim = einsum('b i d, b j d -> b i j', q, k)  # (b * heads, L_query, L_k)
         attn = sim.softmax(dim=-1)
@@ -306,8 +319,7 @@ class DPCA2D(nn.Module):
         dim,
         dim_head,
         heads = 8,
-        height_top_k = -1,
-        width_top_k = -1,
+        top_k = -1,
         dropout = 0.
     ):
         super().__init__()
@@ -326,8 +338,7 @@ class DPCA2D(nn.Module):
         
         self.to_out = nn.Conv2d(inner_dim, dim, kernel_size=1, bias=False)
 
-        self.height_top_k = height_top_k
-        self.width_top_k = width_top_k
+        self.top_k = top_k
 
         self.dropout = nn.Dropout(dropout)
         self.fold_out_heads = Rearrange('b (h c) ... -> (b h) c ...', h = self.heads)
@@ -339,11 +350,6 @@ class DPCA2D(nn.Module):
     def forward(self, query_source, context):
         # Unpack shapes for query_source and context separately
         b, c, height_query, width_query = query_source.shape
-        _, _, height_context, width_context = context.shape
-        
-        # Set top-k values based on context dimensions
-        height_top_k = self.height_top_k if self.height_top_k > 0 else int(height_context ** 0.5)
-        width_top_k = self.width_top_k if self.width_top_k > 0 else int(width_context ** 0.5)
         
         # Normalize input
         context = self.context_norm(context)
@@ -362,42 +368,8 @@ class DPCA2D(nn.Module):
 
         q, k = l2norm(q),l2norm(k)
 
-        # calculate whether to select and rank along height and width
-        need_height_select_and_rank = height_top_k < height_context
-        need_width_select_and_rank = width_top_k < width_context
-
-        # select and rank keys / values, probing with query (reduced along height and width) and keys reduced along row and column respectively
-
-        # C is hidden dimension
-        
-        
-        if need_width_select_and_rank or need_height_select_and_rank:
-            # use abs for queries to get relative importance
-            k_abs = torch.abs(k)
-            
-            # sum over abs of height and width
-            q_probe = self.q_probe_reduce(q)
-
-            # gather along height, then width
-            if need_height_select_and_rank:
-                # sum over width
-                k_height = self.k_sum_over_width(k_abs)
-
-                score_r = einsum('b c, b h c -> b h', q_probe, k_height)
-                top_h_indices = score_r.topk(k = height_top_k, dim = -1).indices
-                top_h_indices = top_h_indices[:,None,:,None].expand(-1, self.dim_head, -1, width_context)
-                k, v = torch.gather(k, dim=2, index=top_h_indices),torch.gather(v, dim=2, index=top_h_indices)
-            
-            if need_width_select_and_rank:
-                # sum over height
-                k_width = self.k_sum_over_height(k_abs)
-
-                score_c = einsum('b h, b c w -> b w', q_probe, k_width)
-                top_w_indices = score_c.topk(k = width_top_k, dim = -1).indices
-                top_w_indices = top_w_indices[:,None,None,:].expand(-1, self.dim_head, k.shape[2], -1)
-                k, v = torch.gather(k, dim=3, index=top_w_indices),torch.gather(v, dim=3, index=top_w_indices)
-            
         q, k, v = self.flatten_to_hidden_dim(q),self.flatten_to_hidden_dim(k),self.flatten_to_hidden_dim(v)
+        k,v = select_best_ind(q,k,v,self.top_k)
 
         # cosine similarities
         sim = einsum('b i d, b j d -> b i j', q, k)
@@ -437,9 +409,7 @@ class DPCA3D(nn.Module):
         dim,              # Input channel dimension
         dim_head,          # Output channel dimension
         heads=8,          # Number of attention heads
-        depth_top_k=-1,   # Number of depth positions to keep
-        height_top_k=-1,  # Number of height positions to keep
-        width_top_k=-1,   # Number of width positions to keep
+        top_k=-1,   # Number of depth positions to keep
         dropout=0.        # Dropout rate
     ):
         super().__init__()
@@ -459,9 +429,7 @@ class DPCA3D(nn.Module):
         self.to_out = nn.Conv3d(inner_dim, dim, kernel_size=1, bias=False)
 
         # Pruning parameters
-        self.depth_top_k = depth_top_k
-        self.height_top_k = height_top_k
-        self.width_top_k = width_top_k
+        self.top_k = top_k
 
         # Dropout for attention weights
         self.dropout = nn.Dropout(dropout)
@@ -478,12 +446,7 @@ class DPCA3D(nn.Module):
     def forward(self, query_source, context):
         # Input shape: (b, c, D, H, W)
         b, c, D_query, H_query, W_query = query_source.shape  # query_source dimensions
-        _, _, D_context, H_context, W_context = context.shape  # context dimensions
-        
-        # Set top-k values (using context dimensions where appropriate)
-        depth_top_k = self.depth_top_k if self.depth_top_k > 0 else int(D_context ** 0.5)  # e.g., int(16**0.5)=4
-        height_top_k = self.height_top_k if self.height_top_k > 0 else int(H_context ** 0.5)  # e.g., int(24**0.5)≈4
-        width_top_k = self.width_top_k if self.width_top_k > 0 else int(W_context ** 0.5)  # e.g., int(32**0.5)≈5
+
         # Normalize input
         context = self.context_norm(context)
         query_source_n = self.query_source_norm(query_source)
@@ -500,45 +463,12 @@ class DPCA3D(nn.Module):
         # L2 normalize queries and keys
         q, k = l2norm(q), l2norm(k)
         
-        # Determine if pruning is needed
-        need_depth_select = depth_top_k < D_context
-        need_height_select = height_top_k < H_context
-        need_width_select = width_top_k < W_context
-        
-        # Pruning along depth, height, and width
-        if need_depth_select or need_height_select or need_width_select:
-            q_probe = self.q_probe_reduce(q)  # (b * heads, dim_head)
-            k_abs = torch.abs(k)
-
-            if need_depth_select:
-                k_depth = self.k_sum_over_height_width(k_abs)  # (b * heads, dim_head, D_context)
-                score_d = einsum('b c, b c d -> b d', q_probe, k_depth)  # (b * heads, D_context)
-                top_d_indices = score_d.topk(k=depth_top_k, dim=-1).indices  # (b * heads, k_d)
-                # Fix: Use H_context and W_context instead of H and W
-                top_d_indices = top_d_indices[:, None, :, None, None].expand(-1, self.dim_head, -1, H_context, W_context)
-                k = torch.gather(k, dim=2, index=top_d_indices)  # (b * heads, dim_head, k_d, H_context, W_context)
-                v = torch.gather(v, dim=2, index=top_d_indices)
-
-            if need_height_select:
-                k_height = self.k_sum_over_depth_width(k_abs)  # (b * heads, dim_head, H_context)
-                score_h = einsum('b c, b c h -> b h', q_probe, k_height)  # (b * heads, H_context)
-                top_h_indices = score_h.topk(k=height_top_k, dim=-1).indices  # (b * heads, k_h)
-                top_h_indices = top_h_indices[:, None, None, :, None].expand(-1, self.dim_head, k.shape[2], -1, k.shape[4])
-                k = torch.gather(k, dim=3, index=top_h_indices)  # (b * heads, dim_head, k_d, k_h, W_context)
-                v = torch.gather(v, dim=3, index=top_h_indices)
-
-            if need_width_select:
-                k_width = self.k_sum_over_depth_height(k_abs)  # (b * heads, dim_head, W_context)
-                score_w = einsum('b c, b c w -> b w', q_probe, k_width)  # (b * heads, W_context)
-                top_w_indices = score_w.topk(k=width_top_k, dim=-1).indices  # (b * heads, k_w)
-                top_w_indices = top_w_indices[:, None, None, None, :].expand(-1, self.dim_head, k.shape[2], k.shape[3], -1)
-                k = torch.gather(k, dim=4, index=top_w_indices)  # (b * heads, dim_head, k_d, k_h, k_w)
-                v = torch.gather(v, dim=4, index=top_w_indices)
         # Flatten spatial dimensions
         q = self.flatten_to_hidden_dim(q)  # (b * heads, D * H * W, dim_head)
         k = self.flatten_to_hidden_dim(k)  # (b * heads, k_d * k_h * k_w, dim_head)
         v = self.flatten_to_hidden_dim(v)
-
+        k,v = select_best_ind(q,k,v,self.top_k)
+        
         # Compute attention
         sim = einsum('b i d, b j d -> b i j', q, k)
         attn = sim.softmax(dim=-1)
