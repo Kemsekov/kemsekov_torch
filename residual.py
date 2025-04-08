@@ -119,7 +119,6 @@ class ResidualBlock(torch.nn.Module):
         
         self.convs = []
         self.norms = []
-        self.input_resize=nn.ModuleList([torch.nn.Identity()]*repeats)
         
         assert all([s%2==0 or s==1 for s in stride]), f"all stride must be even or 1. given stride={stride}"
         
@@ -282,8 +281,7 @@ class ResidualBlock(torch.nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, out_channels, new_height, new_width).
         """
         out = x
-        for convs,norm,act,resize in zip(self.convs,self.norms,self.activation,self.input_resize):
-            out=resize(out)
+        for convs,norm,act in zip(self.convs,self.norms,self.activation):
             results = [conv(out) for conv in convs]
             out = torch.cat(results, dim=1)
             out = act(norm(out))

@@ -315,7 +315,7 @@ class ResidualUnet(torch.nn.Module):
             1,
             1,
             1,
-            1
+            [1]+[3]+[5]
         ]
         
         if output_scale==1:
