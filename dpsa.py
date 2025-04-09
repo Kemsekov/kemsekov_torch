@@ -161,54 +161,44 @@ class DPCA(nn.Module):
         """
         return self.DPCA(query_source, context)
     
-# prototypes
-from fast_pytorch_kmeans.kmeans import KMeans
-def select_best_ind(q : torch.Tensor,k: torch.Tensor,v: torch.Tensor,top_k: int):
-    """
-    Selects subset of items from query(q) and keys(k) in such a way, that minimizes difference between full attention and pruned
-    """
-    if top_k<=0:
-        top_k = int((k.shape[0]*k.shape[1])**0.5)
-    # q (B,L,C)
-    B = q.shape[0]
-    q_flat = q.reshape(q.shape[0]*q.shape[1],q.shape[2]) # (B*L,C)
-    kmeans = KMeans(top_k,tol=0.1,max_iter=10,mode='cosine')
-    q_cluster = kmeans.fit_predict(q_flat).view(q.shape[:-1]) #(B,L)
-    # how many times cluster have occurred in each batch of q
-    cluster_size = torch.zeros(B, top_k, dtype=torch.long).to(q.device)
-    # (B,top_k)
-    # contains counts of cluster occurring in each batch of q
-    cluster_size.scatter_add_(1, q_cluster, torch.ones_like(q_cluster, dtype=torch.long))
+def phi(x):
+    return 1+torch.nn.functional.elu(x)
 
-    k_flat = k.reshape(k.shape[0]*k.shape[1],k.shape[2]) # (B*L,C)
-    k_cluster_ind = kmeans.predict(k_flat).view(k.shape[:-1])
+def approx_attention(q,k,v):
+    k_t = k.transpose(-1,-2)
     
-    # k_element_cluster_size have associated count elements in cluster
-    # k_element_cluster_size = torch.gather(cluster_size, dim=1, index=k_cluster_ind)
+    # linear attention using softmax
+    out_linear1 = q.softmax(-1) @ (k_t.softmax(-1) @ v)
 
-    k_cluster_centers = kmeans.centroids[k_cluster_ind]
-    k_dist_to_center = (k_cluster_centers-k).abs().sum(-1)
+    # linear attention using phi kernel
+    phi_q = phi(q)
+    phi_k = phi(k_t)
+    phi_q /= phi_q.sum(-1).unsqueeze_(-1)
+    phi_k /= phi_k.sum(-1).unsqueeze_(-1)
     
-    best_k = k_dist_to_center.argsort(descending=True)[:,:top_k]
-    # best_k = k_element_cluster_size.argsort(descending=True)[:,:top_k]
+    out_linear2 = phi_q @ (phi_k @ v)
+
+    # linear attention kind of thing
+    q = torch.nn.functional.normalize(q,2.0,-1)
+    # k = torch.nn.functional.normalize(k,2.0,-1)
+    # k_t = k.transpose(-1,-2)
+
+    N=v.shape[-2]
+    attn_part = q @ (k_t @ v)
+    ones = torch.ones(N)
+    v_ones_part = (v.transpose(-1,-2) @ ones).unsqueeze_(1)
+    top = v_ones_part+attn_part
+    bottom = N + (q @ (k_t @ ones).unsqueeze_(-1))
+    out_linear3 = top/bottom
     
-    best_k_expanded=best_k.unsqueeze(-1).expand(-1, -1, k.shape[-1])
-    k = torch.gather(k, dim=1, index=best_k_expanded)
-    v = torch.gather(v, dim=1, index=best_k_expanded)
-    return k,v
-def get_clustered_k(k: torch.Tensor,v: torch.Tensor,top_k: int):
-    if top_k<=0:
-        top_k = int((k.shape[0]*k.shape[1])**0.5)
-    k_flat = k.reshape(k.shape[0]*k.shape[1],k.shape[2]) # (B*L,C)
-    kmeans = KMeans(top_k,tol=0.1,max_iter=10,mode='cosine')
-    k_cluster_ind = kmeans.fit_predict(k_flat).view(k.shape[:-1]) #(B,L)
-    k_cluster_centers = kmeans.centroids[k_cluster_ind]
-    k_dist_to_center = (k_cluster_centers-k).abs().sum(-1)
-    best_k = k_dist_to_center.argsort(descending=True)[:,:top_k]
-    best_k_expanded=best_k.unsqueeze(-1).expand(-1, -1, k.shape[-1])
-    k = torch.gather(k, dim=1, index=best_k_expanded)
-    v = torch.gather(v, dim=1, index=best_k_expanded)
-    return k,v
+    mean = (out_linear1+out_linear2+out_linear3)/3
+    
+    # print("diff1",(out_full-out_linear1).abs().mean())
+    # print("diff2",(out_full-out_linear2).abs().mean())
+    # print("diff3",(out_full-out_linear3).abs().mean())
+    # print("mean diff",(out_full-mean).abs().mean())
+    
+    return mean
 
 
 def l2norm(t):
