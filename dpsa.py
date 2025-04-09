@@ -24,7 +24,6 @@ class DPCABlock(torch.nn.Module):
         
         top_k: count of elements to compute per dimension for each token
         """
-        dropout_impl = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         super().__init__()
         self.dpca = DPCA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
@@ -62,7 +61,6 @@ class DPSABlock(torch.nn.Module):
         top_k: count of elements to compute per dimension for each token
         """
         super().__init__()
-        dropout_impl = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         self.dpsa = DPSA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(dim,[dim,dim],dimensions=dimensions,normalization=normalization),
