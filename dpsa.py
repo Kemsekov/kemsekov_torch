@@ -160,46 +160,6 @@ class DPCA(nn.Module):
         When context==query_source, the results will be same as self-attention.
         """
         return self.DPCA(query_source, context)
-    
-def phi(x):
-    return 1+torch.nn.functional.elu(x)
-
-def approx_attention(q,k,v):
-    k_t = k.transpose(-1,-2)
-    
-    # linear attention using softmax
-    out_linear1 = q.softmax(-1) @ (k_t.softmax(-1) @ v)
-
-    # linear attention using phi kernel
-    phi_q = phi(q)
-    phi_k = phi(k_t)
-    phi_q /= phi_q.sum(-1).unsqueeze_(-1)
-    phi_k /= phi_k.sum(-1).unsqueeze_(-1)
-    
-    out_linear2 = phi_q @ (phi_k @ v)
-
-    # linear attention kind of thing
-    q = torch.nn.functional.normalize(q,2.0,-1)
-    # k = torch.nn.functional.normalize(k,2.0,-1)
-    # k_t = k.transpose(-1,-2)
-
-    N=v.shape[-2]
-    attn_part = q @ (k_t @ v)
-    ones = torch.ones(N)
-    v_ones_part = (v.transpose(-1,-2) @ ones).unsqueeze_(1)
-    top = v_ones_part+attn_part
-    bottom = N + (q @ (k_t @ ones).unsqueeze_(-1))
-    out_linear3 = top/bottom
-    
-    mean = (out_linear1+out_linear2+out_linear3)/3
-    
-    # print("diff1",(out_full-out_linear1).abs().mean())
-    # print("diff2",(out_full-out_linear2).abs().mean())
-    # print("diff3",(out_full-out_linear3).abs().mean())
-    # print("mean diff",(out_full-mean).abs().mean())
-    
-    return mean
-
 
 def l2norm(t):
     return F.normalize(t, dim = 1)
@@ -246,10 +206,8 @@ class DPCA1D(nn.Module):
         self.top_k = top_k
 
         # Dropout for attention weights
-        self.dropout = nn.Dropout(dropout)
-
+        self.dropout = dropout
         self.gamma = nn.Parameter(torch.zeros(1))
-        
 
         # Tensor rearrangement utilities
         self.fold_out_heads = Rearrange('b (h c) L -> (b h) c L', h=heads)
@@ -309,10 +267,7 @@ class DPCA1D(nn.Module):
         # k,v = get_clustered_k(k,v,self.top_k)
         
         # Compute attention
-        sim = einsum('b i d, b j d -> b i j', q, k)  # (b * heads, L_query, L_k)
-        attn = sim.softmax(dim=-1)
-        attn = self.dropout(attn)
-        out = einsum('b i j, b j d -> b i d', attn, v)  # (b * heads, L_query, dim_head)
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout)
 
         # Reshape back to 1D spatial dimension
         out = out.view(b, self.heads, L_query, self.dim_head)
@@ -364,7 +319,7 @@ class DPCA2D(nn.Module):
 
         self.top_k = top_k
 
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = dropout
         self.fold_out_heads = Rearrange('b (h c) ... -> (b h) c ...', h = self.heads)
         self.q_probe_reduce = Reduce('b c ... -> b c', 'sum')
         self.k_sum_over_width = Reduce('b c height width -> b height c', 'sum')
@@ -404,11 +359,6 @@ class DPCA2D(nn.Module):
         # calculate whether to select and rank along height and width
         need_height_select_and_rank = height_top_k < height_context
         need_width_select_and_rank = width_top_k < width_context
-
-        # select and rank keys / values, probing with query (reduced along height and width) and keys reduced along row and column respectively
-
-        # C is hidden dimension
-        
         
         if need_width_select_and_rank or need_height_select_and_rank:
             # use abs for queries to get relative importance
@@ -438,16 +388,8 @@ class DPCA2D(nn.Module):
         q, k, v = self.flatten_to_hidden_dim(q),self.flatten_to_hidden_dim(k),self.flatten_to_hidden_dim(v)
         # k,v = select_best_ind(q,k,v,self.top_k)
 
-        # cosine similarities
-        sim = einsum('b i d, b j d -> b i j', q, k)
-
         # attention
-        attn = sim.softmax(dim = -1)
-        attn = self.dropout(attn)
-
-        # aggregate out
-        out = einsum('b i j, b j d -> b i d', attn, v)
-
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout)
         # merge heads and combine out
         out = out.view(b, self.heads, height_query, width_query, self.dim_head)
         out = out.permute(0, 1, 4, 2, 3).contiguous()
@@ -499,7 +441,7 @@ class DPCA3D(nn.Module):
         self.top_k = top_k
 
         # Dropout for attention weights
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = dropout
         self.gamma = nn.Parameter(torch.zeros(1))
 
         # Tensor rearrangement utilities
@@ -581,10 +523,7 @@ class DPCA3D(nn.Module):
         # k,v = select_best_ind(q,k,v,self.top_k)
         
         # Compute attention
-        sim = einsum('b i d, b j d -> b i j', q, k)
-        attn = sim.softmax(dim=-1)
-        attn = self.dropout(attn)
-        out = einsum('b i j, b j d -> b i d', attn, v)
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout)
 
         # Reshape back to 3D
         out = out.view(b, self.heads, D_query, H_query, W_query, self.dim_head)
