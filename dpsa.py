@@ -28,9 +28,7 @@ class DPCABlock(torch.nn.Module):
         super().__init__()
         self.dpca = DPCA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
-            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions,normalization=normalization),
-            dropout_impl(dropout),
-            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions,normalization=normalization),
+            ResidualBlock(dim,[dim,dim],dimensions=dimensions,normalization=normalization),
         )
     def forward(self,query_source, context):
         """
@@ -67,9 +65,7 @@ class DPSABlock(torch.nn.Module):
         dropout_impl = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1]
         self.dpsa = DPSA(dim,dim//heads,heads,dimensions=dimensions,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
-            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions,normalization=normalization),
-            dropout_impl(dropout),
-            ResidualBlock(dim,[dim//4,dim],dimensions=dimensions,normalization=normalization),
+            ResidualBlock(dim,[dim,dim],dimensions=dimensions,normalization=normalization),
         )
     def forward(self,x):
         """
