@@ -372,13 +372,19 @@ class ResidualUnet(torch.nn.Module):
                 return nn.Identity()
             return attention(ch,dimensions=dimensions)
 
+        def get_skip_ch(ch):
+            skip_ch = ch//4
+            if skip_ch<2:
+                skip_ch=2
+            return skip_ch
+        
         # transform that is applied to skip connection before it is passed to decoder
         # out_channels_ = out_channels_[:len(block_sizes)]
         self.connectors = nn.ModuleList([
             nn.Sequential(
                 ResidualBlock(
                     in_channels=ch,
-                    out_channels=[ch//4,ch],
+                    out_channels=[get_skip_ch(ch),ch],
                     kernel_size=3,
                     normalization=normalization,
                     dimensions=dimensions,
