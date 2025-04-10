@@ -116,6 +116,7 @@ class Encoder(torch.nn.Module):
             torch.Tensor: The output tensor after the final downsampling block.
         """
         for down in self.downs:
+            print(x.shape)
             x = down(x)
             x=self.dropout(x)
         x = self.down5(x)
@@ -308,14 +309,23 @@ class ResidualUnet(torch.nn.Module):
         stride = 2
         
         output_scale=float(output_scale)
-        in_channels_ =  [in_channels,32, 64, 128, 256]
-        out_channels_ = [32,         64,128, 256, 512]
+        channels_ =  [in_channels,32, 64, 128, 256, 512]
+        for i in range(1,len(channels_)):
+            optimal = channels_[i-1]*stride*dimensions
+            if optimal<channels_[i]:
+                channels_[i]=optimal
+        
+        out_channels_ = channels_[1:]
+        in_channels_ = channels_[:-1]
+        
+        print("in_channels ",in_channels_)
+        print("out_channels",out_channels_)
         dilations=[
             1,
             1,
             1,
             1,
-            [1]+[3]+[5]
+            [1]+[3]
         ]
         
         if output_scale==1:
@@ -372,7 +382,7 @@ class ResidualUnet(torch.nn.Module):
                     kernel_size=3,
                     normalization=normalization,
                     dimensions=dimensions,
-                    dilation=[1]+[2]+[4]
+                    dilation=[1]+[2]
                 ),
                 get_attn(ch),
                 [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1](p=dropout_p),

@@ -38,19 +38,24 @@ class SCSEModule(nn.Module):
     def forward(self, x):
         return self.scse(x)
 
-
+def _compress_ch(in_channels,reduction):
+    compression = in_channels // reduction
+    if compression<2:
+        compression=2
+    return compression
 class SCSEModule2d(nn.Module):
     """
     Concurrent Spatial and Channel Squeeze & Excitation (scSE) module for 2d inputs.
     """
     def __init__(self, in_channels, reduction=16):
         super(SCSEModule2d, self).__init__()
+        compression = _compress_ch(in_channels,reduction)
         # Channel Squeeze and Excitation (cSE)
         self.cSE = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_channels, in_channels // reduction, kernel_size=1),
+            nn.Conv2d(in_channels, compression, kernel_size=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(in_channels // reduction, in_channels, kernel_size=1),
+            nn.Conv2d(compression, in_channels, kernel_size=1),
             nn.Sigmoid()
         )
         # Spatial Squeeze and Excitation (sSE)
@@ -74,12 +79,13 @@ class SCSEModule1d(nn.Module):
     """
     def __init__(self, in_channels, reduction=16):
         super(SCSEModule1d, self).__init__()
+        compression = _compress_ch(in_channels,reduction)
         # Channel Squeeze and Excitation (cSE)
         self.cSE = nn.Sequential(
             nn.AdaptiveAvgPool1d(1),
-            nn.Conv1d(in_channels, in_channels // reduction, kernel_size=1),
+            nn.Conv1d(in_channels, compression, kernel_size=1),
             nn.ReLU(inplace=True),
-            nn.Conv1d(in_channels // reduction, in_channels, kernel_size=1),
+            nn.Conv1d(compression, in_channels, kernel_size=1),
             nn.Sigmoid()
         )
         # Spatial Squeeze and Excitation (sSE)
@@ -102,12 +108,14 @@ class SCSEModule3d(nn.Module):
     """
     def __init__(self, in_channels, reduction=16):
         super(SCSEModule3d, self).__init__()
+        compression = _compress_ch(in_channels,reduction)
+        
         # Channel Squeeze and Excitation (cSE)
         self.cSE = nn.Sequential(
             nn.AdaptiveAvgPool3d(1),
-            nn.Conv3d(in_channels, in_channels // reduction, kernel_size=1),
+            nn.Conv3d(in_channels, compression, kernel_size=1),
             nn.ReLU(inplace=True),
-            nn.Conv3d(in_channels // reduction, in_channels, kernel_size=1),
+            nn.Conv3d(compression, in_channels, kernel_size=1),
             nn.Sigmoid()
         )
         # Spatial Squeeze and Excitation (sSE)
