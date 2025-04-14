@@ -1,6 +1,7 @@
 # fixed implementation from https://github.com/lucidrains/ITTR-pytorch of paper
 # https://arxiv.org/pdf/2203.16015
 
+import einops
 import torch
 import torch.nn.functional as F
 from torch import nn, einsum
@@ -220,7 +221,7 @@ class DPCA1D(nn.Module):
         # Tensor rearrangement utilities
         self.fold_out_heads = Rearrange('b (h c) L -> (b h) c L', h=heads)
         self.q_probe_reduce = Reduce('b c L -> b c', 'sum')
-        self.flatten_to_hidden_dim = Rearrange('b d L -> b L d')
+        self.flatten_to_hidden_dim = Rearrange('(b H) d L -> b H L d',H=self.heads)
 
     def forward(self, query_source, context):
         """
@@ -275,7 +276,7 @@ class DPCA1D(nn.Module):
         # k,v = get_clustered_k(k,v,self.top_k)
         
         # Compute attention
-        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout)
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout,scale=1.0)
 
         # Reshape back to 1D spatial dimension
         out = out.view(b, self.heads, L_query, self.dim_head)
@@ -320,7 +321,7 @@ class DPCA2D(nn.Module):
         self.q_probe_reduce = Reduce('b c ... -> b c', 'sum')
         self.k_sum_over_width = Reduce('b c height width -> b height c', 'sum')
         self.k_sum_over_height = Reduce('b c height width -> b c width', 'sum')
-        self.flatten_to_hidden_dim=Rearrange('b d h w -> b (h w) d')
+        self.flatten_to_hidden_dim=Rearrange('(b H) d h w -> b H (h w) d',H = self.heads)
 
     def forward(self, query_source, context):
         # Unpack shapes for query_source and context separately
@@ -385,7 +386,7 @@ class DPCA2D(nn.Module):
         # k,v = select_best_ind(q,k,v,self.top_k)
 
         # attention
-        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout)
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout,scale=1.0)
         # merge heads and combine out
         out = out.view(b, self.heads, height_query, width_query, self.dim_head)
         out = out.permute(0, 1, 4, 2, 3).contiguous()
@@ -435,7 +436,7 @@ class DPCA3D(nn.Module):
         self.k_sum_over_height_width = Reduce('b c d h w -> b c d', 'sum')  # For depth scores
         self.k_sum_over_depth_width = Reduce('b c d h w -> b c h', 'sum')   # For height scores
         self.k_sum_over_depth_height = Reduce('b c d h w -> b c w', 'sum')  # For width scores
-        self.flatten_to_hidden_dim = Rearrange('b d ... -> b (...) d')
+        self.flatten_to_hidden_dim = Rearrange('(b H) d ... -> b H (...) d',H=self.heads)
 
     def forward(self, query_source, context):
         # Input shape: (b, c, D, H, W)
@@ -508,7 +509,7 @@ class DPCA3D(nn.Module):
         # k,v = select_best_ind(q,k,v,self.top_k)
         
         # Compute attention
-        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout)
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout,scale=1.0)
 
         # Reshape back to 3D
         out = out.view(b, self.heads, D_query, H_query, W_query, self.dim_head)
