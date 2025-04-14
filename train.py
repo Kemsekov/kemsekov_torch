@@ -1,4 +1,5 @@
 import os
+import accelerate
 from matplotlib import pyplot as plt
 import torch
 from tqdm import tqdm
@@ -169,9 +170,14 @@ def train(
        generates and saves loss and metric plots in the `plots` folder.
     """
     
+    # only if we use deepspeed
+    if  accelerate_args is not None and 'deepspeed_plugins' in accelerate_args.keys():
+        optimizer = accelerate.utils.DummyOptim(model.parameters())
+        scheduler = accelerate.utils.DummyScheduler(optimizer)
+    
     if optimizer is None:
         optimizer = torch.optim.AdamW(model.parameters())
-        
+    
     save_last_dir = os.path.join(save_results_dir,"last")
     plot_dir = os.path.join(save_last_dir, "plots")
     report_path = os.path.join(save_last_dir,"report.json")
@@ -342,6 +348,7 @@ def train(
                     add_batch_metric(metric, batch_metric)
                     
                     test_loss += loss.item()
+                    
                     on_test_batch_end(model,batch,loss,batch_metric)
 
             test_loss /= len(test_loader)
