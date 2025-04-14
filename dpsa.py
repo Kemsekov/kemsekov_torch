@@ -275,8 +275,12 @@ class DPCA1D(nn.Module):
         v = self.flatten_to_hidden_dim(v)  # Same as k
         # k,v = get_clustered_k(k,v,self.top_k)
         
+        if self.training:
+            dp = self.dropout
+        else:
+            dp = 0.0
         # Compute attention
-        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout,scale=1.0)
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=dp,scale=1.0)
 
         # Reshape back to 1D spatial dimension
         out = out.view(b, self.heads, L_query, self.dim_head)
@@ -385,8 +389,12 @@ class DPCA2D(nn.Module):
         q, k, v = self.flatten_to_hidden_dim(q),self.flatten_to_hidden_dim(k),self.flatten_to_hidden_dim(v)
         # k,v = select_best_ind(q,k,v,self.top_k)
 
-        # attention
-        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout,scale=1.0)
+        if self.training:
+            dp = self.dropout
+        else:
+            dp = 0.0
+        # Compute attention
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=dp,scale=1.0)
         # merge heads and combine out
         out = out.view(b, self.heads, height_query, width_query, self.dim_head)
         out = out.permute(0, 1, 4, 2, 3).contiguous()
@@ -508,8 +516,12 @@ class DPCA3D(nn.Module):
         v = self.flatten_to_hidden_dim(v)
         # k,v = select_best_ind(q,k,v,self.top_k)
         
+        if self.training:
+            dp = self.dropout
+        else:
+            dp = 0.0
         # Compute attention
-        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=self.dropout,scale=1.0)
+        out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=dp,scale=1.0)
 
         # Reshape back to 3D
         out = out.view(b, self.heads, D_query, H_query, W_query, self.dim_head)
