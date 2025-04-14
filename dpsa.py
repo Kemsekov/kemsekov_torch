@@ -5,9 +5,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn, einsum
 from einops.layers.torch import Reduce, Rearrange
-
+from kemsekov_torch.common_modules import ChanLayerNorm1D,ChanLayerNorm2D,ChanLayerNorm3D
 from kemsekov_torch.residual import ResidualBlock
-from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute, AddPositionalEmbeddingPermute
 
 class DPCABlock(torch.nn.Module):
     def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
@@ -184,17 +183,6 @@ class DPCA(nn.Module):
 def l2norm(t):
     return F.normalize(t, dim = 1)
 
-# Channel-wise Layer Normalization for 1D inputs
-class ChanLayerNorm1D(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.gamma = nn.Parameter(torch.ones(1, dim, 1))
-        self.beta = nn.Parameter(torch.zeros(1, dim, 1))
-
-    def forward(self, x):
-        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=1, keepdim=True)
-        return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
 
 class DPCA1D(nn.Module):
     """ Dual-pruned Cross-attention Block """
@@ -298,18 +286,6 @@ class DPCA1D(nn.Module):
         
         # Final output with residual connection
         return self.gamma * out + query_source
-
-class ChanLayerNorm2D(nn.Module):
-    def __init__(self, dim, eps = 1e-5):
-        super().__init__()
-        self.eps = eps
-        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
-        self.b = nn.Parameter(torch.zeros(1, dim, 1, 1))
-
-    def forward(self, x):
-        var = torch.var(x, dim = 1, unbiased = False, keepdim = True)
-        mean = torch.mean(x, dim = 1, keepdim = True)
-        return (x - mean) / (var + self.eps).sqrt() * self.g + self.b
 
 class DPCA2D(nn.Module):
     """ Dual-pruned Cross-attention Block """
@@ -419,17 +395,6 @@ class DPCA2D(nn.Module):
         
         return self.gamma*out+query_source
 
-# Channel-wise Layer Normalization for 3D inputs
-class ChanLayerNorm3D(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.gamma = nn.Parameter(torch.ones(1, dim, 1, 1, 1))
-        self.beta = nn.Parameter(torch.zeros(1, dim, 1, 1, 1))
-
-    def forward(self, x):
-        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=1, keepdim=True)
-        return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
 
 class DPCA3D(nn.Module):
     """ Dual-pruned Cross-attention Block """

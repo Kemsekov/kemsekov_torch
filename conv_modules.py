@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from residual import *
-
 class SEModule(nn.Module):
     """
     Spatial squeeze & channel excitation attention module, as proposed in https://arxiv.org/abs/1709.01507.

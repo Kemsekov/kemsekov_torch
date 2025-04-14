@@ -2,7 +2,39 @@ from typing import List, Literal, Tuple
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+# Channel-wise Layer Normalization for 1D inputs
+class ChanLayerNorm1D(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(1, dim, 1))
+        self.beta = nn.Parameter(torch.zeros(1, dim, 1))
 
+    def forward(self, x):
+        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
+        mean = torch.mean(x, dim=1, keepdim=True)
+        return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
+class ChanLayerNorm2D(nn.Module):
+    def __init__(self, dim, eps = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
+        self.b = nn.Parameter(torch.zeros(1, dim, 1, 1))
+
+    def forward(self, x):
+        var = torch.var(x, dim = 1, unbiased = False, keepdim = True)
+        mean = torch.mean(x, dim = 1, keepdim = True)
+        return (x - mean) / (var + self.eps).sqrt() * self.g + self.b
+# Channel-wise Layer Normalization for 3D inputs
+class ChanLayerNorm3D(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(1, dim, 1, 1, 1))
+        self.beta = nn.Parameter(torch.zeros(1, dim, 1, 1, 1))
+
+    def forward(self, x):
+        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
+        mean = torch.mean(x, dim=1, keepdim=True)
+        return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
 class ConstModule(torch.nn.Module):
     """Module that returns constant"""
     def __init__(self,constant = 0):
@@ -66,7 +98,7 @@ class Interpolate(nn.Module):
         shape = torch.Size(list(shape[:2])+[int(v*self.scale_factor) for v in shape[2:]])[1:]
         return resize_tensor(x,shape)
 
-def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance', 'group', None]):
+def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance','layer', 'group', None]):
     """Get normalization for given dimensions from its name.
 
     Args:
@@ -80,12 +112,13 @@ def get_normalization_from_name(dimensions, normalization: Literal['batch', 'ins
     Raises:
         AssertionError: If `normalization` is not one of ['batch', 'instance', 'group', None].
     """
-    allowed = ['batch', 'instance', 'group', None]
+    allowed = ['batch', 'instance', 'group','layer', None]
     assert normalization in allowed, f"normalization parameter must be one of {allowed}"
     
     norm_type = {
         "batch": [nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d][dimensions - 1],
         "instance": [nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d][dimensions - 1],
+        "layer": [ChanLayerNorm1D,ChanLayerNorm2D,ChanLayerNorm3D][dimensions - 1],
         "group": lambda ch: nn.GroupNorm(
             num_groups=(
                 ch // 32 if ch % 32 == 0 and ch // 32 >= 2 else
