@@ -10,11 +10,13 @@ from kemsekov_torch.common_modules import ChanLayerNorm1D,ChanLayerNorm2D,ChanLa
 from kemsekov_torch.residual import ResidualBlock
 
 class DPCABlock(torch.nn.Module):
-    def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
+    def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
         """
         Somewhat optimal cross-attention DPCA block
         
         dim: input dimensions
+        
+        mlp_dim: internal mlp dimension
         
         heads: heads for attention
         
@@ -29,14 +31,7 @@ class DPCABlock(torch.nn.Module):
         self.mlp = torch.nn.Sequential(
             ResidualBlock(
                 dim,
-                [dim//4,dim],
-                dimensions=dimensions,
-                normalization=normalization,
-                kernel_size=1
-            ),
-            ResidualBlock(
-                dim,
-                [dim//4,dim],
+                [mlp_dim,dim],
                 dimensions=dimensions,
                 normalization=normalization,
                 kernel_size=1
@@ -59,11 +54,13 @@ class DPCABlock(torch.nn.Module):
         return self.mlp(attn)
 
 class DPSABlock(torch.nn.Module):
-    def __init__(self,dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
+    def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
         """
         Somewhat optimal self-attention DPSA block
         
         dim: input dimensions
+        
+        mlp_dim: internal mlp dimension
         
         heads: heads for attention
         
@@ -78,14 +75,7 @@ class DPSABlock(torch.nn.Module):
         self.mlp = torch.nn.Sequential(
             ResidualBlock(
                 dim,
-                [dim//4,dim],
-                dimensions=dimensions,
-                normalization=normalization,
-                kernel_size=1
-            ),
-            ResidualBlock(
-                dim,
-                [dim//4,dim],
+                [mlp_dim,dim],
                 dimensions=dimensions,
                 normalization=normalization,
                 kernel_size=1
