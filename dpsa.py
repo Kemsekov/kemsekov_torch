@@ -324,8 +324,8 @@ class DPCA2D(nn.Module):
         
         # Set top-k values based on context dimensions
         if self.top_k > 0:
-            height_top_k = self.top_k
-            width_top_k = self.top_k 
+            height_top_k = int(self.top_k**0.5)
+            width_top_k = int(self.top_k**0.5)
         else:
             height_top_k = int(height_context ** 0.5)
             width_top_k = int(width_context ** 0.5)
@@ -443,9 +443,9 @@ class DPCA3D(nn.Module):
         
         # Set top-k values (using context dimensions where appropriate)
         if self.top_k > 0:
-            depth_top_k  =  self.top_k
-            height_top_k =  self.top_k
-            width_top_k  =  self.top_k
+            depth_top_k  =  int(self.top_k**0.5)
+            height_top_k =  int(self.top_k**0.5)
+            width_top_k  =  int(self.top_k**0.5)
         else:
             depth_top_k  =  int(D_context ** 0.5)  # e.g., int(16**0.5)=4
             height_top_k =  int(H_context ** 0.5)  # e.g., int(24**0.5)≈4
