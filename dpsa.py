@@ -179,7 +179,7 @@ def dist_to_random_Q_selection(Q, K, V, top_k):
     Q of shape [batch,length_q,dim] \n
     K,V of shape [batch,length_kv,dim]
     """
-    if K.shape[1]>=top_k:
+    if top_k>=K.shape[1]:
         return K,V
     B, tokens_count, DIM = Q.shape
     # Generate random indices for Q
@@ -201,6 +201,29 @@ def dist_to_random_Q_selection(Q, K, V, top_k):
     # Select corresponding points from K using advanced indexing
     selected_K = K[all_batch_ind, indices, :]  # [B, top_k, DIM]
     selected_V = V[all_batch_ind, indices, :]  # [B, top_k, DIM]
+    
+    return selected_K, selected_V
+def dist_to_random_Q_selection_with_heads(Q, K, V, top_k):
+    """
+    Wrapper function for Q, K, V of shape [batch, heads, length, dim].
+    Q of shape [batch, heads, length_q, dim]
+    K, V of shape [batch, heads, length_kv, dim]
+    Returns selected_K, selected_V of shape [batch, heads, top_k, dim]
+    """
+    B, heads, length_q, dim = Q.shape
+    length_kv = K.shape[2]
+    
+    # Reshape inputs to [B*heads, length, dim]
+    Q_reshaped = Q.view(B * heads, length_q, dim)
+    K_reshaped = K.view(B * heads, length_kv, dim)
+    V_reshaped = V.view(B * heads, length_kv, dim)
+    
+    # Call original function
+    selected_K, selected_V = dist_to_random_Q_selection(Q_reshaped, K_reshaped, V_reshaped, top_k)
+    
+    # Reshape outputs to [B, heads, top_k, dim]
+    selected_K = selected_K.view(B, heads, top_k, dim)
+    selected_V = selected_V.view(B, heads, top_k, dim)
     
     return selected_K, selected_V
 
@@ -272,11 +295,10 @@ class DPCA1D(nn.Module):
         v = self.flatten_to_hidden_dim(v)  # Same as k
         
         # Determine if pruning is needed based on context sequence length
-        L_context = k.shape[1]
+        L_context = k.shape[2]
         if self.top_k < L_context:
             top_k = self.top_k if self.top_k > 0 else int(L_context // self.heads)
-            k,v = dist_to_random_Q_selection(q,k,v,top_k)
-        
+            k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
         if self.training:
             dp = self.dropout
         else:
@@ -350,10 +372,11 @@ class DPCA2D(nn.Module):
         k=self.flatten_to_hidden_dim(k)
         v=self.flatten_to_hidden_dim(v)
         
-        L_context = k.shape[1]
+        # Determine if pruning is needed based on context sequence length
+        L_context = k.shape[2]
         if self.top_k < L_context:
             top_k = self.top_k if self.top_k > 0 else int(L_context // self.heads)
-            k,v = dist_to_random_Q_selection(q,k,v,top_k)
+            k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
 
         if self.training:
             dp = self.dropout
@@ -433,10 +456,11 @@ class DPCA3D(nn.Module):
         k = self.flatten_to_hidden_dim(k)  # (b * heads, k_d * k_h * k_w, dim_head)
         v = self.flatten_to_hidden_dim(v)
 
-        L_context = k.shape[1]
+        # Determine if pruning is needed based on context sequence length
+        L_context = k.shape[2]
         if self.top_k < L_context:
             top_k = self.top_k if self.top_k > 0 else int(L_context // self.heads)
-            k,v = dist_to_random_Q_selection(q,k,v,top_k)
+            k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
         
         if self.training:
             dp = self.dropout
