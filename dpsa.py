@@ -251,9 +251,11 @@ class DPCA1D(nn.Module):
         self.to_kv = nn.Conv1d(dim, inner_dim * 2, kernel_size=1, bias=False)
         self.to_q = nn.Conv1d(dim, inner_dim, kernel_size=1, bias=False)
         self.to_out = nn.Conv1d(inner_dim, dim, kernel_size=1, bias=False)
-
-        # Pruning parameter
-        self.top_k = top_k//heads + 1
+        
+        # Pruning parameters
+        self.top_k = top_k
+        if top_k>0:
+            self.top_k = top_k//heads + 1
 
         # Dropout for attention weights
         self.dropout = dropout
@@ -340,7 +342,9 @@ class DPCA2D(nn.Module):
         self.to_q = nn.Conv2d(dim, inner_dim, kernel_size=1, bias=False)
         self.to_out = nn.Conv2d(inner_dim, dim, kernel_size=1, bias=False)
 
-        self.top_k = top_k//heads + 1
+        self.top_k = top_k
+        if top_k>0:
+            self.top_k = top_k//heads + 1
 
         self.dropout = dropout
         self.fold_out_heads = Rearrange('b (h c) ... -> (b h) c ...', h = self.heads)
@@ -422,7 +426,9 @@ class DPCA3D(nn.Module):
         self.to_out = nn.Conv3d(inner_dim, dim, kernel_size=1, bias=False)
 
         # Pruning parameters
-        self.top_k = top_k//heads + 1
+        self.top_k = top_k
+        if top_k>0:
+            self.top_k = top_k//heads + 1
 
         # Dropout for attention weights
         self.dropout = dropout
