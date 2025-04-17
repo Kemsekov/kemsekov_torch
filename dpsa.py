@@ -10,7 +10,7 @@ from kemsekov_torch.common_modules import ChanLayerNorm1D,ChanLayerNorm2D,ChanLa
 from kemsekov_torch.residual import ResidualBlock
 
 class DPCABlock(torch.nn.Module):
-    def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
+    def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.1,top_k=-1,normalization='batch'):
         """
         Somewhat optimal cross-attention DPCA block
         
@@ -54,7 +54,7 @@ class DPCABlock(torch.nn.Module):
         return self.mlp(attn)
 
 class DPSABlock(torch.nn.Module):
-    def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.0,top_k=-1,normalization='batch'):
+    def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.1,top_k=-1,normalization='batch'):
         """
         Somewhat optimal self-attention DPSA block
         
@@ -96,7 +96,7 @@ class DPSA(nn.Module):
         heads=8,       # Number of attention heads
         dimensions=2,
         top_k=-1, # top k values that is selected
-        dropout=0.0,   # Dropout rate
+        dropout=0.1,   # Dropout rate
         ):
         """
         DPSA module that performs double pruned multihead self-attention
@@ -125,7 +125,7 @@ class DPCA(nn.Module):
         heads=8,       # Number of attention heads
         dimensions=2,
         top_k=-1, # top k values that is selected
-        dropout=0.0,   # Dropout rate
+        dropout=0.1,   # Dropout rate
         ):
         """
         DPCA module that performs double pruned multihead cross-attention
@@ -174,6 +174,35 @@ class DPCA(nn.Module):
 def l2norm(t):
     return F.normalize(t, dim = 1)
 
+def dist_to_random_Q_selection(Q, K, V, top_k):
+    """
+    Q of shape [batch,length_q,dim] \n
+    K,V of shape [batch,length_kv,dim]
+    """
+    if K.shape[1]>=top_k:
+        return K,V
+    B, tokens_count, DIM = Q.shape
+    # Generate random indices for Q
+    rand_token_ind = torch.randint(0, tokens_count, (B, min(top_k,tokens_count)), device=Q.device)
+    
+    # Select Q_small using advanced indexing
+    Q_small = Q[torch.arange(B, device=Q.device)[:, None], rand_token_ind, :]  # [B, top_k, DIM]
+    
+    # Compute L1 distances using torch.cdist
+    distances = torch.cdist(K, Q_small, p=1)  # [B, some_other_count, top_k]
+    
+    # Compute minimum distances over Q_small
+    min_distances = distances.min(dim=2)[0]  # [B, some_other_count]
+    
+    # Get indices of top_k smallest minimum distances
+    _, indices = torch.topk(min_distances, top_k, dim=1, largest=False, sorted=True)  # [B, top_k]
+    
+    all_batch_ind = torch.arange(B, device=K.device)[:, None]
+    # Select corresponding points from K using advanced indexing
+    selected_K = K[all_batch_ind, indices, :]  # [B, top_k, DIM]
+    selected_V = V[all_batch_ind, indices, :]  # [B, top_k, DIM]
+    
+    return selected_K, selected_V
 
 class DPCA1D(nn.Module):
     """ Dual-pruned Cross-attention Block """
@@ -198,7 +227,6 @@ class DPCA1D(nn.Module):
         # Projection to queries, keys, values using a 1x1 convolution
         self.to_kv = nn.Conv1d(dim, inner_dim * 2, kernel_size=1, bias=False)
         self.to_q = nn.Conv1d(dim, inner_dim, kernel_size=1, bias=False)
-        
         self.to_out = nn.Conv1d(inner_dim, dim, kernel_size=1, bias=False)
 
         # Pruning parameter
@@ -210,7 +238,6 @@ class DPCA1D(nn.Module):
 
         # Tensor rearrangement utilities
         self.fold_out_heads = Rearrange('b (h c) L -> (b h) c L', h=heads)
-        self.q_probe_reduce = Reduce('b c L -> b c', 'sum')
         self.flatten_to_hidden_dim = Rearrange('(b H) d L -> b H L d',H=self.heads)
 
     def forward(self, query_source, context):
@@ -223,13 +250,6 @@ class DPCA1D(nn.Module):
         """
         # Unpack shapes separately
         b, c, L_query = query_source.shape
-        _, _, L_context = context.shape
-        
-        # Set top-k value based on context sequence length
-        length_top_k = self.top_k if self.top_k > 0 else int(L_context ** 0.5)
-        
-        # Determine if pruning is needed based on context sequence length
-        need_select = length_top_k < L_context
 
         # Normalize inputs
         context = self.context_norm(context)        # (b, c, L_context)
@@ -246,24 +266,16 @@ class DPCA1D(nn.Module):
 
         # L2 normalize queries and keys
         q, k = l2norm(q), l2norm(k)
-        # Pruning along the context sequence length
-        if need_select:
-            k_abs = torch.abs(k)    # (b * heads, dim_head, L_context)
-            q_probe = self.q_probe_reduce(q)  # (b * heads, dim_head)
-            # Compute scores for each position in context
-            score_l = einsum('b c, b c L -> b L', q_probe, k_abs)  # (b * heads, L_context)
-            # Select top-k indices
-            top_l_indices = score_l.topk(k=length_top_k, dim=-1).indices  # (b * heads, length_top_k)
-            # Expand indices for gathering
-            top_l_indices = top_l_indices[:, None, :].expand(-1, self.dim_head, -1)  # (b * heads, dim_head, length_top_k)
-            # Gather k and v
-            k = torch.gather(k, dim=2, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
-            v = torch.gather(v, dim=2, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
 
         q = self.flatten_to_hidden_dim(q)  # (b * heads, L_query, dim_head)
         k = self.flatten_to_hidden_dim(k)  # (b * heads, L_k, dim_head), L_k = length_top_k if pruned, else L_context
         v = self.flatten_to_hidden_dim(v)  # Same as k
-        # k,v = get_clustered_k(k,v,self.top_k)
+        
+        # Determine if pruning is needed based on context sequence length
+        L_context = k.shape[1]
+        if self.top_k < L_context:
+            top_k = self.top_k if self.top_k > 0 else int(L_context // self.heads)
+            k,v = dist_to_random_Q_selection(q,k,v,top_k)
         
         if self.training:
             dp = self.dropout
@@ -271,9 +283,8 @@ class DPCA1D(nn.Module):
             dp = 0.0
         # Compute attention
         out = torch.nn.functional.scaled_dot_product_attention(q,k,v,dropout_p=dp,scale=1.0)
-
+        
         # Reshape back to 1D spatial dimension
-        out = out.view(b, self.heads, L_query, self.dim_head)
         out = out.permute(0, 1, 3, 2).contiguous()  # (b, heads, dim_head, L_query)
         out = out.view(b, self.heads * self.dim_head, L_query)
         out = self.to_out(out)  # (b, dim, L_query)
@@ -305,30 +316,18 @@ class DPCA2D(nn.Module):
         
         self.to_kv = nn.Conv2d(dim, inner_dim * 2, 1, bias = False)
         self.to_q = nn.Conv2d(dim, inner_dim, kernel_size=1, bias=False)
-        
         self.to_out = nn.Conv2d(inner_dim, dim, kernel_size=1, bias=False)
 
         self.top_k = top_k
 
         self.dropout = dropout
         self.fold_out_heads = Rearrange('b (h c) ... -> (b h) c ...', h = self.heads)
-        self.q_probe_reduce = Reduce('b c ... -> b c', 'sum')
-        self.k_sum_over_width = Reduce('b c height width -> b height c', 'sum')
-        self.k_sum_over_height = Reduce('b c height width -> b c width', 'sum')
         self.flatten_to_hidden_dim=Rearrange('(b H) d h w -> b H (h w) d',H = self.heads)
 
     def forward(self, query_source, context):
         # Unpack shapes for query_source and context separately
         b, c, height_query, width_query = query_source.shape
-        _, _, height_context, width_context = context.shape
-        
-        # Set top-k values based on context dimensions
-        if self.top_k > 0:
-            height_top_k = int(self.top_k**0.5)
-            width_top_k = int(self.top_k**0.5)
-        else:
-            height_top_k = int(height_context ** 0.5)
-            width_top_k = int(width_context ** 0.5)
+
         
         # Normalize input
         context = self.context_norm(context)
@@ -347,37 +346,14 @@ class DPCA2D(nn.Module):
 
         q, k = l2norm(q),l2norm(k)
 
-        # calculate whether to select and rank along height and width
-        need_height_select_and_rank = height_top_k < height_context
-        need_width_select_and_rank = width_top_k < width_context
+        q=self.flatten_to_hidden_dim(q)
+        k=self.flatten_to_hidden_dim(k)
+        v=self.flatten_to_hidden_dim(v)
         
-        if need_width_select_and_rank or need_height_select_and_rank:
-            # use abs for queries to get relative importance
-            k_abs = torch.abs(k)
-            
-            # sum over abs of height and width
-            q_probe = self.q_probe_reduce(q)
-
-            # gather along height, then width
-            if need_height_select_and_rank:
-                # sum over width
-                k_height = self.k_sum_over_width(k_abs)
-
-                score_r = einsum('b c, b h c -> b h', q_probe, k_height)
-                top_h_indices = score_r.topk(k = height_top_k, dim = -1).indices
-                top_h_indices = top_h_indices[:,None,:,None].expand(-1, self.dim_head, -1, width_context)
-                k, v = torch.gather(k, dim=2, index=top_h_indices),torch.gather(v, dim=2, index=top_h_indices)
-            
-            if need_width_select_and_rank:
-                # sum over height
-                k_width = self.k_sum_over_height(k_abs)
-
-                score_c = einsum('b h, b c w -> b w', q_probe, k_width)
-                top_w_indices = score_c.topk(k = width_top_k, dim = -1).indices
-                top_w_indices = top_w_indices[:,None,None,:].expand(-1, self.dim_head, k.shape[2], -1)
-                k, v = torch.gather(k, dim=3, index=top_w_indices),torch.gather(v, dim=3, index=top_w_indices)
-        q, k, v = self.flatten_to_hidden_dim(q),self.flatten_to_hidden_dim(k),self.flatten_to_hidden_dim(v)
-        # k,v = select_best_ind(q,k,v,self.top_k)
+        L_context = k.shape[1]
+        if self.top_k < L_context:
+            top_k = self.top_k if self.top_k > 0 else int(L_context // self.heads)
+            k,v = dist_to_random_Q_selection(q,k,v,top_k)
 
         if self.training:
             dp = self.dropout
@@ -430,26 +406,12 @@ class DPCA3D(nn.Module):
 
         # Tensor rearrangement utilities
         self.fold_out_heads = Rearrange('b (h c) d z w -> (b h) c d z w', h=heads)
-        self.q_probe_reduce = Reduce('b c d h w -> b c', 'sum')
-        self.k_sum_over_height_width = Reduce('b c d h w -> b c d', 'sum')  # For depth scores
-        self.k_sum_over_depth_width = Reduce('b c d h w -> b c h', 'sum')   # For height scores
-        self.k_sum_over_depth_height = Reduce('b c d h w -> b c w', 'sum')  # For width scores
         self.flatten_to_hidden_dim = Rearrange('(b H) d ... -> b H (...) d',H=self.heads)
 
     def forward(self, query_source, context):
         # Input shape: (b, c, D, H, W)
         b, c, D_query, H_query, W_query = query_source.shape  # query_source dimensions
-        _, _, D_context, H_context, W_context = context.shape  # context dimensions
-        
-        # Set top-k values (using context dimensions where appropriate)
-        if self.top_k > 0:
-            depth_top_k  =  int(self.top_k**0.5)
-            height_top_k =  int(self.top_k**0.5)
-            width_top_k  =  int(self.top_k**0.5)
-        else:
-            depth_top_k  =  int(D_context ** 0.5)  # e.g., int(16**0.5)=4
-            height_top_k =  int(H_context ** 0.5)  # e.g., int(24**0.5)≈4
-            width_top_k  =  int(W_context ** 0.5)  # e.g., int(32**0.5)≈5
+
         # Normalize input
         context = self.context_norm(context)
         query_source_n = self.query_source_norm(query_source)
@@ -466,45 +428,15 @@ class DPCA3D(nn.Module):
         # L2 normalize queries and keys
         q, k = l2norm(q), l2norm(k)
         
-        # Determine if pruning is needed
-        need_depth_select = depth_top_k < D_context
-        need_height_select = height_top_k < H_context
-        need_width_select = width_top_k < W_context
-        
-        # Pruning along depth, height, and width
-        if need_depth_select or need_height_select or need_width_select:
-            q_probe = self.q_probe_reduce(q)  # (b * heads, dim_head)
-            k_abs = torch.abs(k)
-
-            if need_depth_select:
-                k_depth = self.k_sum_over_height_width(k_abs)  # (b * heads, dim_head, D_context)
-                score_d = einsum('b c, b c d -> b d', q_probe, k_depth)  # (b * heads, D_context)
-                top_d_indices = score_d.topk(k=depth_top_k, dim=-1).indices  # (b * heads, k_d)
-                # Fix: Use H_context and W_context instead of H and W
-                top_d_indices = top_d_indices[:, None, :, None, None].expand(-1, self.dim_head, -1, H_context, W_context)
-                k = torch.gather(k, dim=2, index=top_d_indices)  # (b * heads, dim_head, k_d, H_context, W_context)
-                v = torch.gather(v, dim=2, index=top_d_indices)
-
-            if need_height_select:
-                k_height = self.k_sum_over_depth_width(k_abs)  # (b * heads, dim_head, H_context)
-                score_h = einsum('b c, b c h -> b h', q_probe, k_height)  # (b * heads, H_context)
-                top_h_indices = score_h.topk(k=height_top_k, dim=-1).indices  # (b * heads, k_h)
-                top_h_indices = top_h_indices[:, None, None, :, None].expand(-1, self.dim_head, k.shape[2], -1, k.shape[4])
-                k = torch.gather(k, dim=3, index=top_h_indices)  # (b * heads, dim_head, k_d, k_h, W_context)
-                v = torch.gather(v, dim=3, index=top_h_indices)
-
-            if need_width_select:
-                k_width = self.k_sum_over_depth_height(k_abs)  # (b * heads, dim_head, W_context)
-                score_w = einsum('b c, b c w -> b w', q_probe, k_width)  # (b * heads, W_context)
-                top_w_indices = score_w.topk(k=width_top_k, dim=-1).indices  # (b * heads, k_w)
-                top_w_indices = top_w_indices[:, None, None, None, :].expand(-1, self.dim_head, k.shape[2], k.shape[3], -1)
-                k = torch.gather(k, dim=4, index=top_w_indices)  # (b * heads, dim_head, k_d, k_h, k_w)
-                v = torch.gather(v, dim=4, index=top_w_indices)
         # Flatten spatial dimensions
         q = self.flatten_to_hidden_dim(q)  # (b * heads, D * H * W, dim_head)
         k = self.flatten_to_hidden_dim(k)  # (b * heads, k_d * k_h * k_w, dim_head)
         v = self.flatten_to_hidden_dim(v)
-        # k,v = select_best_ind(q,k,v,self.top_k)
+
+        L_context = k.shape[1]
+        if self.top_k < L_context:
+            top_k = self.top_k if self.top_k > 0 else int(L_context // self.heads)
+            k,v = dist_to_random_Q_selection(q,k,v,top_k)
         
         if self.training:
             dp = self.dropout
