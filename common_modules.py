@@ -24,6 +24,7 @@ class ChanLayerNorm2D(nn.Module):
         var = torch.var(x, dim = 1, unbiased = False, keepdim = True)
         mean = torch.mean(x, dim = 1, keepdim = True)
         return (x - mean) / (var + self.eps).sqrt() * self.g + self.b
+
 # Channel-wise Layer Normalization for 3D inputs
 class ChanLayerNorm3D(nn.Module):
     def __init__(self, dim):
@@ -35,6 +36,8 @@ class ChanLayerNorm3D(nn.Module):
         var = torch.var(x, dim=1, unbiased=False, keepdim=True)
         mean = torch.mean(x, dim=1, keepdim=True)
         return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
+
+
 class ConstModule(torch.nn.Module):
     """Module that returns constant"""
     def __init__(self,constant = 0):
