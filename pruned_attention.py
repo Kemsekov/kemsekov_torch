@@ -1,18 +1,15 @@
 # fixed implementation from https://github.com/lucidrains/ITTR-pytorch of paper
 # https://arxiv.org/pdf/2203.16015
-
-import einops
 import torch
 import torch.nn.functional as F
-from torch import nn, einsum
-from einops.layers.torch import Reduce, Rearrange
-from kemsekov_torch.common_modules import ChanLayerNorm1D,ChanLayerNorm2D,ChanLayerNorm3D
+from torch import nn
+from einops.layers.torch import Rearrange
+from kemsekov_torch.common_modules import ChanLayerNorm3D
 from kemsekov_torch.residual import ResidualBlock
-
-class DPCABlock(torch.nn.Module):
+class PrunedCrossAttentionBlock(torch.nn.Module):
     def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.1,top_k=-1,normalization='batch'):
         """
-        Somewhat optimal cross-attention DPCA block
+        Somewhat optimal pruned cross-attention block
         
         dim: input dimensions
         
@@ -27,7 +24,7 @@ class DPCABlock(torch.nn.Module):
         top_k: count of elements to compute per dimension for each token
         """
         super().__init__()
-        self.dpca = DPCA(dim,dim//heads,heads,dropout=dropout,top_k=top_k)
+        self.dpca = PrunedCrossAttention(dim,dim//heads,heads,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(
                 dim,
@@ -53,10 +50,10 @@ class DPCABlock(torch.nn.Module):
         attn = self.dpca(query_source,context)
         return self.mlp(attn)
 
-class DPSABlock(torch.nn.Module):
+class PrunedSelfAttentionBlock(torch.nn.Module):
     def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.1,top_k=-1,normalization='batch'):
         """
-        Somewhat optimal self-attention DPSA block
+        Somewhat optimal pruned self-attention block
         
         dim: input dimensions
         
@@ -71,7 +68,7 @@ class DPSABlock(torch.nn.Module):
         top_k: count of elements to compute per dimension for each token
         """
         super().__init__()
-        self.dpsa = DPSA(dim,dim//heads,heads,dropout=dropout,top_k=top_k)
+        self.dpsa = PrunedSelfAttention(dim,dim//heads,heads,dropout=dropout,top_k=top_k)
         self.mlp = torch.nn.Sequential(
             ResidualBlock(
                 dim,
@@ -88,7 +85,7 @@ class DPSABlock(torch.nn.Module):
         attn = self.dpsa(x)
         return self.mlp(attn)
 
-class DPSA(nn.Module):
+class PrunedSelfAttention(nn.Module):
     def __init__(
         self,
         dim,           # Input channel dimension
@@ -98,7 +95,7 @@ class DPSA(nn.Module):
         dropout=0.1,   # Dropout rate
         ):
         """
-        DPSA module that performs double pruned multihead self-attention
+        PrunedSelfAttention module that performs pruned multihead self-attention
         
         **Args:**
             dim: input dimension
@@ -108,7 +105,7 @@ class DPSA(nn.Module):
             dropout: dropout to use
         """
         super().__init__()
-        self.dpca = DPCA(dim,dim_head,heads,top_k,dropout)
+        self.dpca = PrunedCrossAttention(dim,dim_head,heads,top_k,dropout)
     
     def forward(self,x):
         """
@@ -152,8 +149,8 @@ def expand_to_5d_view(tensor):
     new_shape = list(tensor.shape) + [1] * (5 - tensor.dim())
     return tensor.view(new_shape)
 
-class DPCA(nn.Module):
-    """ Dual-pruned Cross-attention Block """
+class PrunedCrossAttention(nn.Module):
+    """ Pruned Cross-attention Block """
     def __init__(
         self,
         dim,              # Input channel dimension
@@ -163,7 +160,7 @@ class DPCA(nn.Module):
         dropout=0.1,        # Dropout rate
     ):
         """
-        DPCA module that performs double pruned multihead cross-attention
+        PrunedCrossAttention module that performs pruning of keys and values to reach linear complexity with input size.
         
         **Args:**
             dim: input dimension
@@ -177,24 +174,22 @@ class DPCA(nn.Module):
         self.dim_head = dim_head  # Per-head dimension
         inner_dim = dim_head * heads  # Total dimension after projection
 
-        ln = ChanLayerNorm3D#[ChanLayerNorm1D,ChanLayerNorm2D,ChanLayerNorm3D][dimensions-1]
-        
         # Channel normalization
-        self.context_norm = ln(dim)
-        self.query_source_norm = ln(dim)
-        self.out_norm = ln(dim)
+        self.context_norm = ChanLayerNorm3D(dim)
+        self.query_source_norm = ChanLayerNorm3D(dim)
+        self.out_norm = ChanLayerNorm3D(dim)
 
-        conv = nn.Conv3d#[nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
-        
         # Projection to queries, keys, values using a 1x1 convolution
-        self.to_kv = conv(dim, inner_dim * 2, kernel_size=1, bias=False)
-        self.to_q = conv(dim, inner_dim, kernel_size=1, bias=False)
-        self.to_out = conv(inner_dim, dim, kernel_size=1, bias=False)
+        self.to_kv = nn.Conv3d(dim, inner_dim * 2, kernel_size=1, bias=False)
+        self.to_q = nn.Conv3d(dim, inner_dim, kernel_size=1, bias=False)
+        self.to_out = nn.Conv3d(inner_dim, dim, kernel_size=1, bias=False)
         
         # Pruning parameters
         self.top_k = top_k
         # Dropout for attention weights
         self.dropout = dropout
+        
+        # gamma for zero residual skip connection
         self.gamma = nn.Parameter(torch.zeros(1))
 
         # Tensor rearrangement utilities
