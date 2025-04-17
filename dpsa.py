@@ -218,9 +218,12 @@ def dist_to_random_Q_selection_with_heads(Q, K, V, top_k):
     K_reshaped = K.view(B * heads, length_kv, dim)
     V_reshaped = V.view(B * heads, length_kv, dim)
     
-    head_wise_top_k = top_k//heads+1
     # Call original function
-    selected_K, selected_V = dist_to_random_Q_selection(Q_reshaped, K_reshaped, V_reshaped, head_wise_top_k)
+    selected_K, selected_V = dist_to_random_Q_selection(Q_reshaped, K_reshaped, V_reshaped, top_k)
+    
+    # print('K',K.shape)
+    # print('selected_K',selected_K.shape)
+    # print('top_k',top_k)
     
     # Reshape outputs to [B, heads, top_k, dim]
     selected_K = selected_K.view(B, heads, top_k, dim)
@@ -297,7 +300,7 @@ class DPCA1D(nn.Module):
         # Determine if pruning is needed based on context sequence length
         L_context = k.shape[2]
         if self.top_k < L_context:
-            top_k = self.top_k if self.top_k > 0 else L_context
+            top_k = self.top_k if self.top_k > 0 else 1+L_context//self.heads
             k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
         if self.training:
             dp = self.dropout
@@ -376,7 +379,7 @@ class DPCA2D(nn.Module):
         L_context = k.shape[2]
         # print("k",k.shape,'query_source',query_source.shape,'context',context.shape)
         if self.top_k < L_context:
-            top_k = self.top_k if self.top_k > 0 else L_context
+            top_k = self.top_k if self.top_k > 0 else 1+L_context//self.heads
             k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
 
         if self.training:
@@ -460,7 +463,7 @@ class DPCA3D(nn.Module):
         # Determine if pruning is needed based on context sequence length
         L_context = k.shape[2]
         if self.top_k < L_context:
-            top_k = self.top_k if self.top_k > 0 else L_context
+            top_k = self.top_k if self.top_k > 0 else 1+L_context//self.heads
             k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
         
         if self.training:
