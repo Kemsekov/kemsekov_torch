@@ -218,8 +218,9 @@ def dist_to_random_Q_selection_with_heads(Q, K, V, top_k):
     K_reshaped = K.view(B * heads, length_kv, dim)
     V_reshaped = V.view(B * heads, length_kv, dim)
     
+    head_wise_top_k = top_k//heads+1
     # Call original function
-    selected_K, selected_V = dist_to_random_Q_selection(Q_reshaped, K_reshaped, V_reshaped, top_k)
+    selected_K, selected_V = dist_to_random_Q_selection(Q_reshaped, K_reshaped, V_reshaped, head_wise_top_k)
     
     # Reshape outputs to [B, heads, top_k, dim]
     selected_K = selected_K.view(B, heads, top_k, dim)
@@ -254,9 +255,6 @@ class DPCA1D(nn.Module):
         
         # Pruning parameters
         self.top_k = top_k
-        if top_k>0:
-            self.top_k = top_k//heads + 1
-
         # Dropout for attention weights
         self.dropout = dropout
         self.gamma = nn.Parameter(torch.zeros(1))
@@ -299,7 +297,7 @@ class DPCA1D(nn.Module):
         # Determine if pruning is needed based on context sequence length
         L_context = k.shape[2]
         if self.top_k < L_context:
-            top_k = self.top_k if self.top_k > 0 else int(1+L_context // self.heads)
+            top_k = self.top_k if self.top_k > 0 else L_context
             k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
         if self.training:
             dp = self.dropout
@@ -343,8 +341,6 @@ class DPCA2D(nn.Module):
         self.to_out = nn.Conv2d(inner_dim, dim, kernel_size=1, bias=False)
 
         self.top_k = top_k
-        if top_k>0:
-            self.top_k = top_k//heads + 1
 
         self.dropout = dropout
         self.fold_out_heads = Rearrange('b (h c) ... -> (b h) c ...', h = self.heads)
@@ -380,7 +376,7 @@ class DPCA2D(nn.Module):
         L_context = k.shape[2]
         # print("k",k.shape,'query_source',query_source.shape,'context',context.shape)
         if self.top_k < L_context:
-            top_k = self.top_k if self.top_k > 0 else int(1+L_context // self.heads)
+            top_k = self.top_k if self.top_k > 0 else L_context
             k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
 
         if self.training:
@@ -427,8 +423,6 @@ class DPCA3D(nn.Module):
 
         # Pruning parameters
         self.top_k = top_k
-        if top_k>0:
-            self.top_k = top_k//heads + 1
 
         # Dropout for attention weights
         self.dropout = dropout
@@ -466,7 +460,7 @@ class DPCA3D(nn.Module):
         # Determine if pruning is needed based on context sequence length
         L_context = k.shape[2]
         if self.top_k < L_context:
-            top_k = self.top_k if self.top_k > 0 else int(1+L_context // self.heads)
+            top_k = self.top_k if self.top_k > 0 else L_context
             k,v = dist_to_random_Q_selection_with_heads(q,k,v,top_k)
         
         if self.training:
