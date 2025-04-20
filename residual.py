@@ -41,7 +41,7 @@ class ResidualBlock(torch.nn.Module):
         stride = 1,
         dilation = 1,
         activation=torch.nn.SiLU,
-        normalization : Literal['batch','instance','group','spectral','layer',None] = 'batch',
+        normalization : Literal['batch','instance','group','spectral','layer',None] = None,
         dimensions : Literal[1,2,3] = 2,
         is_transpose = False,
         padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate",
@@ -56,7 +56,7 @@ class ResidualBlock(torch.nn.Module):
         * stride: integer, or tuple/list with dimensions-wise stride for convolutions.
         * dilation: List that defines required dilations. Applied only to first convolution. Example: `[1]+[2]+[4]*3` will do 1/5 convolutions with dilation 1, 1/5 with dilation 2 and 3/5 with dilation 4
         * activation: activation function
-        * normalization: one of `['batch','instance','group','spectral','layer',None]`, applies required normalization. `'group'` will use hubristic to determine optimal number of groups.
+        * normalization: one of `['batch','instance','group','spectral','layer',None]`, applies required normalization. Defaults to `None` because of using re-zero approach to using skip connection. `'group'` will use hubristic to determine optimal number of groups.
         * dimensions: input tensor dimensions, selects one of conv1d conv2d conv3d implementation for convolutions
         * is_transpose: do we need to use transpose convolutions. I advice you to use method `ResidualBlock.transpose(self)` instead of setting this argument manually
         * padding_mode: what padding to use in convolutions, by default will use `'replicate'` when possible
@@ -252,6 +252,7 @@ class ResidualBlock(torch.nn.Module):
             padding = (correct_x_padding+compensation).tolist(),
             padding_mode=self.padding_mode,
             device=device,
+            # groups=math.gcd(in_channels,out_channels)
         )
         
         x_conv_impl = x_corr_conv_impl
