@@ -10,7 +10,7 @@ class Residual(torch.nn.Module):
     """
     Residual module that sums outputs of module with it's input. It supports any models that outputs any shape.
     """
-    def __init__(self,m):
+    def __init__(self,m : torch.nn.Module | List[torch.nn.Module]):
         """
         Residual module that wraps around module `m`.
         
@@ -19,7 +19,7 @@ class Residual(torch.nn.Module):
         When module output shape != input tensor shape, it uses nearest-exact resize approach to match input shape to output, 
         and performs addition as described.
         
-        m - module that takes some input and spits output
+        m - torch module, or list of modules (will be converted to sequential)
         """
         super().__init__()
         if isinstance(m,list) or isinstance(m,tuple):
@@ -44,7 +44,8 @@ class ResidualBlock(torch.nn.Module):
         normalization : Literal['batch','instance','group','spectral','layer',None] = 'batch',
         dimensions : Literal[1,2,3] = 2,
         is_transpose = False,
-        padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate"
+        padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate",
+        device = None
     ):
         """
         Creates general-use residual block.
@@ -59,8 +60,11 @@ class ResidualBlock(torch.nn.Module):
         * dimensions: input tensor dimensions, selects one of conv1d conv2d conv3d implementation for convolutions
         * is_transpose: do we need to use transpose convolutions. I advice you to use method `ResidualBlock.transpose(self)` instead of setting this argument manually
         * padding_mode: what padding to use in convolutions, by default will use `'replicate'` when possible
+        * device: where to put weights of intialized module
         """
         super().__init__()
+        
+        self.__init_device = device
         
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
@@ -79,7 +83,6 @@ class ResidualBlock(torch.nn.Module):
             stride = [stride]*dimensions
 
         self.kernel_size = kernel_size
-        
 
         # handle spectral normalization
         if normalization=='spectral':
@@ -91,7 +94,7 @@ class ResidualBlock(torch.nn.Module):
         else:    
             norm_impl = get_normalization_from_name(dimensions,normalization)
         self.dimensions=dimensions
-        self._conv_x_linear(in_channels, out_channels[-1], stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T)
+        self._conv_x_linear(in_channels, out_channels[-1], stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T,device)
         
         if not isinstance(dilation,list):
             dilation=[dilation]*out_channels[0]
@@ -177,7 +180,8 @@ class ResidualBlock(torch.nn.Module):
                     padding = (ks_with_dilation // 2 + compensation).tolist(),
                     dilation=dil[i],
                     stride=stride_.tolist(),
-                    padding_mode=padding_mode
+                    padding_mode=padding_mode,
+                    device=device
                 )
 
                 conv__ = x_corr_conv_impl
@@ -217,13 +221,15 @@ class ResidualBlock(torch.nn.Module):
         #     x_corr_conv_impl(in_channels,out_channels[-1],kernel_size=3,padding_mode=padding_mode,padding=1),
         #     norm_impl(out_channels[-1])
         #     )
+        
+        self.to(device)
     
-    def _conv_x_linear(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T):
+    @torch.jit.ignore
+    def _conv_x_linear(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T,device):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
         # number of channels or some stride
         # correct_x_ksize = [1]*self.dimensions
         correct_x_ksize = self.kernel_size
-
         
         correct_x_ksize = torch.tensor(correct_x_ksize)
         correct_x_padding= correct_x_ksize // 2
@@ -244,8 +250,9 @@ class ResidualBlock(torch.nn.Module):
             dilation=correct_x_dilation,
             stride = stride.tolist(),
             padding = (correct_x_padding+compensation).tolist(),
-            padding_mode=self.padding_mode
-            # groups=gcd(in_channels,out_channels)
+            padding_mode=self.padding_mode,
+            device=device,
+            groups=math.gcd(in_channels,out_channels)
         )
         
         x_conv_impl = x_corr_conv_impl
@@ -310,5 +317,6 @@ class ResidualBlock(torch.nn.Module):
             normalization=self.normalization,
             is_transpose=True,
             dimensions=self.dimensions,
-            padding_mode="zeros"
+            padding_mode="zeros",
+            device=self.__init_device
         )
