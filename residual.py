@@ -252,7 +252,6 @@ class ResidualBlock(torch.nn.Module):
             padding = (correct_x_padding+compensation).tolist(),
             padding_mode=self.padding_mode,
             device=device,
-            groups=math.gcd(in_channels,out_channels)
         )
         
         x_conv_impl = x_corr_conv_impl
@@ -293,7 +292,7 @@ class ResidualBlock(torch.nn.Module):
             out = torch.cat(results, dim=1)
             out = act(norm(out))
         out_linear = self.x_linear(x)
-        # out_linear = self.out_conv(resize_tensor(x,[x.shape[1]]+list(out.shape[2:])))
+        # out_linear = resize_tensor(x,out.shape[1:])
         return self.alpha*(out)+out_linear
     
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
