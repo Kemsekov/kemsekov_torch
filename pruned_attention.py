@@ -6,36 +6,73 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from einops.layers.torch import Rearrange
-from kemsekov_torch.common_modules import ChanLayerNorm3D
 from kemsekov_torch.residual import ResidualBlock
 class PrunedCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.1,top_k=-1,normalization='batch'):
+    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None):
         """
         Somewhat optimal pruned cross-attention block
         
-        dim: input dimensions
+        input_dim: input dimensions
         
         mlp_dim: internal mlp dimension
         
+        top_k: count of elements to use for attention per head for each token. when set to `None` will use (input length) // heads
+        
         heads: heads for attention
+        
+        qkdim: query/key dimension, when `None` defaults to `input_dim`
         
         dimensions: dimensions count
         
         dropout: dropout to apply to attention layer
         
-        top_k: count of elements to compute per dimension for each token
+        device: where to locate module
         """
         super().__init__()
-        self.dpca = PrunedMultiheadAttention(dim,heads,dropout=dropout,top_k=top_k)
-        self.mlp = torch.nn.Sequential(
-            ResidualBlock(
-                dim,
-                [mlp_dim,dim],
-                dimensions=dimensions,
-                normalization=normalization,
-                kernel_size=1
-            ),
+        
+        self.Q = nn.Conv1d(
+            input_dim,
+            input_dim,
+            bias=False,
+            kernel_size=1,
+            device=device
         )
+        
+        self.K = nn.Conv1d(
+            input_dim,
+            input_dim,
+            bias=False,
+            kernel_size=1,
+            device=device
+        )
+        
+        self.V = nn.Conv1d(
+            input_dim,
+            input_dim,
+            bias=False,
+            kernel_size=1,
+            device=device
+        )
+        
+        self.attn = PrunedMultiheadAttention(
+            embed_dim=input_dim,
+            num_heads=heads,
+            dropout=dropout,
+            top_k=top_k,
+            device=device
+        )
+        
+        self.attn_out_gamma = torch.nn.Parameter(torch.tensor(0.0,device=device))
+
+        self.mlp = ResidualBlock(
+            input_dim,
+            [mlp_dim,input_dim],
+            dimensions=1,
+            kernel_size=1,
+            normalization='layer', # i am not sure about it
+            device=device
+        )
+        
     def forward(self,query_source, context):
         """
         Computes multihead cross attention for given context and query source.
@@ -49,43 +86,16 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         
         When context==query_source, the results will be same as self-attention.
         """
-        attn = self.dpca(query_source,context)
-        return self.mlp(attn)
-
-class PrunedSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,dim,mlp_dim,heads=8,dimensions=2,dropout=0.1,top_k=-1,normalization='batch'):
-        """
-        Somewhat optimal pruned self-attention block
+        query_source_flat = query_source.flatten(2)
+        Q = self.Q(query_source_flat)
+        K = self.K(context.flatten(2))
+        V = self.V(context.flatten(2))
         
-        dim: input dimensions
+        attn = self.attn(Q,K,V)*self.attn_out_gamma+query_source_flat
         
-        mlp_dim: internal mlp dimension
-        
-        heads: heads for attention
-        
-        dimensions: dimensions count
-        
-        dropout: dropout to apply to attention layer
-        
-        top_k: count of elements to compute per dimension for each token
-        """
-        super().__init__()
-        self.dpsa = PrunedSelfAttention(dim,dim//heads,heads,dropout=dropout,top_k=top_k)
-        self.mlp = torch.nn.Sequential(
-            ResidualBlock(
-                dim,
-                [mlp_dim,dim],
-                dimensions=dimensions,
-                normalization=normalization,
-                kernel_size=1
-            ),
-        )
-    def forward(self,x):
-        """
-        Computes multihead self-attention for given input x.
-        """
-        attn = self.dpsa(x)
-        return self.mlp(attn)
+        result = self.mlp(attn)
+        return result.view(query_source.shape)
+    
 
 def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k: int) -> Tuple[torch.Tensor,torch.Tensor]:
     """
@@ -106,12 +116,11 @@ def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k
     if top_k >= length_kv:
         return K, V
 
-    # count of tokens that will be used for reference to
     # compute distances
-    reference_tokens_count = int(top_k**0.5)
     
     # Generate random indices for Q
-    rand_token_ind = torch.randint(0, length_q, (B, min(reference_tokens_count, length_q)), device=Q.device)
+    rand_size=(B, min(reference_tokens_count, length_q))
+    rand_token_ind = torch.randint(0, length_q, rand_size, device=Q.device)
 
     # Select Q_small using advanced indexing: [B, top_k, DIM]
     Q_small = Q[torch.arange(B, device=Q.device)[:, None], rand_token_ind, :]
@@ -126,7 +135,6 @@ def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k
 
     # For each key, find max cosine similarity over Q_small
     max_sim, _ = cosine_sim.max(dim=2)  # [B, length_kv]
-    # max_sim = cosine_sim.quantile(distance_quantile,dim=2)  # [B, length_kv]
 
     # Select top_k keys with highest max similarity
     _, indices = torch.topk(max_sim, top_k, dim=1, largest=True, sorted=True)  # [B, top_k]
@@ -150,11 +158,11 @@ class PrunedMultiheadAttention(nn.Module):
         self,
         embed_dim : int,
         num_heads : int,
-        top_k = 256,
+        top_k = None,
         dropout: float = 0.0,
         bias: bool = True,
-        add_bias_kv: bool = False,
-        add_zero_attn: bool = False,
+        add_bias_kv: bool = True,
+        add_zero_attn: bool = True,
         kdim: int | None = None,
         vdim: int | None = None,
         batch_first: bool = True,
@@ -168,9 +176,9 @@ class PrunedMultiheadAttention(nn.Module):
             top_k: top K elements selection for keys
             dropout: Dropout probability on ``attn_output_weights``. Default: ``0.0`` (no dropout).
             bias: If specified, adds bias to input / output projection layers. Default: ``True``.
-            add_bias_kv: If specified, adds bias to the key and value sequences at dim=0. Default: ``False``.
+            add_bias_kv: If specified, adds bias to the key and value sequences at dim=0. Default: ``True``.
             add_zero_attn: If specified, adds a new batch of zeros to the key and value sequences at dim=1.
-                Default: ``False``.
+                Default: ``True``.
             kdim: Total number of features for keys. Default: ``None`` (uses ``kdim=embed_dim``).
             vdim: Total number of features for values. Default: ``None`` (uses ``vdim=embed_dim``).
             batch_first: If ``True``, then the input and output tensors are provided
@@ -194,7 +202,7 @@ class PrunedMultiheadAttention(nn.Module):
             device          =device,
             dtype           =dtype,
         )
-        
+        self.num_heads=num_heads
         self.top_k = top_k
         self.extract_heads = Rearrange("B (h C) ... -> (B h) (...) C",h=num_heads)
         self.collect_heads = Rearrange("(B h) L C -> B L (h C)",h=num_heads)
@@ -210,8 +218,9 @@ class PrunedMultiheadAttention(nn.Module):
         # print("extract heads",time.time()-start)
         # start = time.time()
         
+        top_k = query.shape[1]//self.num_heads if self.top_k is None else self.top_k
         # for each head to tokens selection
-        keys,values = dist_to_random_Q_selection_cosine(query,keys,values,self.top_k, self.top_k)
+        keys,values = dist_to_random_Q_selection_cosine(query, keys, values, top_k, top_k)
     
         # print("select tokens",time.time()-start)
         # start = time.time()
@@ -223,7 +232,7 @@ class PrunedMultiheadAttention(nn.Module):
         # print("concat heads",time.time()-start)
         # start = time.time()
         
-        out,attn = self.model(query,keys,values)
+        out,attn = self.model.forward(query,keys,values)
         out = out.transpose(-1,-2).view(query_shape)
         # print("attention",time.time()-start)
         

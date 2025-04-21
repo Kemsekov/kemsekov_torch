@@ -199,7 +199,7 @@ class ResidualBlock(torch.nn.Module):
             self.convs.append(conv)
             
             #optionally add normalization
-            self.norms.append(norm_impl(out_channels[v]))
+            self.norms.append(norm_impl(out_channels[v]).to(device))
             
         self.convs = torch.nn.ModuleList(self.convs)
         self.norms = torch.nn.ModuleList(self.norms)
@@ -267,7 +267,7 @@ class ResidualBlock(torch.nn.Module):
             self.x_linear = \
                 torch.nn.Sequential(
                     x_conv_impl(**x_corr_kwargs),
-                    norm_impl(out_channels)
+                    norm_impl(out_channels).to(device)
                 )
         else:
             self.x_linear = torch.nn.Identity()

@@ -37,7 +37,6 @@ class ChanLayerNorm3D(nn.Module):
         mean = torch.mean(x, dim=1, keepdim=True)
         return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
 
-
 class ConstModule(torch.nn.Module):
     """Module that returns constant"""
     def __init__(self,constant = 0):
@@ -45,7 +44,6 @@ class ConstModule(torch.nn.Module):
         self.constant=constant
     def forward(self,x):
         return self.constant
-
 
 # @torch.jit.script
 def resize_tensor(input : torch.Tensor,output_size : List[int],dimension_resize_mode : str = 'nearest-exact',channel_resize_mode : str='nearest-exact'):
