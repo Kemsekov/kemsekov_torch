@@ -7,6 +7,32 @@ import torch.nn.functional as F
 from torch import nn
 from einops.layers.torch import Rearrange
 from kemsekov_torch.residual import ResidualBlock
+
+class PrunedSelfAttentionBlock(torch.nn.Module):
+    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None):
+        """
+        Somewhat optimal pruned self-attention block
+        
+        input_dim: input dimensions
+        
+        mlp_dim: internal mlp dimension
+        
+        top_k: count of elements to use for attention per head for each token. when set to `None` will use (input length) // heads
+        
+        heads: heads for attention
+        
+        qkdim: query/key dimension, when `None` defaults to `input_dim`
+        
+        dimensions: dimensions count
+        
+        dropout: dropout to apply to attention layer
+        
+        device: where to locate module
+        """
+        super().__init__()
+        self.attn = PrunedCrossAttentionBlock(input_dim,mlp_dim,top_k,heads,dropout,device)
+    def forward(self,x):
+        return self.attn(x,x)
 class PrunedCrossAttentionBlock(torch.nn.Module):
     def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None):
         """
@@ -29,28 +55,32 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         device: where to locate module
         """
         super().__init__()
+        norm = 'batch'
         
-        self.Q = nn.Conv1d(
+        self.Q = ResidualBlock(
             input_dim,
             input_dim,
-            bias=False,
             kernel_size=1,
+            normalization=norm,
+            dimensions=1,
             device=device
         )
         
-        self.K = nn.Conv1d(
+        self.K = ResidualBlock(
             input_dim,
             input_dim,
-            bias=False,
             kernel_size=1,
+            normalization=norm,
+            dimensions=1,
             device=device
         )
         
-        self.V = nn.Conv1d(
+        self.V = ResidualBlock(
             input_dim,
             input_dim,
-            bias=False,
             kernel_size=1,
+            normalization=norm,
+            dimensions=1,
             device=device
         )
         
@@ -61,6 +91,7 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             top_k=top_k,
             device=device
         )
+        self.attn_norm = torch.nn.BatchNorm1d(input_dim)
         
         self.attn_out_gamma = torch.nn.Parameter(torch.tensor(0.0,device=device))
 
@@ -69,7 +100,7 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             [mlp_dim,input_dim],
             dimensions=1,
             kernel_size=1,
-            normalization='layer', # i am not sure about it
+            normalization=norm, # i am not sure about it
             device=device
         )
         
@@ -91,10 +122,24 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         K = self.K(context.flatten(2))
         V = self.V(context.flatten(2))
         
-        attn = self.attn(Q,K,V)*self.attn_out_gamma+query_source_flat
+        #--------------------
+        # start = time.time()
+        
+        attn = self.attn(Q,K,V)
+        attn=self.attn_norm(attn)
+        
+        attn = attn*self.attn_out_gamma+query_source_flat
+        
+        #--------------------
+        # print("attn",time.time()-start)
+        # start = time.time()
         
         result = self.mlp(attn)
-        return result.view(query_source.shape)
+        
+        #--------------------
+        # print("mlp",time.time()-start)
+        
+        return result.view(query_source.shape).contiguous()
     
 
 def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k: int) -> Tuple[torch.Tensor,torch.Tensor]:
@@ -204,17 +249,28 @@ class PrunedMultiheadAttention(nn.Module):
         )
         self.num_heads=num_heads
         self.top_k = top_k
+        
+        #-------------------
+        # self.extract_heads = Rearrange("B C ... -> B (...) C")
+        
         self.extract_heads = Rearrange("B (h C) ... -> (B h) (...) C",h=num_heads)
         self.collect_heads = Rearrange("(B h) L C -> B L (h C)",h=num_heads)
         
     def forward(self,query,keys,values):
         query_shape=query.shape
+        
+        #--------------------
         # start = time.time()
         
         # extract dimension slices into separate head as a batch
         query  = self.extract_heads(query)
         keys   = self.extract_heads(keys)
         values = self.extract_heads(values)
+        
+        keys = F.normalize(keys, p=2.0, dim=-1)         # [B, length_kv, DIM]
+        query = F.normalize(query, p=2.0, dim=-1)  # [B, top_k, DIM]
+        
+        #--------------------
         # print("extract heads",time.time()-start)
         # start = time.time()
         
@@ -222,6 +278,7 @@ class PrunedMultiheadAttention(nn.Module):
         # for each head to tokens selection
         keys,values = dist_to_random_Q_selection_cosine(query, keys, values, top_k, top_k)
     
+        #--------------------
         # print("select tokens",time.time()-start)
         # start = time.time()
         
@@ -229,11 +286,16 @@ class PrunedMultiheadAttention(nn.Module):
         query  = self.collect_heads(query)
         keys   = self.collect_heads(keys)
         values = self.collect_heads(values)
+        
+        #--------------------
         # print("concat heads",time.time()-start)
         # start = time.time()
         
-        out,attn = self.model.forward(query,keys,values)
-        out = out.transpose(-1,-2).view(query_shape)
+        # out,attn = self.model.forward(query,keys,values)
+        # out = out.transpose(-1,-2).view(query_shape)
+        out = query.transpose(-1,-2).view(query_shape)
+        
+        #--------------------
         # print("attention",time.time()-start)
         
         return out

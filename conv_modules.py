@@ -42,35 +42,6 @@ def _compress_ch(in_channels,reduction):
     if compression<2:
         compression=2
     return compression
-class SCSEModule2d(nn.Module):
-    """
-    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module for 2d inputs.
-    """
-    def __init__(self, in_channels, reduction=16):
-        super(SCSEModule2d, self).__init__()
-        compression = _compress_ch(in_channels,reduction)
-        # Channel Squeeze and Excitation (cSE)
-        self.cSE = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_channels, compression, kernel_size=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(compression, in_channels, kernel_size=1),
-            nn.Sigmoid()
-        )
-        # Spatial Squeeze and Excitation (sSE)
-        self.sSE = nn.Sequential(
-            nn.Conv2d(in_channels, 1, kernel_size=1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        # Apply channel attention
-        cse_out = x*self.cSE(x)
-        # Apply spatial attention
-        sse_out = x*self.sSE(x)
-        # Combine the outputs
-        return torch.max(cse_out,sse_out)
-
 
 class SCSEModule1d(nn.Module):
     """
@@ -97,9 +68,48 @@ class SCSEModule1d(nn.Module):
         # Apply channel attention
         cse_out = x*self.cSE(x)
         # Apply spatial attention
-        sse_out = x*self.sSE(x)
+        sse_out = x*self.sSE(x+cse_out)
         # Combine the outputs
-        return torch.max(cse_out,sse_out)
+        return torch.max(cse_out,sse_out)+x
+
+class SCSEModule2d(nn.Module):
+    """
+    Concurrent Spatial and Channel Squeeze & Excitation (scSE) module for 2d inputs.
+    """
+    def __init__(self, in_channels, reduction=16):
+        super(SCSEModule2d, self).__init__()
+        compression = _compress_ch(in_channels,reduction)
+        # Channel Squeeze and Excitation (cSE)
+        self.cSE = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, compression, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(compression, in_channels, kernel_size=1),
+            nn.Sigmoid()
+        )
+        
+        # Spatial Squeeze and Excitation (sSE)
+        self.sSE = nn.Sequential(
+            nn.Conv2d(in_channels, 1, kernel_size=1),
+            nn.Sigmoid()
+        )
+        self.cSEbias = nn.Parameter(torch.zeros((1,in_channels,1,1)))
+        self.sSEbias = nn.Parameter(torch.zeros((1,in_channels,1,1)))
+    
+    # max with single bias sum on sse with residual
+    def forward(self, x):
+        # Apply channel attention
+        cse_out = x*self.cSE(x)
+        # Apply spatial attention
+        sse_out = x*self.sSE(x+cse_out)
+        
+        # cse_out = x*self.cSE(sse_out+cse_out)
+        
+        # sse_out = x*self.sSE(sse_out+cse_out)
+        
+        
+        # Combine the outputs
+        return torch.max(cse_out,sse_out)+x
 
 class SCSEModule3d(nn.Module):
     """
@@ -127,9 +137,9 @@ class SCSEModule3d(nn.Module):
         # Apply channel attention
         cse_out = x * self.cSE(x)
         # Apply spatial attention
-        sse_out = x * self.sSE(x)
+        sse_out = x * self.sSE(x+cse_out)
         # Combine the outputs
-        return torch.max(cse_out, sse_out)
+        return torch.max(cse_out, sse_out)+x
 
 class BSConvU(torch.nn.Module): 
     """
