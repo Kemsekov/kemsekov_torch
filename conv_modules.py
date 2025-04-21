@@ -68,7 +68,7 @@ class SCSEModule1d(nn.Module):
         # Apply channel attention
         cse_out = x*self.cSE(x)
         # Apply spatial attention
-        sse_out = x*self.sSE(x+cse_out)
+        sse_out = x*self.sSE(cse_out)
         # Combine the outputs
         return torch.max(cse_out,sse_out)+x
 
@@ -87,26 +87,19 @@ class SCSEModule2d(nn.Module):
             nn.Conv2d(compression, in_channels, kernel_size=1),
             nn.Sigmoid()
         )
-        
+
         # Spatial Squeeze and Excitation (sSE)
         self.sSE = nn.Sequential(
             nn.Conv2d(in_channels, 1, kernel_size=1),
             nn.Sigmoid()
         )
-        self.cSEbias = nn.Parameter(torch.zeros((1,in_channels,1,1)))
-        self.sSEbias = nn.Parameter(torch.zeros((1,in_channels,1,1)))
     
     # max with single bias sum on sse with residual
     def forward(self, x):
         # Apply channel attention
         cse_out = x*self.cSE(x)
         # Apply spatial attention
-        sse_out = x*self.sSE(x+cse_out)
-        
-        # cse_out = x*self.cSE(sse_out+cse_out)
-        
-        # sse_out = x*self.sSE(sse_out+cse_out)
-        
+        sse_out = x*self.sSE(cse_out)
         
         # Combine the outputs
         return torch.max(cse_out,sse_out)+x
@@ -137,7 +130,7 @@ class SCSEModule3d(nn.Module):
         # Apply channel attention
         cse_out = x * self.cSE(x)
         # Apply spatial attention
-        sse_out = x * self.sSE(x+cse_out)
+        sse_out = x * self.sSE(cse_out)
         # Combine the outputs
         return torch.max(cse_out, sse_out)+x
 
