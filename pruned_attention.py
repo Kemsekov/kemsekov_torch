@@ -1,3 +1,5 @@
+import time
+from typing import Tuple
 import torch
 from torch import nn
 import torch
@@ -85,12 +87,15 @@ class PrunedSelfAttentionBlock(torch.nn.Module):
         attn = self.dpsa(x)
         return self.mlp(attn)
 
-def dist_to_random_Q_selection_cosine(Q, K, V, top_k: int):
+def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k: int) -> Tuple[torch.Tensor,torch.Tensor]:
     """
     Select keys and values based on cosine similarity to a random subset of queries.
     
     Q: [B, length_q, DIM]
     K, V: [B, length_kv, DIM]
+    
+    reference_tokens_count: count of reference points that will be used to compute distances
+    top_k: how many tokens to select
     
     Returns:
         selected_K, selected_V: [B, top_k, DIM]
@@ -112,8 +117,8 @@ def dist_to_random_Q_selection_cosine(Q, K, V, top_k: int):
     Q_small = Q[torch.arange(B, device=Q.device)[:, None], rand_token_ind, :]
 
     # Normalize K and Q_small along the last dimension for cosine similarity
-    K_norm = F.normalize(K, p=2, dim=2)         # [B, length_kv, DIM]
-    Q_small_norm = F.normalize(Q_small, p=2, dim=2)  # [B, top_k, DIM]
+    K_norm = F.normalize(K, p=2.0, dim=2)         # [B, length_kv, DIM]
+    Q_small_norm = F.normalize(Q_small, p=2.0, dim=2)  # [B, top_k, DIM]
 
     # Compute cosine similarity: [B, length_kv, top_k]
     # similarity[b, i, j] = cosine_similarity between K[b,i,:] and Q_small[b,j,:]
@@ -121,6 +126,7 @@ def dist_to_random_Q_selection_cosine(Q, K, V, top_k: int):
 
     # For each key, find max cosine similarity over Q_small
     max_sim, _ = cosine_sim.max(dim=2)  # [B, length_kv]
+    # max_sim = cosine_sim.quantile(distance_quantile,dim=2)  # [B, length_kv]
 
     # Select top_k keys with highest max similarity
     _, indices = torch.topk(max_sim, top_k, dim=1, largest=True, sorted=True)  # [B, top_k]
@@ -145,7 +151,7 @@ class PrunedMultiheadAttention(nn.Module):
         embed_dim : int,
         num_heads : int,
         top_k = 256,
-        dropout: float = 0,
+        dropout: float = 0.0,
         bias: bool = True,
         add_bias_kv: bool = False,
         add_zero_attn: bool = False,
@@ -169,6 +175,9 @@ class PrunedMultiheadAttention(nn.Module):
             vdim: Total number of features for values. Default: ``None`` (uses ``vdim=embed_dim``).
             batch_first: If ``True``, then the input and output tensors are provided
                 as (batch, seq, feature). Default: ``True`` (batch, seq, feature).
+        Accepts query, key and value as multidimensional tensor with channels.
+        
+        [BATCH,CHANNELS,DIM1,DIM2,...]
         """
         super().__init__()
         
@@ -186,18 +195,36 @@ class PrunedMultiheadAttention(nn.Module):
             dtype           =dtype,
         )
         
-        self.top_k=top_k
+        self.top_k = top_k
+        self.extract_heads = Rearrange("B (h C) ... -> (B h) (...) C",h=num_heads)
+        self.collect_heads = Rearrange("(B h) L C -> B L (h C)",h=num_heads)
         
     def forward(self,query,keys,values):
         query_shape=query.shape
-
-        query  = query.flatten(2).transpose(-1,-2)
-        keys   = keys.flatten(2).transpose(-1,-2)
-        values = values.flatten(2).transpose(-1,-2)
+        # start = time.time()
         
-        keys,values = dist_to_random_Q_selection_cosine(query,keys,values,self.top_k)
+        # extract dimension slices into separate head as a batch
+        query  = self.extract_heads(query)
+        keys   = self.extract_heads(keys)
+        values = self.extract_heads(values)
+        # print("extract heads",time.time()-start)
+        # start = time.time()
+        
+        # for each head to tokens selection
+        keys,values = dist_to_random_Q_selection_cosine(query,keys,values,self.top_k, self.top_k)
+    
+        # print("select tokens",time.time()-start)
+        # start = time.time()
+        
+        # concat heads into full dimension
+        query  = self.collect_heads(query)
+        keys   = self.collect_heads(keys)
+        values = self.collect_heads(values)
+        # print("concat heads",time.time()-start)
+        # start = time.time()
         
         out,attn = self.model(query,keys,values)
         out = out.transpose(-1,-2).view(query_shape)
+        # print("attention",time.time()-start)
         
         return out
