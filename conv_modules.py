@@ -52,8 +52,8 @@ class SCSEModule1d(nn.Module):
         compression = _compress_ch(in_channels,reduction)
         # Channel Squeeze and Excitation (cSE)
         self.cSE = nn.Sequential(
-            nn.AdaptiveAvgPool1d(1),
-            nn.Conv1d(in_channels, compression, kernel_size=1),
+            nn.AdaptiveAvgPool1d(5),
+            nn.Conv1d(in_channels, compression, kernel_size=5),
             nn.ReLU(inplace=True),
             nn.Conv1d(compression, in_channels, kernel_size=1),
             nn.Sigmoid()
@@ -81,8 +81,8 @@ class SCSEModule2d(nn.Module):
         compression = _compress_ch(in_channels,reduction)
         # Channel Squeeze and Excitation (cSE)
         self.cSE = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(in_channels, compression, kernel_size=1),
+            nn.AdaptiveAvgPool2d(5),
+            nn.Conv2d(in_channels, compression, kernel_size=5),
             nn.ReLU(inplace=True),
             nn.Conv2d(compression, in_channels, kernel_size=1),
             nn.Sigmoid()
@@ -114,8 +114,8 @@ class SCSEModule3d(nn.Module):
         
         # Channel Squeeze and Excitation (cSE)
         self.cSE = nn.Sequential(
-            nn.AdaptiveAvgPool3d(1),
-            nn.Conv3d(in_channels, compression, kernel_size=1),
+            nn.AdaptiveAvgPool3d(5),
+            nn.Conv3d(in_channels, compression, kernel_size=5),
             nn.ReLU(inplace=True),
             nn.Conv3d(compression, in_channels, kernel_size=1),
             nn.Sigmoid()
