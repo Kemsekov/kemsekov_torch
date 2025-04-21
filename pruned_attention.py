@@ -84,38 +84,54 @@ class PrunedSelfAttentionBlock(torch.nn.Module):
         """
         attn = self.dpsa(x)
         return self.mlp(attn)
-    
-def dist_to_random_Q_selection(Q, K, V, top_k : int):
+
+def dist_to_random_Q_selection_cosine(Q, K, V, top_k: int):
     """
-    Performs selection of keys and values based on distance of keys to random subset of queries.\n
+    Select keys and values based on cosine similarity to a random subset of queries.
     
-    Q of shape [batch,length_q,dim] \n
-    K,V of shape [batch,length_kv,dim]
+    Q: [B, length_q, DIM]
+    K, V: [B, length_kv, DIM]
+    
+    Returns:
+        selected_K, selected_V: [B, top_k, DIM]
     """
-    if top_k>=K.shape[1]:
-        return K,V
-    B, tokens_count, DIM = Q.shape
+    B, length_q, DIM = Q.shape
+    length_kv = K.shape[1]
+
+    if top_k >= length_kv:
+        return K, V
+
+    # count of tokens that will be used for reference to
+    # compute distances
+    reference_tokens_count = int(top_k**0.5)
+    
     # Generate random indices for Q
-    rand_token_ind = torch.randint(0, tokens_count, (B, min(top_k,tokens_count)), device=Q.device)
-    
-    # Select Q_small using advanced indexing
-    Q_small = Q[torch.arange(B, device=Q.device)[:, None], rand_token_ind, :]  # [B, top_k, DIM]
-    
-    # Compute L1 distances using torch.cdist
-    distances = torch.cdist(K, Q_small, p=1.0)  # [B, some_other_count, top_k]
-    
-    # Compute minimum distances over Q_small
-    min_distances = distances.min(dim=2)[0]  # [B, some_other_count]
-    
-    # Get indices of top_k smallest minimum distances
-    _, indices = torch.topk(min_distances, top_k, dim=1, largest=False, sorted=True)  # [B, top_k]
-    
-    all_batch_ind = torch.arange(B, device=K.device)[:, None]
-    # Select corresponding points from K using advanced indexing
-    selected_K = K[all_batch_ind, indices, :]  # [B, top_k, DIM]
-    selected_V = V[all_batch_ind, indices, :]  # [B, top_k, DIM]
-    
+    rand_token_ind = torch.randint(0, length_q, (B, min(reference_tokens_count, length_q)), device=Q.device)
+
+    # Select Q_small using advanced indexing: [B, top_k, DIM]
+    Q_small = Q[torch.arange(B, device=Q.device)[:, None], rand_token_ind, :]
+
+    # Normalize K and Q_small along the last dimension for cosine similarity
+    K_norm = F.normalize(K, p=2, dim=2)         # [B, length_kv, DIM]
+    Q_small_norm = F.normalize(Q_small, p=2, dim=2)  # [B, top_k, DIM]
+
+    # Compute cosine similarity: [B, length_kv, top_k]
+    # similarity[b, i, j] = cosine_similarity between K[b,i,:] and Q_small[b,j,:]
+    cosine_sim = torch.bmm(K_norm, Q_small_norm.transpose(1, 2))  # [B, length_kv, top_k]
+
+    # For each key, find max cosine similarity over Q_small
+    max_sim, _ = cosine_sim.max(dim=2)  # [B, length_kv]
+
+    # Select top_k keys with highest max similarity
+    _, indices = torch.topk(max_sim, top_k, dim=1, largest=True, sorted=True)  # [B, top_k]
+
+    batch_indices = torch.arange(B, device=K.device)[:, None]
+
+    selected_K = K[batch_indices, indices, :]  # [B, top_k, DIM]
+    selected_V = V[batch_indices, indices, :]  # [B, top_k, DIM]
+
     return selected_K, selected_V
+
 class PrunedMultiheadAttention(nn.Module):
     """
     Pruned multihead attention.
@@ -179,7 +195,7 @@ class PrunedMultiheadAttention(nn.Module):
         keys   = keys.flatten(2).transpose(-1,-2)
         values = values.flatten(2).transpose(-1,-2)
         
-        keys,values = dist_to_random_Q_selection(query,keys,values,self.top_k)
+        keys,values = dist_to_random_Q_selection_cosine(query,keys,values,self.top_k)
         
         out,attn = self.model(query,keys,values)
         out = out.transpose(-1,-2).view(query_shape)
