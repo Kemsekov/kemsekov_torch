@@ -1,5 +1,6 @@
 import time
 from typing import Tuple
+import einops
 import torch
 from torch import nn
 import torch
@@ -55,33 +56,25 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         device: where to locate module
         """
         super().__init__()
-        norm = 'batch'
-        
-        self.Q = ResidualBlock(
+        self.Q = nn.Conv1d(
             input_dim,
             input_dim,
             kernel_size=1,
-            normalization=norm,
-            dimensions=1,
-            device=device
+            device=device,
         )
         
-        self.K = ResidualBlock(
+        self.K = nn.Conv1d(
             input_dim,
             input_dim,
             kernel_size=1,
-            normalization=norm,
-            dimensions=1,
-            device=device
+            device=device,
         )
         
-        self.V = ResidualBlock(
+        self.V = nn.Conv1d(
             input_dim,
             input_dim,
             kernel_size=1,
-            normalization=norm,
-            dimensions=1,
-            device=device
+            device=device,
         )
         
         self.attn = PrunedMultiheadAttention(
@@ -101,7 +94,7 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             dimensions=1,
             kernel_size=1,
             dropout=dropout,
-            normalization=norm, # i am not sure about it
+            normalization='batch', # batch,layer works well
             device=device,
         )
         
@@ -141,56 +134,17 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         # print("mlp",time.time()-start)
         
         return result.view(query_source.shape).contiguous()
-    
 
-def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k: int) -> Tuple[torch.Tensor,torch.Tensor]:
-    """
-    Select keys and values based on cosine similarity to a random subset of queries.
-    
-    Q: [B, length_q, DIM]
-    K, V: [B, length_kv, DIM]
-    
-    reference_tokens_count: count of reference points that will be used to compute distances
-    top_k: how many tokens to select
-    
-    Returns:
-        selected_K, selected_V: [B, top_k, DIM]
-    """
-    B, length_q, DIM = Q.shape
-    length_kv = K.shape[1]
-
-    if top_k >= length_kv:
-        return K, V
-
-    # compute distances
-    
-    # Generate random indices for Q
-    rand_size=(B, min(reference_tokens_count, length_q))
-    rand_token_ind = torch.randint(0, length_q, rand_size, device=Q.device)
-
-    # Select Q_small using advanced indexing: [B, top_k, DIM]
-    Q_small = Q[torch.arange(B, device=Q.device)[:, None], rand_token_ind, :]
-
-    # Normalize K and Q_small along the last dimension for cosine similarity
-    K_norm = F.normalize(K, p=2.0, dim=2)         # [B, length_kv, DIM]
-    Q_small_norm = F.normalize(Q_small, p=2.0, dim=2)  # [B, top_k, DIM]
-
-    # Compute cosine similarity: [B, length_kv, top_k]
-    # similarity[b, i, j] = cosine_similarity between K[b,i,:] and Q_small[b,j,:]
-    cosine_sim = torch.bmm(K_norm, Q_small_norm.transpose(1, 2))  # [B, length_kv, top_k]
-
-    # For each key, find max cosine similarity over Q_small
-    max_sim, _ = cosine_sim.max(dim=2)  # [B, length_kv]
-
-    # Select top_k keys with highest max similarity
-    _, indices = torch.topk(max_sim, top_k, dim=1, largest=True, sorted=True)  # [B, top_k]
-
-    batch_indices = torch.arange(B, device=K.device)[:, None]
-
-    selected_K = K[batch_indices, indices, :]  # [B, top_k, DIM]
-    selected_V = V[batch_indices, indices, :]  # [B, top_k, DIM]
-
-    return selected_K, selected_V
+# apparently best key,value pruning method
+def sum_abs_prune(Q, K, V, top_k : int):
+    q_probe = torch.sum(Q, dim=1)  # Reduce from (b, L, C) to (b, C) by summing over L
+    k_abs = torch.abs(K) + K  # Element-wise absolute value plus original K, shape (b, L, C)
+    score_l = torch.sum(q_probe[:, None, :] * k_abs, dim=2)  # Compute scores, shape (b, L)
+    top_l_indices = score_l.topk(k=top_k, dim=-1).indices  # Get indices of top-k scores, shape (b, top_k)
+    top_l_indices_expanded = top_l_indices[:, :, None].expand(-1, -1, K.shape[-1])  # Expand to (b, top_k, C)
+    k_selected = torch.gather(K, dim=1, index=top_l_indices_expanded)  # Gather from K, shape (b, top_k, C)
+    v_selected = torch.gather(V, dim=1, index=top_l_indices_expanded)  # Gather from V, shape (b, top_k, C)
+    return k_selected, v_selected
 
 class PrunedMultiheadAttention(nn.Module):
     """
@@ -268,8 +222,8 @@ class PrunedMultiheadAttention(nn.Module):
         keys   = self.extract_heads(keys)
         values = self.extract_heads(values)
         
-        # keys = F.normalize(keys, p=2.0, dim=-1)         # [B, length_kv, DIM]
-        # query = F.normalize(query, p=2.0, dim=-1)  # [B, top_k, DIM]
+        keys = F.normalize(keys, p=2.0, dim=-1) # [B, length_kv, DIM]
+        query = F.normalize(query, p=2.0, dim=-1)  # [B, top_k, DIM]
         
         #--------------------
         # print("extract heads",time.time()-start)
@@ -277,7 +231,8 @@ class PrunedMultiheadAttention(nn.Module):
         
         top_k = query.shape[1]//self.num_heads if self.top_k is None else self.top_k
         # for each head to tokens selection
-        keys,values = dist_to_random_Q_selection_cosine(query, keys, values, top_k, top_k)
+        # keys,values = dist_to_random_Q_selection_cosine(query, keys, values, top_k, top_k)
+        keys,values = sum_abs_prune(query, keys, values, top_k)
     
         #--------------------
         # print("select tokens",time.time()-start)
