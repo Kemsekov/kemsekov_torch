@@ -100,8 +100,9 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             [mlp_dim,input_dim],
             dimensions=1,
             kernel_size=1,
+            dropout=dropout,
             normalization=norm, # i am not sure about it
-            device=device
+            device=device,
         )
         
     def forward(self,query_source, context):
