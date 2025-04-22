@@ -267,8 +267,8 @@ class PrunedMultiheadAttention(nn.Module):
         keys   = self.extract_heads(keys)
         values = self.extract_heads(values)
         
-        keys = F.normalize(keys, p=2.0, dim=-1)         # [B, length_kv, DIM]
-        query = F.normalize(query, p=2.0, dim=-1)  # [B, top_k, DIM]
+        # keys = F.normalize(keys, p=2.0, dim=-1)         # [B, length_kv, DIM]
+        # query = F.normalize(query, p=2.0, dim=-1)  # [B, top_k, DIM]
         
         #--------------------
         # print("extract heads",time.time()-start)
@@ -291,9 +291,10 @@ class PrunedMultiheadAttention(nn.Module):
         # print("concat heads",time.time()-start)
         # start = time.time()
         
-        # out,attn = self.model.forward(query,keys,values)
-        # out = out.transpose(-1,-2).view(query_shape)
-        out = query.transpose(-1,-2).view(query_shape)
+        out,attn = self.model.forward(query,keys,values)
+        out = out.transpose(-1,-2).view(query_shape)
+        
+        # out = query.transpose(-1,-2).view(query_shape)
         
         #--------------------
         # print("attention",time.time()-start)

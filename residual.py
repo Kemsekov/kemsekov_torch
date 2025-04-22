@@ -40,6 +40,7 @@ class ResidualBlock(torch.nn.Module):
         kernel_size = 3,
         stride = 1,
         dilation = 1,
+        dropout = 0.0,
         activation=torch.nn.SiLU,
         normalization : Literal['batch','instance','group','spectral','layer',None] = None,
         dimensions : Literal[1,2,3] = 2,
@@ -55,6 +56,7 @@ class ResidualBlock(torch.nn.Module):
         * kernel_size: integer, or tuple/list with dimensions-wise kernel size for convolutions.
         * stride: integer, or tuple/list with dimensions-wise stride for convolutions.
         * dilation: List that defines required dilations. Applied only to first convolution. Example: `[1]+[2]+[4]*3` will do 1/5 convolutions with dilation 1, 1/5 with dilation 2 and 3/5 with dilation 4
+        * dropout: dropout probability
         * activation: activation function
         * normalization: one of `['batch','instance','group','spectral','layer',None]`, applies required normalization. Defaults to `None` because of using re-zero approach to using skip connection. `'group'` will use hubristic to determine optimal number of groups.
         * dimensions: input tensor dimensions, selects one of conv1d conv2d conv3d implementation for convolutions
@@ -66,6 +68,10 @@ class ResidualBlock(torch.nn.Module):
         
         self.__init_device = device
         
+        self.dropout = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1](dropout)
+        if dropout==0:
+            dropout_impl=nn.Identity()
+        
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
             
@@ -75,6 +81,7 @@ class ResidualBlock(torch.nn.Module):
         repeats=len(out_channels)
         self.padding_mode=padding_mode
         self._is_transpose_conv = is_transpose
+        self._dropout_p = dropout
 
         self.normalization = normalization
         if not (isinstance(kernel_size,list) or isinstance(kernel_size,tuple)):
@@ -291,6 +298,8 @@ class ResidualBlock(torch.nn.Module):
             results = [conv(out) for conv in convs]
             out = torch.cat(results, dim=1)
             out = act(norm(out))
+            out = self.dropout(out)
+        
         out_linear = self.x_linear(x)
         # out_linear = resize_tensor(x,out.shape[1:])
         return self.alpha*(out)+out_linear
@@ -312,6 +321,7 @@ class ResidualBlock(torch.nn.Module):
             kernel_size = self.kernel_size,
             stride = self.stride,
             dilation = self.dilation,
+            dropout=self._dropout_p,
             activation = self._activation_func,
             normalization=self.normalization,
             is_transpose=True,
