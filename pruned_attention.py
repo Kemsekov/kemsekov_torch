@@ -137,6 +137,8 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
 
 # apparently best key,value pruning method
 def sum_abs_prune(Q, K, V, top_k : int):
+    if top_k>=K.shape[1]:
+        return K,V
     q_probe = torch.sum(Q, dim=1)  # Reduce from (b, L, C) to (b, C) by summing over L
     k_abs = torch.abs(K) + K  # Element-wise absolute value plus original K, shape (b, L, C)
     score_l = torch.sum(q_probe[:, None, :] * k_abs, dim=2)  # Compute scores, shape (b, L)
