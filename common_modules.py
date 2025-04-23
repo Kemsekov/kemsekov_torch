@@ -2,6 +2,7 @@ from typing import List, Literal, Tuple
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
+
 # Channel-wise Layer Normalization for 1D inputs
 class ChanLayerNorm1D(nn.Module):
     def __init__(self, dim):

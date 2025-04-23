@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch import nn
 from einops.layers.torch import Rearrange
 from kemsekov_torch.residual import ResidualBlock
+from kemsekov_torch.common_modules import ChanLayerNorm1D
 
 class PrunedSelfAttentionBlock(torch.nn.Module):
     def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None):
@@ -56,25 +57,34 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         device: where to locate module
         """
         super().__init__()
-        self.Q = nn.Conv1d(
-            input_dim,
-            input_dim,
-            kernel_size=1,
-            device=device,
+        self.Q = nn.Sequential(
+            nn.Conv1d(
+                input_dim,
+                input_dim,
+                kernel_size=1,
+                device=device,
+            ),
+            ChanLayerNorm1D(input_dim)
         )
         
-        self.K = nn.Conv1d(
-            input_dim,
-            input_dim,
-            kernel_size=1,
-            device=device,
+        self.K = nn.Sequential(
+            nn.Conv1d(
+                input_dim,
+                input_dim,
+                kernel_size=1,
+                device=device,
+            ),
+            ChanLayerNorm1D(input_dim)
         )
         
-        self.V = nn.Conv1d(
-            input_dim,
-            input_dim,
-            kernel_size=1,
-            device=device,
+        self.V = nn.Sequential(
+            nn.Conv1d(
+                input_dim,
+                input_dim,
+                kernel_size=1,
+                device=device,
+            ),
+            ChanLayerNorm1D(input_dim)
         )
         
         self.attn = PrunedMultiheadAttention(
@@ -84,8 +94,8 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             top_k=top_k,
             device=device
         )
-        self.attn_norm = torch.nn.BatchNorm1d(input_dim)
         
+        self.attn_norm = torch.nn.BatchNorm1d(input_dim)
         self.attn_out_gamma = torch.nn.Parameter(torch.tensor(0.0,device=device))
 
         self.mlp = ResidualBlock(
@@ -134,6 +144,96 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         # print("mlp",time.time()-start)
         
         return result.view(query_source.shape).contiguous()
+
+
+
+#somewhat usable
+def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k: int) -> Tuple[torch.Tensor,torch.Tensor]:
+    """
+    Select keys and values based on cosine similarity to a random subset of queries.
+    
+    Q: [B, length_q, DIM]
+    K, V: [B, length_kv, DIM]
+    
+    reference_tokens_count: count of reference points that will be used to compute distances
+    top_k: how many tokens to select
+    
+    Returns:
+        selected_K, selected_V: [B, top_k, DIM]
+    """
+    B, length_q, DIM = Q.shape
+    length_kv = K.shape[1]
+
+    if top_k >= length_kv:
+        return K, V
+
+    # compute distances
+    
+    # Generate random indices for Q
+    rand_size=(B, min(reference_tokens_count, length_q))
+    rand_token_ind = torch.randint(0, length_q, rand_size, device=Q.device)
+
+    # Select Q_small using advanced indexing: [B, top_k, DIM]
+    Q_small = Q[torch.arange(B, device=Q.device)[:, None], rand_token_ind, :]
+
+    # Normalize K and Q_small along the last dimension for cosine similarity
+    K_norm = K         # [B, length_kv, DIM]
+    Q_small_norm = Q_small  # [B, top_k, DIM]
+
+    # Compute cosine similarity: [B, length_kv, top_k]
+    # similarity[b, i, j] = cosine_similarity between K[b,i,:] and Q_small[b,j,:]
+    cosine_sim = torch.bmm(K_norm, Q_small_norm.transpose(1, 2))  # [B, length_kv, top_k]
+
+    # For each key, find max cosine similarity over Q_small
+    max_sim, _ = cosine_sim.max(dim=2)  # [B, length_kv]
+
+    # Select top_k keys with highest max similarity
+    _, indices = torch.topk(max_sim, top_k, dim=1, largest=True, sorted=True)  # [B, top_k]
+
+    batch_indices = torch.arange(B, device=K.device)[:, None]
+
+    selected_K = K[batch_indices, indices, :]  # [B, top_k, DIM]
+    selected_V = V[batch_indices, indices, :]  # [B, top_k, DIM]
+
+    return selected_K, selected_V
+
+def prune(Q,K,V,top_k : int):
+    q_probe = einops.reduce(Q,'b L C -> b C', 'sum')
+    k_abs = K#torch.abs(K)
+    score_l = torch.einsum('b C, b L C -> b L', q_probe, k_abs)
+    top_l_indices = score_l.topk(k=top_k, dim=-1).indices  # (b * heads, length_top_k)
+    # Expand indices for gathering
+    top_l_indices = top_l_indices[:, :,None].expand(-1, -1, K.shape[-1])  # (b, length_top_k, dim)
+    # Gather k
+    k_selected = torch.gather(K, dim=1, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
+    v_selected = torch.gather(V, dim=1, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
+    return k_selected, v_selected
+
+# do not use
+def abs_prune(Q,K,V,top_k : int):
+    q_probe = einops.reduce(Q,'b L C -> b C', 'sum')
+    k_abs = torch.abs(K)
+    score_l = torch.einsum('b C, b L C -> b L', q_probe, k_abs)
+    top_l_indices = score_l.topk(k=top_k, dim=-1).indices  # (b * heads, length_top_k)
+    # Expand indices for gathering
+    top_l_indices = top_l_indices[:, :,None].expand(-1, -1, K.shape[-1])  # (b, length_top_k, dim)
+    # Gather k
+    k_selected = torch.gather(K, dim=1, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
+    v_selected = torch.gather(V, dim=1, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
+    return k_selected,v_selected
+
+# do not use
+def prod_abs_prune(Q,K,V,top_k : int):
+    q_probe = einops.reduce(Q,'b L C -> b C', 'sum')
+    k_abs = torch.abs(K)*K
+    score_l = torch.einsum('b C, b L C -> b L', q_probe, k_abs)
+    top_l_indices = score_l.topk(k=top_k, dim=-1).indices  # (b * heads, length_top_k)
+    # Expand indices for gathering
+    top_l_indices = top_l_indices[:, :,None].expand(-1, -1, K.shape[-1])  # (b, length_top_k, dim)
+    # Gather k
+    k_selected = torch.gather(K, dim=1, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
+    v_selected = torch.gather(V, dim=1, index=top_l_indices)  # (b * heads, dim_head, length_top_k)
+    return k_selected,v_selected
 
 # apparently best key,value pruning method
 def sum_abs_prune(Q, K, V, top_k : int):
