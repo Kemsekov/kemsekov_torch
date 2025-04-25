@@ -281,6 +281,7 @@ class ResidualUnet(torch.nn.Module):
         attention = SCSEModule,
         dropout_p=0.1,
         normalization : Literal['batch','instance','group',None] = 'batch',
+        layers_count = 6
         ):
         """
         Initializes the ResidualUnet.
@@ -298,12 +299,14 @@ class ResidualUnet(torch.nn.Module):
             attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block in the Encoder and Decoder. If a single constructor is provided, it is applied to all blocks.
             dropout_p (float, optional): Dropout probability applied in the Encoder, Decoder, and connectors. Default is 0.5.
             normalization (Literal['batch','instance','group',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', 'group', or None). Default is 'batch'.
+            layers_count: count of layers to use, max is 5, can be smaller if needed
 
         **Raises:**
             ValueError: If `output_scale` is not a positive power of 2.
         """
 
         super().__init__()
+        assert layers_count<=6,"layers_count must be <= 6"
         # self.input_self_attn = VisualMultiheadSelfAttentionFull(in_channels,in_channels)
         kernel_size=4
         stride = 2
@@ -314,6 +317,9 @@ class ResidualUnet(torch.nn.Module):
             optimal = channels_[i-1]*stride*dimensions
             if optimal<channels_[i]:
                 channels_[i]=optimal
+        
+        channels_=channels_[:layers_count+1]
+        block_sizes=block_sizes[:layers_count]
         
         out_channels_ = channels_[1:]
         in_channels_ = channels_[:-1]
