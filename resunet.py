@@ -299,7 +299,7 @@ class ResidualUnet(torch.nn.Module):
             attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block in the Encoder and Decoder. If a single constructor is provided, it is applied to all blocks.
             dropout_p (float, optional): Dropout probability applied in the Encoder, Decoder, and connectors. Default is 0.5.
             normalization (Literal['batch','instance','group',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', 'group', or None). Default is 'batch'.
-            layers_count: count of layers to use, max is 5, can be smaller if needed
+            layers_count: count of layers to use, max is 6, can be smaller if needed
 
         **Raises:**
             ValueError: If `output_scale` is not a positive power of 2.

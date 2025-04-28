@@ -69,11 +69,12 @@ def train(
         
         When `list[metric_name]` the checkpoint will only be saved if all of the metrics in the list show improvement.
     
-    optimizer : torch.optim.Optimizer
-        Optimizer for updating model weights.
+    optimizer : torch.optim.Optimizer, List[torch.optim.Optimizer]
+        Optimizer for updating model weights. Multiple optimizers can be passed to separately train differnt parts of network
 
-    scheduler : optional
+    scheduler : torch.optim.lr_scheduler.LRScheduler, List[torch.optim.lr_scheduler.LRScheduler], None
         Learning rate scheduler to update during the training loop. Default is None.
+        Multiple schedulers can be used at the same time.
 
     model_wrapper : torch.nn.DataParallel, optional
         Wrapper for the model (e.g., for multi-GPU training). Default is None.
@@ -233,8 +234,16 @@ def train(
             print("Ignoring training history loading...")
         if start_epoch>=num_epochs:
             return model
-    model_acc, train_loader, test_loader,optimizer, scheduler = acc.prepare(model,train_loader,test_loader,optimizer, scheduler)
+    
+    if not isinstance(optimizer,list) and not isinstance(optimizer,tuple):
+        optimizer = [optimizer]
+    if not isinstance(scheduler,list) and not isinstance(scheduler,tuple):
+        scheduler = [scheduler]
         
+    model_acc, train_loader, test_loader,*remaining = acc.prepare(model,train_loader,test_loader,*optimizer, *scheduler)
+    optimizer_acc = remaining[:len(optimizer)]
+    scheduler_acc = remaining[-len(scheduler):]
+    
     if load_checkpoint_dir is not None and os.path.exists(load_checkpoint_dir):
         try:
             load_state_dir = os.path.join(load_checkpoint_dir,"state")
@@ -279,11 +288,6 @@ def train(
     else:
         grad_norm = lambda : 0
     
-    if scheduler is not None:
-        step_scheduler = scheduler.step
-    else:
-        step_scheduler = lambda: 0
-    
     
     for epoch in range(start_epoch,num_epochs):
         if acc.is_main_process:
@@ -291,7 +295,8 @@ def train(
         # Training
         running_loss = 0.0
         metric = {}
-        optimizer.zero_grad()  # Reset gradients before accumulation
+        for opt in optimizer_acc:
+            opt.zero_grad()  # Reset gradients before accumulation
         pbar = tqdm(train_loader,desc=f"train {acc.process_index}")
         start = time.time()
         
@@ -307,18 +312,27 @@ def train(
                     loss, batch_metric = compute_loss_and_metric(model,batch)
                 
                 add_batch_metric(metric, batch_metric)
-                        
-                acc.backward(loss)
+                
+                loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
+                if loss_is_iterable:
+                    for l in loss:
+                        acc.backward(l)
+                else:
+                    acc.backward(loss)
                 
                 grad_norm()
                 
-                optimizer.step()
-                optimizer.zero_grad()
+                for opt in optimizer_acc:
+                    opt.step()
+                    opt.zero_grad()
                 
-                step_scheduler()
+                for sch in scheduler_acc:
+                    if sch is None: continue
+                    sch.step()
+                if loss_is_iterable:
+                    loss = sum([l.detach() for l in loss])/len(loss)
                 
                 batch_loss = loss.item()
-                
                 running_loss += batch_loss
                 
                 pbar.set_postfix(loss=f"{batch_loss:.4f}", **{name: f"{batch_metric[name]:.4f}" for name in batch_metric})
@@ -347,8 +361,11 @@ def train(
                         batch_metric = batch_metric.detach().cpu()
                     add_batch_metric(metric, batch_metric)
                     
+                    loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
+                    if loss_is_iterable:
+                        loss = sum([l.detach() for l in loss])/len(loss)
+                
                     test_loss += loss.item()
-                    
                     on_test_batch_end(model,batch,loss,batch_metric)
 
             test_loss /= len(test_loader)
