@@ -185,3 +185,25 @@ def wrap_submodules(module,module_type,wrapper):
             continue
         if isinstance(el,torch.nn.Module):
             wrap_submodules(el,module_type,wrapper)
+            
+def reinit_with_ema(module, decay=0.99):
+    """
+    Slightly reinitializes the parameters of the given PyTorch module using EMA with the specified decay.
+    
+    Args:
+        module (torch.nn.Module): The input module to be slightly reinitialized.
+        decay (float): The decay factor for EMA. Default is 0.99.
+    """
+    # Create a deep copy of the module to preserve its structure
+    orig_params = []
+    for c in module.parameters():
+        orig_params.append(c.clone())
+        
+    # Reinitialize parameters in the copied module
+    for m in module.modules():
+        if hasattr(m, 'reset_parameters'):
+            m.reset_parameters()
+    
+    # Iterate over parameters and update using EMA
+    for param, orig_param in zip(module.parameters(), orig_params):
+        param.data = decay * orig_param.data + (1 - decay) * param.data
