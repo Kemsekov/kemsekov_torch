@@ -49,6 +49,9 @@ def train(
     compute_loss_and_metric : Callable
         A function that computes the loss and performance metric for each batch. It should accept `model,batch`
         as input and return a tuple of `(loss, metric)`, where `metric` is a dictionary like `{'r2': 0.1, 'iou': 0.4, ...}`.
+        
+        loss value can be list or tuple, in such case, backward will be called on all of these losses separately.
+        You can use it when you have multiple optimizers/schedulers.
 
     save_results_dir : str
         Directory to save model checkpoints, metric plots, and training history.
