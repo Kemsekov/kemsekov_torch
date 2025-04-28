@@ -199,8 +199,10 @@ class Decoder(torch.nn.Module):
                     conv1x1_i,
                     get_normalization_from_name(dimensions,normalization)(up_out_channels[i]))
                 )
-        self.ups =          torch.nn.ModuleList(ups[:-1])
-        self.up_1x1_convs = torch.nn.ModuleList(conv1x1s[:-1])
+        self.ups =           torch.nn.ModuleList(ups[:-1])
+        self.up_1x1_convs  = torch.nn.ModuleList(conv1x1s[:-1])
+        self.up_conv_gamma = torch.nn.Parameter(torch.zeros((len(conv1x1s[:-1]),)))
+        
         self.up5 = ups[-1][0]
         self.dropout = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1](p=dropout_p)
 
@@ -227,11 +229,10 @@ class Decoder(torch.nn.Module):
             if len(skip_connections)!=0:
                 # Concatenate the corresponding skip connection (from the downsampling path)
                 skip = skip_connections[-(i + 1)]
-                
                 # here skip needs to be reshaped to x size before making concat
-                x = torch.cat((x, skip), dim=1)
+                x_cat = torch.cat((x, skip), dim=1)
                 # to decrease num of channels
-                x = conv_1x1(x)
+                x = conv_1x1(x_cat)*self.up_conv_gamma[i]+x
         x = self.up5(x)
         return x
     
