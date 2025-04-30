@@ -586,7 +586,6 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
     """
     returns train_dataset,test_dataset,train_loader, test_loader
     """
-
     # split dataset
     train_idx, test_idx = train_test_split(
         list(range(len(dataset))),
