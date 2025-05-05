@@ -291,191 +291,193 @@ def train(
     else:
         grad_norm = lambda : 0
     
-    
-    for epoch in range(start_epoch,num_epochs):
-        if acc.is_main_process:
-            print(f'\nEpoch {epoch+1}/{num_epochs}')
-        # Training
-        running_loss = 0.0
-        metric = {}
-        for opt in optimizer_acc:
-            opt.zero_grad()  # Reset gradients before accumulation
-        pbar = tqdm(train_loader,desc=f"train {acc.process_index}")
-        start = time.time()
-        
-        model.train()
-        for batch in pbar:
-            with acc.accumulate(model):
-                # sometimes accelerate autocast fails to do it's job
-                # and we need manually cast batch to required dtype
-                if cast_batch_to_mixed_precision_dtype:
-                    batch = cast_to_dtype(batch,mixed_precision)
-
-                with acc.autocast():
-                    loss, batch_metric = compute_loss_and_metric(model,batch)
-                
-                add_batch_metric(metric, batch_metric)
-                
-                loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
-                if loss_is_iterable:
-                    for l in loss:
-                        acc.backward(l)
-                else:
-                    acc.backward(loss)
-                
-                grad_norm()
-                
-                for opt in optimizer_acc:
-                    opt.step()
-                    opt.zero_grad()
-                
-                for sch in scheduler_acc:
-                    if sch is None: continue
-                    sch.step()
-                if loss_is_iterable:
-                    loss = sum([l.detach() for l in loss])/len(loss)
-                
-                batch_loss = loss.item()
-                running_loss += batch_loss
-                
-                pbar.set_postfix(loss=f"{batch_loss:.4f}", **{name: f"{batch_metric[name]:.4f}" for name in batch_metric})
-                
-                on_train_batch_end(model,batch,loss,batch_metric)
-        running_time = time.time()-start
-        train_time_history.append(running_time)
-        running_loss /= len(train_loader)
-        loss_history.append(round(running_loss,5))
-        
-        train_metric = update_metric(train_loader, best_train_metric, train_metric_history, metric)
-
-        # Evaluation on test set
-        test_loss = 0.0
-        test_metric = None
-        if is_testing:
-            model.eval()
-            with torch.no_grad():
-                metric = {}
-                for batch in test_loader:
+    try:
+        for epoch in range(start_epoch,num_epochs):
+            if acc.is_main_process:
+                print(f'\nEpoch {epoch+1}/{num_epochs}')
+            # Training
+            running_loss = 0.0
+            metric = {}
+            for opt in optimizer_acc:
+                opt.zero_grad()  # Reset gradients before accumulation
+            pbar = tqdm(train_loader,desc=f"train {acc.process_index}")
+            start = time.time()
+            
+            model.train()
+            for batch in pbar:
+                with acc.accumulate(model):
+                    # sometimes accelerate autocast fails to do it's job
+                    # and we need manually cast batch to required dtype
                     if cast_batch_to_mixed_precision_dtype:
                         batch = cast_to_dtype(batch,mixed_precision)
+
                     with acc.autocast():
                         loss, batch_metric = compute_loss_and_metric(model,batch)
-                    if isinstance(batch_metric,torch.Tensor):
-                        batch_metric = batch_metric.detach().cpu()
+                    
                     add_batch_metric(metric, batch_metric)
                     
                     loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
                     if loss_is_iterable:
+                        for l in loss:
+                            acc.backward(l)
+                    else:
+                        acc.backward(loss)
+                    
+                    grad_norm()
+                    
+                    for opt in optimizer_acc:
+                        opt.step()
+                        opt.zero_grad()
+                    
+                    for sch in scheduler_acc:
+                        if sch is None: continue
+                        sch.step()
+                    if loss_is_iterable:
                         loss = sum([l.detach() for l in loss])/len(loss)
-                
-                    test_loss += loss.item()
-                    on_test_batch_end(model,batch,loss,batch_metric)
-
-            test_loss /= len(test_loader)
-            test_loss_history.append(round(test_loss,5))
-            test_metric = update_metric(test_loader, best_test_metric, test_metric_history, metric)
-        
-        metrics = train_metric.keys()
-        for d in [train_metric_history,test_metric_history,best_test_metric,best_train_metric]:
-            for m in list(d):
-                if m not in metrics:
-                    d.pop(m)
-        
-        if acc.is_main_process:
-            table_data = []
-            loss_row = ["loss",round(running_loss,5)]
-            if is_testing: 
-                loss_row.append(round(test_loss,5))
-            table_data.append(loss_row)
-            for name in train_metric:
-                row = [name, f'{train_metric[name]:.4f}']
-                if is_testing:
-                    row.append(f'{test_metric[name]:.4f}')
-                table_data.append(row)
+                    
+                    batch_loss = loss.item()
+                    running_loss += batch_loss
+                    
+                    pbar.set_postfix(loss=f"{batch_loss:.4f}", **{name: f"{batch_metric[name]:.4f}" for name in batch_metric})
+                    
+                    on_train_batch_end(model,batch,loss,batch_metric)
+            running_time = time.time()-start
+            train_time_history.append(running_time)
+            running_loss /= len(train_loader)
+            loss_history.append(round(running_loss,5))
             
- 
-            # Define the headers
-            headers = ['', 'Train']
+            train_metric = update_metric(train_loader, best_train_metric, train_metric_history, metric)
+
+            # Evaluation on test set
+            test_loss = 0.0
+            test_metric = None
             if is_testing:
-                headers.append('Test')
+                model.eval()
+                with torch.no_grad():
+                    metric = {}
+                    for batch in test_loader:
+                        if cast_batch_to_mixed_precision_dtype:
+                            batch = cast_to_dtype(batch,mixed_precision)
+                        with acc.autocast():
+                            loss, batch_metric = compute_loss_and_metric(model,batch)
+                        if isinstance(batch_metric,torch.Tensor):
+                            batch_metric = batch_metric.detach().cpu()
+                        add_batch_metric(metric, batch_metric)
+                        
+                        loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
+                        if loss_is_iterable:
+                            loss = sum([l.detach() for l in loss])/len(loss)
+                    
+                        test_loss += loss.item()
+                        on_test_batch_end(model,batch,loss,batch_metric)
 
-            # Print the table
-            print(tabulate.tabulate(table_data, headers=headers, tablefmt='pretty'))
-
-               
-        acc.save_state(state_dir)
-        
-        # create history plots in plots folder
-        # Update to save loss and metric plots in separate files and only for the last epoch
-        if acc.is_main_process:
-            # Loss plot
-            plt.figure()
-            plt.plot(loss_history, label="Train Loss")
-            if is_testing:
-                plt.plot(test_loss_history, label=f"Test Loss")
-            plt.title("Loss History")
-            plt.xlabel("Epoch")
-            plt.ylabel("Loss")
-            plt.legend()
-            plt.savefig(os.path.join(plot_dir, "loss_history.png"))
-            plt.close()
-
-            # Metric plot
-            save_plot_metric_history(plot_dir, train_metric_history,test_metric_history if is_testing else None,'train')
+                test_loss /= len(test_loader)
+                test_loss_history.append(round(test_loss,5))
+                test_metric = update_metric(test_loader, best_test_metric, test_metric_history, metric)
             
-            # time plot
-            plt.figure()
-            plt.plot(train_time_history)
-            plt.title(f"Epoch execution time")
-            plt.xlabel("Epoch")
-            plt.ylabel("Seconds")
-            plt.savefig(os.path.join(plot_dir, f"train_time_history.png"))
-            plt.close()
-
-            results = {
-                "loss_history"          : loss_history,
-                "test_loss_history"     : test_loss_history,
-                "train_metric_history"  : train_metric_history,
-                "test_metric_history"   : test_metric_history,
-                "train_time_history"    : [round(v,3) for v in train_time_history],
-                "epochs"                : epoch+1
-            }
-
-            results = json.dumps(results)
-            with open(report_path,'w') as f:
-                f.write(results) 
-
-        # Check if the test metric improves based on the specified condition
-        test_improvements = (test_metric is not None) and (
-            (save_on_metric_improve == 'any' and any(test_metric[m] >= best_test_metric.get(m, -1e10) for m in test_metric)) or
-            (save_on_metric_improve == 'all' and all(test_metric[m] >= best_test_metric.get(m, -1e10) for m in test_metric)) or
-            (isinstance(save_on_metric_improve, list) and all(test_metric.get(m, -1e10) >= best_test_metric.get(m, -1e10) for m in save_on_metric_improve))
-        )
-
-        # Check if the train metric improves, using similar logic to `test_improvements`
-        train_improvements = (train_metric is not None) and (
-            (save_on_metric_improve == 'any' and any(train_metric[m] > best_train_metric.get(m, -1e10) for m in train_metric)) or
-            (save_on_metric_improve == 'all' and all(train_metric[m] > best_train_metric.get(m, -1e10) for m in train_metric)) or
-            (isinstance(save_on_metric_improve, list) and all(train_metric.get(m, -1e10) > best_train_metric.get(m, -1e10) for m in save_on_metric_improve))
-        )
-        if test_improvements or (not is_testing and train_improvements):
-            best_test_metric = test_metric
+            metrics = train_metric.keys()
+            for d in [train_metric_history,test_metric_history,best_test_metric,best_train_metric]:
+                for m in list(d):
+                    if m not in metrics:
+                        d.pop(m)
+            
             if acc.is_main_process:
-                # keep total count of saved checkpoints constant
-                checkpoints = os.listdir(checkpoints_dir)
-                checkpoints=sorted(checkpoints,key=lambda x: int(x.split('-')[-1]))
-                if len(checkpoints)>=checkpoints_count:
-                    for c in checkpoints[:-checkpoints_count+1]:
-                        c_dir = os.path.join(checkpoints_dir,c)
-                        shutil.rmtree(c_dir,ignore_errors=True)
+                table_data = []
+                loss_row = ["loss",round(running_loss,5)]
+                if is_testing: 
+                    loss_row.append(round(test_loss,5))
+                table_data.append(loss_row)
+                for name in train_metric:
+                    row = [name, f'{train_metric[name]:.4f}']
+                    if is_testing:
+                        row.append(f'{test_metric[name]:.4f}')
+                    table_data.append(row)
                 
-                checkpoints_dir_with_epoch=os.path.join(checkpoints_dir,f"epoch-{epoch+1}")
-                # for each improvement save training state and model
-                # copy current saved state from last to checkpoint
-                print(f"saved epoch-{epoch+1}")
-                shutil.copytree(save_last_dir, checkpoints_dir_with_epoch,dirs_exist_ok=True)
+    
+                # Define the headers
+                headers = ['', 'Train']
+                if is_testing:
+                    headers.append('Test')
 
-        on_epoch_end(epoch,model)
+                # Print the table
+                print(tabulate.tabulate(table_data, headers=headers, tablefmt='pretty'))
+
+                
+            acc.save_state(state_dir)
+            
+            # create history plots in plots folder
+            # Update to save loss and metric plots in separate files and only for the last epoch
+            if acc.is_main_process:
+                # Loss plot
+                plt.figure()
+                plt.plot(loss_history, label="Train Loss")
+                if is_testing:
+                    plt.plot(test_loss_history, label=f"Test Loss")
+                plt.title("Loss History")
+                plt.xlabel("Epoch")
+                plt.ylabel("Loss")
+                plt.legend()
+                plt.savefig(os.path.join(plot_dir, "loss_history.png"))
+                plt.close()
+
+                # Metric plot
+                save_plot_metric_history(plot_dir, train_metric_history,test_metric_history if is_testing else None,'train')
+                
+                # time plot
+                plt.figure()
+                plt.plot(train_time_history)
+                plt.title(f"Epoch execution time")
+                plt.xlabel("Epoch")
+                plt.ylabel("Seconds")
+                plt.savefig(os.path.join(plot_dir, f"train_time_history.png"))
+                plt.close()
+
+                results = {
+                    "loss_history"          : loss_history,
+                    "test_loss_history"     : test_loss_history,
+                    "train_metric_history"  : train_metric_history,
+                    "test_metric_history"   : test_metric_history,
+                    "train_time_history"    : [round(v,3) for v in train_time_history],
+                    "epochs"                : epoch+1
+                }
+
+                results = json.dumps(results)
+                with open(report_path,'w') as f:
+                    f.write(results) 
+
+            # Check if the test metric improves based on the specified condition
+            test_improvements = (test_metric is not None) and (
+                (save_on_metric_improve == 'any' and any(test_metric[m] >= best_test_metric.get(m, -1e10) for m in test_metric)) or
+                (save_on_metric_improve == 'all' and all(test_metric[m] >= best_test_metric.get(m, -1e10) for m in test_metric)) or
+                (isinstance(save_on_metric_improve, list) and all(test_metric.get(m, -1e10) >= best_test_metric.get(m, -1e10) for m in save_on_metric_improve))
+            )
+
+            # Check if the train metric improves, using similar logic to `test_improvements`
+            train_improvements = (train_metric is not None) and (
+                (save_on_metric_improve == 'any' and any(train_metric[m] > best_train_metric.get(m, -1e10) for m in train_metric)) or
+                (save_on_metric_improve == 'all' and all(train_metric[m] > best_train_metric.get(m, -1e10) for m in train_metric)) or
+                (isinstance(save_on_metric_improve, list) and all(train_metric.get(m, -1e10) > best_train_metric.get(m, -1e10) for m in save_on_metric_improve))
+            )
+            if test_improvements or (not is_testing and train_improvements):
+                best_test_metric = test_metric
+                if acc.is_main_process:
+                    # keep total count of saved checkpoints constant
+                    checkpoints = os.listdir(checkpoints_dir)
+                    checkpoints=sorted(checkpoints,key=lambda x: int(x.split('-')[-1]))
+                    if len(checkpoints)>=checkpoints_count:
+                        for c in checkpoints[:-checkpoints_count+1]:
+                            c_dir = os.path.join(checkpoints_dir,c)
+                            shutil.rmtree(c_dir,ignore_errors=True)
+                    
+                    checkpoints_dir_with_epoch=os.path.join(checkpoints_dir,f"epoch-{epoch+1}")
+                    # for each improvement save training state and model
+                    # copy current saved state from last to checkpoint
+                    print(f"saved epoch-{epoch+1}")
+                    shutil.copytree(save_last_dir, checkpoints_dir_with_epoch,dirs_exist_ok=True)
+
+            on_epoch_end(epoch,model)
+    except KeyboardInterrupt:
+        print("Interrupt training")
     return model
 
 def save_plot_metric_history(plot_dir, train_metric_history,test_metric_history,source):
