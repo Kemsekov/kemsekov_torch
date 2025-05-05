@@ -63,8 +63,8 @@ class SCSEModule1d(nn.Module):
             nn.Conv1d(in_channels, 1, kernel_size=1),
             nn.Sigmoid()
         )
-        self.gamma = torch.nn.Parameter(torch.tensor(1.0))
-        self.alpha = torch.nn.Parameter(torch.tensor(0.1))
+        # self.gamma = torch.nn.Parameter(torch.tensor(1.0))
+        # self.alpha = torch.nn.Parameter(torch.tensor(0.1))
 
     def forward(self, x):
         # Apply channel attention
@@ -72,7 +72,7 @@ class SCSEModule1d(nn.Module):
         # Apply spatial attention
         sse_out = x*self.sSE(cse_out)
         # Combine the outputs
-        return torch.max(cse_out,sse_out)*self.gamma+x*self.alpha
+        return torch.max(cse_out,sse_out)#*self.gamma+x*self.alpha
 
 class SCSEModule2d(nn.Module):
     """
@@ -95,8 +95,8 @@ class SCSEModule2d(nn.Module):
             nn.Conv2d(in_channels, 1, kernel_size=1),
             nn.Sigmoid()
         )
-        self.gamma = torch.nn.Parameter(torch.tensor(1.0))
-        self.alpha = torch.nn.Parameter(torch.tensor(0.1))
+        # self.gamma = torch.nn.Parameter(torch.tensor(1.0))
+        # self.alpha = torch.nn.Parameter(torch.tensor(0.1))
     
     # max with single bias sum on sse with residual
     def forward(self, x):
@@ -106,7 +106,7 @@ class SCSEModule2d(nn.Module):
         sse_out = x*self.sSE(cse_out)
         
         # Combine the outputs
-        return torch.max(cse_out,sse_out)*self.gamma+x*self.alpha
+        return torch.max(cse_out,sse_out)#*self.gamma+x*self.alpha
 
 class SCSEModule3d(nn.Module):
     """
@@ -129,8 +129,8 @@ class SCSEModule3d(nn.Module):
             nn.Conv3d(in_channels, 1, kernel_size=1),
             nn.Sigmoid()
         )
-        self.gamma = torch.nn.Parameter(torch.tensor(1.0))
-        self.alpha = torch.nn.Parameter(torch.tensor(0.1))
+        # self.gamma = torch.nn.Parameter(torch.tensor(1.0))
+        # self.alpha = torch.nn.Parameter(torch.tensor(0.1))
 
     def forward(self, x):
         # Apply channel attention
@@ -138,7 +138,7 @@ class SCSEModule3d(nn.Module):
         # Apply spatial attention
         sse_out = x * self.sSE(cse_out)
         # Combine the outputs
-        return torch.max(cse_out,sse_out)*self.gamma+x*self.alpha
+        return torch.max(cse_out,sse_out)#*self.gamma+x*self.alpha
 
 class BSConvU(torch.nn.Module): 
     """
