@@ -47,6 +47,9 @@ def rotation_trick(e, q):
 def skip_gradient_trick(e,q):
     return e+(q-e).detach()
 
+def skip_plus_rotation_trick(e,q):
+    return 0.5*(skip_gradient_trick(e,q)+rotation_trick(e,q))
+
 class SonnetExponentialMovingAverage(nn.Module):
     # See: https://github.com/deepmind/sonnet/blob/5cbfdc356962d9b6198d5b63f0826a80acfdf35b/sonnet/src/moving_averages.py#L25.
     # They do *not* use the exponential moving average updates described in Appendix A.1
@@ -103,14 +106,19 @@ class VectorQuantizer(nn.Module):
         self.embeddings = SonnetExponentialMovingAverage(decay, e_i_ts.shape)
     
     def forward(self, x):
+        """
+        x of shape [batch,emb_dim,...dims...], supports up to 5 spatial dimensions
+        
+        returns quantized_x, quantized_indices
+        """
         # x is of shape (batch,emb_dim,height,width)
 
         batch_axis = 0
         emb_axis = 1
-        dimensions_axis = [2,3,4][:len(x.shape)-2]
+        dimensions_axis = [2,3,4,5,6][:len(x.shape)-2]
         
         x_permute = x.permute([batch_axis] + dimensions_axis + [emb_axis])
-        permute_to_orig = [0, len(x.shape)-1]+[1, 2, 3][:len(dimensions_axis)]
+        permute_to_orig = [0, len(x.shape)-1]+[1, 2, 3, 4, 5][:len(dimensions_axis)]
         
         flat_x = x_permute.reshape(-1, self.embedding_dim)
 
@@ -157,13 +165,9 @@ class VectorQuantizer(nn.Module):
             ind, self.e_i_ts.transpose(0, 1)
         )
         
-        # quantized_x_d_skip = skip_gradient_trick(x_permute,quantized_x)
-        quantized_x_d_rotate = rotation_trick(x_permute,quantized_x)
-        quantized_x_d=quantized_x_d_rotate
-        
-      
-        
-        # quantized_x_d=quantized_x_d_rotate
+        # quantized_x_d = skip_gradient_trick(x_permute,quantized_x)
+        quantized_x_d = rotation_trick(x_permute,quantized_x)
+        # quantized_x_d = skip_plus_rotation_trick(x_permute,quantized_x)
         
         quantized_x=quantized_x.permute(permute_to_orig)
         quantized_x_d=quantized_x_d.permute(permute_to_orig)
@@ -179,8 +183,8 @@ class VectorQuantizer(nn.Module):
         """
         Decodes tensor from indices
         """
-        dimensions_axis = [2,3,4][:len(ind.shape)-1]
-        permute_to_orig = [0, len(ind.shape)]+[1, 2, 3][:len(dimensions_axis)]
+        dimensions_axis = [2,3,4,5,6][:len(ind.shape)-1]
+        permute_to_orig = [0, len(ind.shape)]+[1, 2, 3, 4, 5][:len(dimensions_axis)]
         quantized_x = F.embedding(
             ind, self.e_i_ts.transpose(0, 1)
         )

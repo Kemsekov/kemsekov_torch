@@ -67,25 +67,16 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             ChanLayerNorm1D(input_dim)
         )
         
-        self.K = nn.Sequential(
-            nn.Conv1d(
-                input_dim,
-                input_dim,
-                kernel_size=1,
-                device=device,
-            ),
-            ChanLayerNorm1D(input_dim)
+        self.KV = nn.Conv1d(
+            input_dim,
+            2*input_dim,
+            kernel_size=1,
+            device=device,
         )
         
-        self.V = nn.Sequential(
-            nn.Conv1d(
-                input_dim,
-                input_dim,
-                kernel_size=1,
-                device=device,
-            ),
-            ChanLayerNorm1D(input_dim)
-        )
+        self.k_norm = ChanLayerNorm1D(input_dim)
+        self.v_norm = ChanLayerNorm1D(input_dim)
+        
         
         self.attn = PrunedMultiheadAttention(
             embed_dim=input_dim,
@@ -121,10 +112,14 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         
         When context==query_source, the results will be same as self-attention.
         """
+        
         query_source_flat = query_source.flatten(2)
+        context_flatten = context.flatten(2)
+        
         Q = self.Q(query_source_flat)
-        K = self.K(context.flatten(2))
-        V = self.V(context.flatten(2))
+        K,V = self.KV(context_flatten).chunk(2,1)
+        K = self.k_norm(K)
+        V = self.v_norm(V)
         
         #--------------------
         # start = time.time()
@@ -349,7 +344,7 @@ class PrunedMultiheadAttention(nn.Module):
         # print("concat heads",time.time()-start)
         # start = time.time()
         
-        out,attn = self.model.forward(query,keys,values)
+        out,attn = self.model.forward(query,keys,values,need_weights=False)
         out = out.transpose(-1,-2).view(query_shape)
         
         # out = query.transpose(-1,-2).view(query_shape)
