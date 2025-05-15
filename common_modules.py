@@ -3,41 +3,23 @@ import torch
 import torch.nn.functional as F
 import torch.nn as nn
 
-# Channel-wise Layer Normalization for 1D inputs
-class ChanLayerNorm1D(nn.Module):
+# Channel-wise Layer Normalization for N'd inputs
+class ChanLayerNorm(nn.Module):
     def __init__(self, dim):
         super().__init__()
-        self.gamma = nn.Parameter(torch.ones(1, dim, 1))
-        self.beta = nn.Parameter(torch.zeros(1, dim, 1))
+        self.ln = nn.LayerNorm(dim)
 
     def forward(self, x):
-        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=1, keepdim=True)
-        return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
-class ChanLayerNorm2D(nn.Module):
-    def __init__(self, dim, eps = 1e-5):
-        super().__init__()
-        self.eps = eps
-        self.g = nn.Parameter(torch.ones(1, dim, 1, 1))
-        self.b = nn.Parameter(torch.zeros(1, dim, 1, 1))
-
-    def forward(self, x):
-        var = torch.var(x, dim = 1, unbiased = False, keepdim = True)
-        mean = torch.mean(x, dim = 1, keepdim = True)
-        return (x - mean) / (var + self.eps).sqrt() * self.g + self.b
-
-# Channel-wise Layer Normalization for 3D inputs
-class ChanLayerNorm3D(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-        self.gamma = nn.Parameter(torch.ones(1, dim, 1, 1, 1))
-        self.beta = nn.Parameter(torch.zeros(1, dim, 1, 1, 1))
-
-    def forward(self, x):
-        var = torch.var(x, dim=1, unbiased=False, keepdim=True)
-        mean = torch.mean(x, dim=1, keepdim=True)
-        return self.gamma * (x - mean) / (var.sqrt() + 1e-6) + self.beta
-
+        x_shape = x.shape
+        x = x.flatten(2)
+        # Input x has shape (batch_size, dim, seq_len)
+        # Transpose to (batch_size, seq_len, dim) for nn.LayerNorm
+        x = x.transpose(1, 2)
+        # Apply layer normalization over the last dimension (dim)
+        x = self.ln(x)
+        # Transpose back to (batch_size, dim, seq_len)
+        x = x.transpose(1, 2)
+        return x.view(x_shape)
 class ConstModule(torch.nn.Module):
     """Module that returns constant"""
     def __init__(self,constant = 0):
@@ -120,7 +102,7 @@ def get_normalization_from_name(dimensions, normalization: Literal['batch', 'ins
     norm_type = {
         "batch": [nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d][dimensions - 1],
         "instance": [nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d][dimensions - 1],
-        "layer": [ChanLayerNorm1D,ChanLayerNorm2D,ChanLayerNorm3D][dimensions - 1],
+        "layer": ChanLayerNorm,
         "group": lambda ch: nn.GroupNorm(
             num_groups=(
                 ch // 32 if ch % 32 == 0 and ch // 32 >= 2 else

@@ -8,13 +8,12 @@ import torch.nn.functional as F
 from torch import nn
 from einops.layers.torch import Rearrange
 from kemsekov_torch.residual import ResidualBlock
-from kemsekov_torch.common_modules import ChanLayerNorm1D
+from kemsekov_torch.common_modules import ChanLayerNorm
 
-def reshape_to_transformer_input(x : torch.Tensor | None):
+def reshape_to_transformer_input(x : torch.Tensor):
     """
     x of shape [batch,channels,...dims...]
     """
-    if x is None: return x
     return x.flatten(2).transpose(-1,-2)
 
 class TransformerEncoderLayerMultidim(nn.Module):
@@ -48,8 +47,13 @@ class TransformerEncoderLayerMultidim(nn.Module):
         """
         src of shape [batch,channels, ..dims..]
         """
+        
         src_shape = src.shape
-        src,src_mask,src_key_padding_mask = [reshape_to_transformer_input(x) for x in [src,src_mask,src_key_padding_mask]]
+        src = reshape_to_transformer_input(src)
+        if src_mask is not None:
+            src_mask = reshape_to_transformer_input(src_mask)
+        if src_key_padding_mask is not None:
+            src_key_padding_mask = reshape_to_transformer_input(src_key_padding_mask)
         
         out = self.m(src,src_mask,src_key_padding_mask,is_causal)
         return out.transpose_(-1,-2).view(src_shape)
@@ -93,12 +97,20 @@ class TransformerDecoderLayerMultidim(nn.Module):
         """
         
         tgt_shape = tgt.shape
-        tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask \
-            = [
-                reshape_to_transformer_input(x) 
-                for x in 
-                [tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask]
-            ]
+        tgt=reshape_to_transformer_input(tgt)
+        memory=reshape_to_transformer_input(memory)
+        
+        if tgt_mask is not None:
+            tgt_mask=reshape_to_transformer_input(tgt_mask)
+        
+        if memory_mask is not None:
+            memory_mask=reshape_to_transformer_input(memory_mask)
+        
+        if tgt_key_padding_mask is not None:
+            tgt_key_padding_mask=reshape_to_transformer_input(tgt_key_padding_mask)
+        
+        if memory_key_padding_mask is not None:
+            memory_key_padding_mask=reshape_to_transformer_input(memory_key_padding_mask)
         
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
         return out.transpose(-1,-2).view(tgt_shape)
@@ -159,7 +171,7 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
                 kernel_size=1,
                 device=device,
             ),
-            ChanLayerNorm1D(input_dim)
+            ChanLayerNorm(input_dim)
         )
         
         self.KV = nn.Conv1d(
@@ -169,8 +181,8 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             device=device,
         )
         
-        self.k_norm = ChanLayerNorm1D(input_dim)
-        self.v_norm = ChanLayerNorm1D(input_dim)
+        self.k_norm = ChanLayerNorm(input_dim)
+        self.v_norm = ChanLayerNorm(input_dim)
         
         self.attn = PrunedMultiheadAttention(
             embed_dim=input_dim,
@@ -180,7 +192,7 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             device=device
         )
         
-        self.attn_norm = ChanLayerNorm1D(input_dim)
+        self.attn_norm = ChanLayerNorm(input_dim)
         self.attn_out_gamma = torch.nn.Parameter(torch.tensor(0.0,device=device))
 
         self.mlp = ResidualBlock(
@@ -188,12 +200,13 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             [mlp_dim,input_dim],
             dimensions=1,
             kernel_size=1,
+            activation=nn.ReLU,
             dropout=dropout,
             normalization='layer', # batch,layer works well
             device=device,
         )
         
-    def forward(self,query_source, context):
+    def forward(self,query_source : torch.Tensor, context : torch.Tensor):
         """
         Computes multihead cross attention for given context and query source.
         
@@ -206,6 +219,10 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         
         When context==query_source, the results will be same as self-attention.
         """
+        
+        #--------------------
+        # start = time.time()
+        
         query_source_flat = query_source.flatten(2)
         context_flatten = context.flatten(2)
         
@@ -216,23 +233,24 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         V = self.v_norm(V)
         
         #--------------------
+        # print("QKV gen",time.time()-start)
         # start = time.time()
         
         attn = self.attn(Q,K,V)
         attn=self.attn_norm(attn)
-        
         attn = attn*self.attn_out_gamma+query_source_flat
         
         #--------------------
-        # print("attn",time.time()-start)
+        # print("total attn",time.time()-start)
         # start = time.time()
         
         result = self.mlp(attn)
+        result = result.view(query_source.shape).contiguous()
         
         #--------------------
-        # print("mlp",time.time()-start)
+        # print("mlp + reshape",time.time()-start)
         
-        return result.view(query_source.shape).contiguous()
+        return result 
 
 
 
@@ -422,7 +440,7 @@ class PrunedMultiheadAttention(nn.Module):
         query = F.normalize(query, p=2.0, dim=-1)  # [B, top_k, DIM]
         
         #--------------------
-        # print("extract heads",time.time()-start)
+        # print("\textract heads",time.time()-start)
         # start = time.time()
         
         top_k = query.shape[1]//self.num_heads if self.top_k is None else self.top_k
@@ -431,7 +449,7 @@ class PrunedMultiheadAttention(nn.Module):
         keys,values = sum_abs_prune(query, keys, values, top_k)
 
         #--------------------
-        # print("select tokens",time.time()-start)
+        # print("\tselect tokens",time.time()-start)
         # start = time.time()
         
         # concat heads into full dimension
@@ -440,16 +458,13 @@ class PrunedMultiheadAttention(nn.Module):
         values = self.collect_heads(values)
         
         #--------------------
-        # print("concat heads",time.time()-start)
+        # print("\tconcat heads",time.time()-start)
         # start = time.time()
         
-        out,attn = self.model.forward(query,keys,values,need_weights=False)
-        # out = query
+        out,_ = self.model.forward(query,keys,values,need_weights=False)
         out = out.transpose(-1,-2).view(query_shape)
         
-        # out = query.transpose(-1,-2).view(query_shape)
-        
         #--------------------
-        # print("attention",time.time()-start)
+        # print("\tmultihead-attention",time.time()-start)
         
         return out
