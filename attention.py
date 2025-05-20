@@ -189,7 +189,8 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             num_heads=heads,
             dropout=dropout,
             top_k=top_k,
-            device=device
+            device=device,
+            # add_zero_attn=False
         )
         
         self.attn_norm = ChanLayerNorm(input_dim)
@@ -252,8 +253,6 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         
         return result 
 
-
-
 #somewhat usable
 def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k: int) -> Tuple[torch.Tensor,torch.Tensor]:
     """
@@ -273,7 +272,11 @@ def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k
 
     if top_k >= length_kv:
         return K, V
-
+    K_orig = K
+    
+    Q = F.normalize(Q, p=2.0, dim=-1)  # [B, top_k, DIM]
+    K = F.normalize(K, p=2.0, dim=-1) # [B, length_kv, DIM]
+    
     # compute distances
     
     # Generate random indices for Q
@@ -299,7 +302,7 @@ def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k
 
     batch_indices = torch.arange(B, device=K.device)[:, None]
 
-    selected_K = K[batch_indices, indices, :]  # [B, top_k, DIM]
+    selected_K = K_orig[batch_indices, indices, :]  # [B, top_k, DIM]
     selected_V = V[batch_indices, indices, :]  # [B, top_k, DIM]
 
     return selected_K, selected_V
@@ -346,6 +349,11 @@ def prod_abs_prune(Q,K,V,top_k : int):
 def sum_abs_prune(Q, K, V, top_k : int):
     if top_k>=K.shape[1]:
         return K,V
+    
+    # K_orig = K
+    # Q = F.normalize(Q, p=2.0, dim=-1)  # [B, top_k, DIM]
+    # K = F.normalize(K, p=2.0, dim=-1) # [B, length_kv, DIM]
+    
     q_probe = torch.sum(Q, dim=1)  # Reduce from (b, L, C) to (b, C) by summing over L
     k_abs = torch.abs(K) + K  # Element-wise absolute value plus original K, shape (b, L, C)
     score_l = torch.sum(q_probe[:, None, :] * k_abs, dim=2)  # Compute scores, shape (b, L)
@@ -371,7 +379,7 @@ class PrunedMultiheadAttention(nn.Module):
         dropout: float = 0.0,
         bias: bool = True,
         add_bias_kv: bool = True,
-        add_zero_attn: bool = True,
+        add_zero_attn: bool = False,
         kdim: int | None = None,
         vdim: int | None = None,
         batch_first: bool = True,
@@ -413,31 +421,21 @@ class PrunedMultiheadAttention(nn.Module):
         )
         self.num_heads=num_heads
         self.top_k = top_k
-        
-        #-------------------
-        # self.extract_heads = Rearrange("B C ... -> B (...) C")
-        
-        self.extract_heads_stack = Rearrange("N B (h C) ... -> N (B h) (...) C",h=num_heads)
         self.extract_heads = Rearrange("B (h C) ... -> (B h) (...) C",h=num_heads)
         self.collect_heads = Rearrange("(B h) L C -> B L (h C)",h=num_heads)
-        
+              
     def forward(self,query,keys,values):
         query_shape=query.shape
         
         #--------------------
         # start = time.time()
         
-        # extract dimension slices into separate head as a batch
-        # stack = torch.stack([query,keys,values],0)
-        # query,keys,values  = self.extract_heads_stack(stack).chunk(3,0)
-        # query,keys,values=query[0],keys[0],values[0]
-        
         query  = self.extract_heads(query)
         keys   = self.extract_heads(keys)
         values = self.extract_heads(values)
         
-        keys = F.normalize(keys, p=2.0, dim=-1) # [B, length_kv, DIM]
         query = F.normalize(query, p=2.0, dim=-1)  # [B, top_k, DIM]
+        keys = F.normalize(keys, p=2.0, dim=-1)
         
         #--------------------
         # print("\textract heads",time.time()-start)
