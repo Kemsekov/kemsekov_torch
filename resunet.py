@@ -281,7 +281,7 @@ class ResidualUnet(torch.nn.Module):
         dimensions=2,
         attention = SCSEModule,
         dropout_p=0.1,
-        normalization : Literal['batch','instance','group',None] = 'batch',
+        normalization : Literal['batch','instance','group','layer',None] = 'batch',
         layers_count = 6
         ):
         """

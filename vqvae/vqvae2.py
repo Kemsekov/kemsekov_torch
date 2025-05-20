@@ -3,7 +3,6 @@ from typing import List
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
 from kemsekov_torch.residual import Residual, ResidualBlock
-from tmp.vqvae.kemsekov_torch.attention import DPSABlock
 from kemsekov_torch.positional_emb import ConcatPositionalEmbeddingPermute
 from kemsekov_torch.conv_modules import SCSEModule
 from kemsekov_torch.common_modules import get_normalization_from_name
