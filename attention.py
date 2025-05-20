@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from einops.layers.torch import Rearrange
-from kemsekov_torch.residual import ResidualBlock
+from kemsekov_torch.residual import Residual, ResidualBlock
 from kemsekov_torch.common_modules import ChanLayerNorm
 
 def reshape_to_transformer_input(x : torch.Tensor):
@@ -164,6 +164,7 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         device: where to locate module
         """
         super().__init__()
+        top_k=int(top_k)
         self.Q = nn.Sequential(
             nn.Conv1d(
                 input_dim,
@@ -196,7 +197,17 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         self.attn_norm = ChanLayerNorm(input_dim)
         self.attn_out_gamma = torch.nn.Parameter(torch.tensor(0.0,device=device))
 
-        self.mlp = ResidualBlock(
+        # self.mlp = Residual(
+        #     [
+        #         nn.Conv1d(input_dim,mlp_dim,kernel_size=1,device=device),
+        #         ChanLayerNorm(mlp_dim),
+        #         nn.Dropout1d(dropout),
+        #         nn.ReLU(True),
+        #         nn.Conv1d(mlp_dim,input_dim,kernel_size=1,device=device)
+        #     ]
+        # )
+        
+        self.mlp=ResidualBlock(
             input_dim,
             [mlp_dim,input_dim],
             dimensions=1,
@@ -423,16 +434,17 @@ class PrunedMultiheadAttention(nn.Module):
         self.top_k = top_k
         self.extract_heads = Rearrange("B (h C) ... -> (B h) (...) C",h=num_heads)
         self.collect_heads = Rearrange("(B h) L C -> B L (h C)",h=num_heads)
-              
+    
     def forward(self,query,keys,values):
         query_shape=query.shape
         
         #--------------------
         # start = time.time()
-        
+        # print(query.shape)
         query  = self.extract_heads(query)
         keys   = self.extract_heads(keys)
         values = self.extract_heads(values)
+        # print(query.shape)
         
         query = F.normalize(query, p=2.0, dim=-1)  # [B, top_k, DIM]
         keys = F.normalize(keys, p=2.0, dim=-1)
