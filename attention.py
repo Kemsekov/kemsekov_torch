@@ -1,5 +1,5 @@
 import time
-from typing import Tuple
+from typing import Literal, Tuple
 import einops
 import torch
 from torch import nn
@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from torch import nn
 from einops.layers.torch import Rearrange
 from kemsekov_torch.residual import Residual, ResidualBlock
-from kemsekov_torch.common_modules import ChanLayerNorm
+from kemsekov_torch.common_modules import ChanLayerNorm,get_normalization_from_name
 
 def reshape_to_transformer_input(x : torch.Tensor):
     """
@@ -118,7 +118,7 @@ class TransformerDecoderLayerMultidim(nn.Module):
 
 
 class PrunedSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None):
+    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None,normalization : Literal['batch','layer','group','instance',None] = 'layer'):
         """
         Somewhat optimal pruned self-attention block
         
@@ -139,11 +139,11 @@ class PrunedSelfAttentionBlock(torch.nn.Module):
         device: where to locate module
         """
         super().__init__()
-        self.attn = PrunedCrossAttentionBlock(input_dim,mlp_dim,top_k,heads,dropout,device)
+        self.attn = PrunedCrossAttentionBlock(input_dim,mlp_dim,top_k,heads,dropout,device,normalization=normalization)
     def forward(self,x):
         return self.attn(x,x)
 class PrunedCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None):
+    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None,normalization : Literal['batch','layer','group','instance',None] = 'layer'):
         """
         Somewhat optimal pruned cross-attention block
         
@@ -172,7 +172,7 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
                 kernel_size=1,
                 device=device,
             ),
-            ChanLayerNorm(input_dim)
+            get_normalization_from_name(1,normalization)(input_dim)
         )
         
         self.KV = nn.Conv1d(
@@ -182,8 +182,8 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             device=device,
         )
         
-        self.k_norm = ChanLayerNorm(input_dim)
-        self.v_norm = ChanLayerNorm(input_dim)
+        self.k_norm = get_normalization_from_name(1,normalization)(input_dim)
+        self.v_norm = get_normalization_from_name(1,normalization)(input_dim)
         
         self.attn = PrunedMultiheadAttention(
             embed_dim=input_dim,
@@ -196,16 +196,6 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         
         self.attn_norm = ChanLayerNorm(input_dim)
         self.attn_out_gamma = torch.nn.Parameter(torch.tensor(0.0,device=device))
-
-        # self.mlp = Residual(
-        #     [
-        #         nn.Conv1d(input_dim,mlp_dim,kernel_size=1,device=device),
-        #         ChanLayerNorm(mlp_dim),
-        #         nn.Dropout1d(dropout),
-        #         nn.ReLU(True),
-        #         nn.Conv1d(mlp_dim,input_dim,kernel_size=1,device=device)
-        #     ]
-        # )
         
         self.mlp=ResidualBlock(
             input_dim,
@@ -214,7 +204,7 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
             kernel_size=1,
             activation=nn.ReLU,
             dropout=dropout,
-            normalization='layer', # batch,layer works well
+            normalization=normalization, # batch,layer works well
             device=device,
         )
         
