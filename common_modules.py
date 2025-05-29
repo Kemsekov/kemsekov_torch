@@ -82,7 +82,16 @@ class Interpolate(nn.Module):
         shape = torch.Size(list(shape[:2])+[int(v*self.scale_factor) for v in shape[2:]])[1:]
         return resize_tensor(x,shape)
 
-def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance','layer', 'group', None]):
+class Mean0Std1Norm(torch.nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+    def forward(self,x):
+        dims = list(range(len(x.shape)))[2:]
+        mean = x.mean(dims,keepdim=True)
+        std = x.std(dims,keepdim=True)+1e-6
+        return (x-mean)/std
+
+def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance','layer', 'group','Mean0Std1', None]):
     """Get normalization for given dimensions from its name.
 
     Args:
@@ -96,13 +105,12 @@ def get_normalization_from_name(dimensions, normalization: Literal['batch', 'ins
     Raises:
         AssertionError: If `normalization` is not one of ['batch', 'instance', 'group', None].
     """
-    allowed = ['batch', 'instance', 'group','layer', None]
-    assert normalization in allowed, f"normalization parameter must be one of {allowed}"
     
     norm_type = {
         "batch": [nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d][dimensions - 1],
         "instance": [nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d][dimensions - 1],
         "layer": ChanLayerNorm,
+        "mean0std1": Mean0Std1Norm,
         "group": lambda ch: nn.GroupNorm(
             num_groups=(
                 ch // 32 if ch % 32 == 0 and ch // 32 >= 2 else
@@ -114,6 +122,9 @@ def get_normalization_from_name(dimensions, normalization: Literal['batch', 'ins
             num_channels=ch
         )
     }
+    
+    allowed = list(norm_type.keys())+[None]
+    assert normalization in allowed, f"normalization parameter must be one of {allowed}"
     
     if normalization is None:
         return nn.Identity

@@ -46,7 +46,8 @@ class ResidualBlock(torch.nn.Module):
         dimensions : Literal[1,2,3] = 2,
         is_transpose = False,
         padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate",
-        device = None
+        device = None,
+        disable_residual = False
     ):
         """
         Creates general-use residual block.
@@ -63,6 +64,7 @@ class ResidualBlock(torch.nn.Module):
         * is_transpose: do we need to use transpose convolutions. I advice you to use method `ResidualBlock.transpose(self)` instead of setting this argument manually
         * padding_mode: what padding to use in convolutions, by default will use `'replicate'` when possible
         * device: where to put weights of intialized module
+        * disable_residual: converts given block to non-resiual
         """
         super().__init__()
         
@@ -223,12 +225,9 @@ class ResidualBlock(torch.nn.Module):
         # for each layer create it's own activation function
         self.activation = nn.ModuleList([create_activation(activation) for i in self.convs])
         self.alpha = torch.nn.Parameter(torch.tensor(0.0,device=device))
-        
-        # self.out_conv = nn.Sequential(
-        #     x_corr_conv_impl(in_channels,out_channels[-1],kernel_size=3,padding_mode=padding_mode,padding=1),
-        #     norm_impl(out_channels[-1])
-        #     )
-        
+        self.disable_residual=disable_residual
+        if disable_residual:
+            self.x_linear = ConstModule()
     
     @torch.jit.ignore
     def _conv_x_linear(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T,device):
@@ -327,5 +326,6 @@ class ResidualBlock(torch.nn.Module):
             is_transpose=True,
             dimensions=self.dimensions,
             padding_mode="zeros",
-            device=self.__init_device
+            device=self.__init_device,
+            disable_residual=self.disable_residual
         )

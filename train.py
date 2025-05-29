@@ -181,7 +181,8 @@ def train(
     
     if optimizer is None:
         optimizer = torch.optim.AdamW(model.parameters())
-    
+    total_parameters = sum([v.numel() for v in model.parameters()])/1000/1000
+    print(f"Total model parameters {total_parameters:0.2f} M")
     save_last_dir = os.path.join(save_results_dir,"last")
     plot_dir = os.path.join(save_last_dir, "plots")
     report_path = os.path.join(save_last_dir,"report.json")
