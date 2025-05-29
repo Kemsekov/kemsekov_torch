@@ -224,10 +224,12 @@ class ResidualBlock(torch.nn.Module):
                 return activation_class()
         # for each layer create it's own activation function
         self.activation = nn.ModuleList([create_activation(activation) for i in self.convs])
-        self.alpha = torch.nn.Parameter(torch.tensor(0.0,device=device))
         self.disable_residual=disable_residual
         if disable_residual:
             self.x_linear = ConstModule()
+            self.alpha = torch.tensor(1.0,device=device)
+        else:
+            self.alpha = torch.nn.Parameter(torch.tensor(0.0,device=device))
     
     @torch.jit.ignore
     def _conv_x_linear(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T,device):
