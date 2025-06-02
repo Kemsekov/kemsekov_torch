@@ -457,8 +457,9 @@ def train(
             train_improvements = (train_metric is not None) and (
                 (save_on_metric_improve == 'any' and any(train_metric[m] > best_train_metric.get(m, -1e10) for m in train_metric)) or
                 (save_on_metric_improve == 'all' and all(train_metric[m] > best_train_metric.get(m, -1e10) for m in train_metric)) or
-                (isinstance(save_on_metric_improve, list) and all(train_metric.get(m, -1e10) > best_train_metric.get(m, -1e10) for m in save_on_metric_improve))
+                (isinstance(save_on_metric_improve, list) and all(train_metric.get(m, -1e10) >= best_train_metric.get(m, -1e10) for m in save_on_metric_improve))
             )
+            
             if test_improvements or (not is_testing and train_improvements):
                 best_test_metric = test_metric
                 if acc.is_main_process:
