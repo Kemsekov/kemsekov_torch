@@ -378,6 +378,7 @@ def train(
             
             metrics = train_metric.keys()
             for d in [train_metric_history,test_metric_history,best_test_metric,best_train_metric]:
+                if d is None: continue
                 for m in list(d):
                     if m not in metrics:
                         d.pop(m)
