@@ -339,7 +339,7 @@ def train(
                     batch_loss = loss.item()
                     running_loss += batch_loss
                     
-                    pbar.set_postfix(loss=f"{batch_loss:.4f}", **{name: f"{batch_metric[name]:.4f}" for name in batch_metric})
+                    pbar.set_postfix(loss=f"{batch_loss:.4f}"[:6], **{name: f"{batch_metric[name]:.4f}"[:6] for name in batch_metric})
                     
                     on_train_batch_end(model,batch,loss,batch_metric)
             running_time = time.time()-start

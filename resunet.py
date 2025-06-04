@@ -201,7 +201,7 @@ class Decoder(torch.nn.Module):
                 )
         self.ups =           torch.nn.ModuleList(ups[:-1])
         self.up_1x1_convs  = torch.nn.ModuleList(conv1x1s[:-1])
-        self.up_conv_gamma = torch.nn.Parameter(torch.zeros((len(conv1x1s[:-1]),)))
+        # self.up_conv_gamma = torch.nn.Parameter(torch.zeros((len(conv1x1s[:-1]),)))
         
         self.up5 = ups[-1][0]
         self.dropout = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1](p=dropout_p)
@@ -232,7 +232,7 @@ class Decoder(torch.nn.Module):
                 # here skip needs to be reshaped to x size before making concat
                 x_cat = torch.cat((x, skip), dim=1)
                 # to decrease num of channels
-                x = conv_1x1(x_cat)*self.up_conv_gamma[i]+x
+                x = conv_1x1(x_cat)
         x = self.up5(x)
         return x
     
