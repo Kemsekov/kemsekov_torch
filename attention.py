@@ -188,13 +188,14 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
                 dropout=dropout,
                 top_k=top_k,
                 device=device,
-                # add_zero_attn=False
+                add_zero_attn=True
             )
         if attn_impl=='linear':
             self.attn = MultiHeadLinearAttentionPermute(
                 input_dim,
                 heads,
-                dropout=dropout
+                dropout=dropout,
+                add_zero_token=True
             )
         
         self.attn_norm = ChanLayerNorm(input_dim)
@@ -476,18 +477,28 @@ def kernel_sigmoid(x):
     return (0.6053*x-4.102).sigmoid()
 def kernel_elu(x):
     return torch.nn.functional.elu(x)+1
+
 def kernel_tanh(x):
     # P,C,D = 0.0007749827345833182, 0.3697875738143921, -2.2190189361572266
     return torch.nn.functional.tanh(0.0007749827345833182*x**2+0.3697875738143921*x-2.2190189361572266)+1
+
+
 class LinearAttention(nn.Module):
     """
     Accepts Q,K,V of shapes [batch,seq_length,dim]
     """
-    def __init__(self,dropout : float = 0.0):
+    def __init__(self,embed_dim,dropout : float = 0.0, add_zero_token: bool = False):
         super().__init__()
         self.feature_dropout = nn.Dropout(dropout)
+        self.add_zero_token=add_zero_token
+        if add_zero_token:
+            self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=False)
     
     def forward(self,Q,K,V,compute_attn_weight  : bool = False):
+        if self.add_zero_token:
+            Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
+            K = torch.cat([Z, K], dim=1)
+            V = torch.cat([Z, V], dim=1)
         K=K.transpose(-1,-2)
         phi_Q = kernel_tanh(Q)
         phi_K = kernel_tanh(K)
@@ -529,14 +540,14 @@ class MultiHeadLinearAttention(nn.Module):
       - output: [batch, L_Q,  embed_dim]
       - attn:   [batch, n_heads, L_Q, L_K]   (if compute_attn_weight=True)
     """
-    def __init__(self, embed_dim, n_heads,dropout = 0.0):
+    def __init__(self, embed_dim, n_heads,dropout = 0.0,add_zero_token = False):
         super().__init__()
         assert embed_dim % n_heads == 0, "embed_dim must be divisible by n_heads"
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
 
-        self.single_head_attn = LinearAttention(dropout=dropout)
+        self.single_head_attn = LinearAttention(self.head_dim,dropout,add_zero_token)
     def split_heads(self, x : torch.Tensor, seq_len : int):
         # x: [B, seq_len, embed_dim]
         x = x.view(x.shape[0], seq_len, self.n_heads, self.head_dim)
@@ -590,9 +601,10 @@ class MultiHeadLinearAttentionPermute(nn.Module):
     """
     Accepts Q,K,V of shapes [batch,channels,...]
     """
-    def __init__(self, embed_dim, n_heads,dropout=0.0):
+    def __init__(self, embed_dim, n_heads,dropout=0.0,add_zero_token = False):
         super().__init__()
-        self.la = MultiHeadLinearAttention(embed_dim, n_heads,dropout=dropout)
+        self.la = MultiHeadLinearAttention(embed_dim, n_heads,dropout=dropout,add_zero_token=add_zero_token)
+        
     def forward(self,Q,K,V):
         # (batch,ch,...) -> (batch,ch,seq_len) -> (batch,seq_len,ch)
         q_view = list(Q.shape[:2])+[-1]
