@@ -492,19 +492,18 @@ class LinearAttention(nn.Module):
         
         phi_Q = self.feature_dropout(phi_Q)
         phi_K = self.feature_dropout(phi_K)
-
+        
+        # i have no idea why it enchance model performance
+        ## this is very good
+        phi_Q=phi_Q*(phi_Q**2).mean(-1,keepdim=True)
+        phi_K=phi_K*(phi_K**2).mean(-2,keepdim=True)
+        
         # the full version linear attention
         if compute_attn_weight:
             linear_attn = phi_Q @ phi_K
             linear_attn /= linear_attn.sum(-1,keepdim=True)
         else:
             linear_attn = None
-
-        # i have no idea why it enchance model performance
-        
-        ## this is very good
-        phi_Q=phi_Q*(phi_Q**2).mean(-1,keepdim=True)
-        phi_K=phi_K*(phi_K**2).mean(-2,keepdim=True)
         
         # rearanged version that have linear complexity
         bottom = phi_Q @ phi_K.sum(-1,keepdim=True)
