@@ -14,7 +14,7 @@ def reshape_to_transformer_input(x : torch.Tensor):
     """
     x of shape [batch,channels,...dims...]
     """
-    return x.flatten(2).transpose(-1,-2)
+    return x.flatten(2).permute(0,2,1)
 
 class TransformerEncoderLayerMultidim(nn.Module):
     """
@@ -56,7 +56,7 @@ class TransformerEncoderLayerMultidim(nn.Module):
             src_key_padding_mask = reshape_to_transformer_input(src_key_padding_mask)
         
         out = self.m(src,src_mask,src_key_padding_mask,is_causal)
-        return out.transpose_(-1,-2).view(src_shape)
+        return out.permute(0,2,1).view(src_shape)
 
 class TransformerDecoderLayerMultidim(nn.Module):
     """
@@ -113,10 +113,7 @@ class TransformerDecoderLayerMultidim(nn.Module):
             memory_key_padding_mask=reshape_to_transformer_input(memory_key_padding_mask)
         
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
-        return out.transpose(-1,-2).view(tgt_shape)
-
-
-
+        return out.permute(0,2,1).view(tgt_shape)
 class PrunedSelfAttentionBlock(torch.nn.Module):
     def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None,normalization : Literal['batch','layer','group','instance',None] = 'layer'):
         """
@@ -143,7 +140,7 @@ class PrunedSelfAttentionBlock(torch.nn.Module):
     def forward(self,x):
         return self.attn(x,x)
 class PrunedCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None,normalization : Literal['batch','layer','group','instance',None] = 'layer'):
+    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None,normalization : Literal['batch','layer','group','instance',None] = 'layer',attn_impl : Literal['pruned','linear'] = 'linear'):
         """
         Somewhat optimal pruned cross-attention block
         
@@ -184,15 +181,21 @@ class PrunedCrossAttentionBlock(torch.nn.Module):
         
         self.k_norm = get_normalization_from_name(1,normalization)(input_dim)
         self.v_norm = get_normalization_from_name(1,normalization)(input_dim)
-        
-        self.attn = PrunedMultiheadAttention(
-            embed_dim=input_dim,
-            num_heads=heads,
-            dropout=dropout,
-            top_k=top_k,
-            device=device,
-            # add_zero_attn=False
-        )
+        if attn_impl=='pruned':
+            self.attn = PrunedMultiheadAttention(
+                embed_dim=input_dim,
+                num_heads=heads,
+                dropout=dropout,
+                top_k=top_k,
+                device=device,
+                # add_zero_attn=False
+            )
+        if attn_impl=='linear':
+            self.attn = MultiHeadLinearAttentionPermute(
+                input_dim,
+                heads,
+                dropout=dropout
+            )
         
         self.attn_norm = ChanLayerNorm(input_dim)
         self.attn_out_gamma = torch.nn.Parameter(torch.tensor(0.0,device=device))
@@ -462,9 +465,129 @@ class PrunedMultiheadAttention(nn.Module):
         # start = time.time()
         
         out,_ = self.model.forward(query,keys,values,need_weights=False)
-        out = out.transpose(-1,-2).view(query_shape)
+        out = out.permute(0,2,1).view(query_shape)
         
         #--------------------
         # print("\tmultihead-attention",time.time()-start)
         
         return out
+
+def kernel_sigmoid(x):
+    return (0.6053*x-4.102).sigmoid()
+class LinearAttention(nn.Module):
+    """
+    Accepts Q,K,V of shapes [batch,seq_length,dim]
+    """
+    def __init__(self,dropout : float = 0.0):
+        super().__init__()
+        self.feature_dropout = nn.Dropout(dropout)
+    
+    def forward(self,Q,K,V,compute_attn_weight  : bool = False):
+        phi_Q = kernel_sigmoid(Q)
+        phi_K = kernel_sigmoid(K).transpose(-1,-2)
+        
+        phi_Q = self.feature_dropout(phi_Q)
+        phi_K = self.feature_dropout(phi_K)
+
+        # the full version linear attention
+        if compute_attn_weight:
+            linear_attn = phi_Q @ phi_K
+            linear_attn /= linear_attn.sum(-1,keepdim=True)
+        else:
+            linear_attn = None
+
+        # rearanged version that have linear complexity
+        bottom = phi_Q @ phi_K.sum(-1,keepdim=True)
+        linear_out_fast = phi_Q @ (phi_K @ V)
+        linear_out_fast/=bottom
+        
+        # must be ~ zero
+        # print("linear attention forms diff",((linear_attn @ V)-linear_out_fast).abs().max())
+        
+        return linear_out_fast,linear_attn
+class MultiHeadLinearAttention(nn.Module):
+    """
+    Multi‐head wrapper around single‐head LinearAttention, allowing different
+    sequence lengths for Q vs. K/V (i.e. cross‐attention).
+    
+    - embed_dim = n_heads * head_dim
+    - Q: [batch, L_Q,  embed_dim]
+    - K: [batch, L_K,  embed_dim]
+    - V: [batch, L_K,  embed_dim]
+    Returns:
+      - output: [batch, L_Q,  embed_dim]
+      - attn:   [batch, n_heads, L_Q, L_K]   (if compute_attn_weight=True)
+    """
+    def __init__(self, embed_dim, n_heads,dropout = 0.0):
+        super().__init__()
+        assert embed_dim % n_heads == 0, "embed_dim must be divisible by n_heads"
+        self.embed_dim = embed_dim
+        self.n_heads = n_heads
+        self.head_dim = embed_dim // n_heads
+
+        self.single_head_attn = LinearAttention(dropout=dropout)
+    def split_heads(self, x : torch.Tensor, seq_len : int):
+        # x: [B, seq_len, embed_dim]
+        x = x.view(x.shape[0], seq_len, self.n_heads, self.head_dim)
+        return x.permute(0, 2, 1, 3)
+    def forward(self, Q, K, V, compute_attn_weight : bool = False):
+        """
+        Q: [B, L_Q,  embed_dim]
+        K: [B, L_K,  embed_dim]
+        V: [B, L_K,  embed_dim]
+        """
+        B, L_Q, _ = Q.shape
+        _, L_K, _ = K.shape
+
+        # 1. Split embed_dim → (n_heads, head_dim)
+        #    Qh: [B, n_heads, L_Q, head_dim]
+        #    Kh: [B, n_heads, L_K, head_dim]
+        #    Vh: [B, n_heads, L_K, head_dim]
+
+        Qh = self.split_heads(Q, L_Q)   # → [B, n_heads, L_Q, head_dim]
+        Kh = self.split_heads(K, L_K)   # → [B, n_heads, L_K, head_dim]
+        Vh = self.split_heads(V, L_K)   # → [B, n_heads, L_K, head_dim]
+
+        # 2. Flatten (batch × head) so single_head_attn runs in parallel
+        #    Each of these becomes shape [B * n_heads, L_*, head_dim]
+        Qh_flat = Qh.reshape(B * self.n_heads, L_Q, self.head_dim)
+        Kh_flat = Kh.reshape(B * self.n_heads, L_K, self.head_dim)
+        Vh_flat = Vh.reshape(B * self.n_heads, L_K, self.head_dim)
+
+        # 3. Run single‐head linear attention
+        out_flat, attn_flat = self.single_head_attn(
+            Qh_flat, Kh_flat, Vh_flat, compute_attn_weight
+        )
+        # out_flat: [B * n_heads, L_Q, head_dim]
+        # attn_flat (if requested): [B * n_heads, L_Q, L_K]
+
+        # 4. Un‐flatten heads
+        out_heads = out_flat.view(B, self.n_heads, L_Q, self.head_dim)
+        # → [B, n_heads, L_Q, head_dim]
+        out_heads = out_heads.permute(0, 2, 1, 3).contiguous()
+        # → [B, L_Q, n_heads, head_dim]
+        output = out_heads.view(B, L_Q, self.embed_dim)
+        # → [B, L_Q, embed_dim]
+
+        if attn_flat is not None:
+            attn = attn_flat.view(B, self.n_heads, L_Q, L_K)
+        else:
+            attn = None
+
+        return output, attn
+class MultiHeadLinearAttentionPermute(nn.Module):
+    """
+    Accepts Q,K,V of shapes [batch,channels,...]
+    """
+    def __init__(self, embed_dim, n_heads,dropout=0.0):
+        super().__init__()
+        self.la = MultiHeadLinearAttention(embed_dim, n_heads,dropout=dropout)
+    def forward(self,Q,K,V):
+        # (batch,ch,...) -> (batch,ch,seq_len) -> (batch,seq_len,ch)
+        q_view = list(Q.shape[:2])+[-1]
+        k_view = list(K.shape[:2])+[-1]
+        Q_permute = Q.view(q_view).permute(0,2,1)
+        K_permute = K.view(k_view).permute(0,2,1)
+        V_permute = V.view(k_view).permute(0,2,1)
+        out,_ = self.la(Q_permute,K_permute,V_permute)
+        return out.permute(0,2,1).view(Q.shape)
