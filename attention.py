@@ -473,16 +473,6 @@ class PrunedMultiheadAttention(nn.Module):
         
         return out
 
-def kernel_sigmoid(x):
-    return (0.6053*x-4.102).sigmoid()
-def kernel_elu(x):
-    return torch.nn.functional.elu(x)+1
-
-def kernel_tanh(x):
-    # P,C,D = 0.0007749827345833182, 0.3697875738143921, -2.2190189361572266
-    return torch.nn.functional.tanh(0.0007749827345833182*x**2+0.3697875738143921*x-2.2190189361572266)+1
-
-
 class LinearAttention(nn.Module):
     """
     Accepts Q,K,V of shapes [batch,seq_length,dim]
@@ -491,25 +481,48 @@ class LinearAttention(nn.Module):
         super().__init__()
         self.feature_dropout = nn.Dropout(dropout)
         self.add_zero_token=add_zero_token
+        self.embed_dim=embed_dim
+        
         if add_zero_token:
             self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=False)
+        self.kernel_Q = nn.Sequential(
+            nn.Linear(embed_dim,2*embed_dim),
+            nn.ReLU(),
+            nn.Linear(2*embed_dim,embed_dim),
+            nn.Tanh()
+        )
+        
+        self.kernel_K = nn.Sequential(
+            nn.Linear(embed_dim,2*embed_dim),
+            nn.ReLU(),
+            nn.Linear(2*embed_dim,embed_dim),
+            nn.Tanh()
+        )
+        self.gamma = nn.Parameter(torch.tensor(0.0))
     
     def forward(self,Q,K,V,compute_attn_weight  : bool = False):
         if self.add_zero_token:
             Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
             K = torch.cat([Z, K], dim=1)
             V = torch.cat([Z, V], dim=1)
-        K=K.transpose(-1,-2)
-        phi_Q = kernel_tanh(Q)
-        phi_K = kernel_tanh(K)
+
+        B = K.shape[0]
+        # phi_Q = kernel_tanh(Q)
+        # phi_K = kernel_tanh(K).transpose(-1,-2)
+        # instead of using predefined kernel function, we actually learn it
+        phi_Q = 1+self.kernel_Q(Q)
+        phi_K = 1+self.kernel_K(K).transpose(-1,-2)
         
         phi_Q = self.feature_dropout(phi_Q)
         phi_K = self.feature_dropout(phi_K)
         
-        # i have no idea why it enchance model performance
-        ## this is very good
-        phi_Q=phi_Q*(phi_Q**2).mean(-1,keepdim=True)
-        phi_K=phi_K*(phi_K**2).mean(-2,keepdim=True)
+        # here we apply RALA-like approach to increase phi_q @ phi_k matrix rank by rescaling each sample
+        # by it's relative importance to whole sequence
+        q_probe = torch.mean(Q, dim=1)  # Reduce from (b, L, C) to (b, C) by summing over L
+        k_abs = K
+        score_l = torch.einsum("bc, blc -> bl",q_probe,k_abs).unsqueeze(1)/(self.embed_dim**0.5)
+        score_l = score_l.softmax(-1)
+        phi_K*=score_l
         
         # the full version linear attention
         if compute_attn_weight:
@@ -518,13 +531,15 @@ class LinearAttention(nn.Module):
         else:
             linear_attn = None
         
-        # rearanged version that have linear complexity
-        bottom = phi_Q @ phi_K.sum(-1,keepdim=True) + 1e-6
+        # rearanged attention version that have linear complexity
         linear_out_fast = phi_Q @ (phi_K @ V)
+        bottom = phi_Q @ phi_K.sum(-1,keepdim=True) + 1e-6
         linear_out_fast/=bottom
         
         # must be ~ zero
         # print("linear attention forms diff",((linear_attn @ V)-linear_out_fast).abs().max())
+        
+        # linear_out_fast = linear_out_fast*self.gamma+Q
         
         return linear_out_fast,linear_attn
 class MultiHeadLinearAttention(nn.Module):
@@ -548,6 +563,7 @@ class MultiHeadLinearAttention(nn.Module):
         self.head_dim = embed_dim // n_heads
 
         self.single_head_attn = LinearAttention(self.head_dim,dropout,add_zero_token)
+        
     def split_heads(self, x : torch.Tensor, seq_len : int):
         # x: [B, seq_len, embed_dim]
         x = x.view(x.shape[0], seq_len, self.n_heads, self.head_dim)
@@ -569,6 +585,8 @@ class MultiHeadLinearAttention(nn.Module):
         Qh = self.split_heads(Q, L_Q)   # → [B, n_heads, L_Q, head_dim]
         Kh = self.split_heads(K, L_K)   # → [B, n_heads, L_K, head_dim]
         Vh = self.split_heads(V, L_K)   # → [B, n_heads, L_K, head_dim]
+        
+        
 
         # 2. Flatten (batch × head) so single_head_attn runs in parallel
         #    Each of these becomes shape [B * n_heads, L_*, head_dim]
