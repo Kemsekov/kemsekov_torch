@@ -486,8 +486,9 @@ class LinearAttention(nn.Module):
         self.feature_dropout = nn.Dropout(dropout)
     
     def forward(self,Q,K,V,compute_attn_weight  : bool = False):
-        phi_Q = kernel_elu(Q)
-        phi_K = kernel_elu(K).transpose(-1,-2)
+        K=K.transpose(-1,-2)
+        phi_Q = kernel_sigmoid(Q)
+        phi_K = kernel_sigmoid(K)
         
         phi_Q = self.feature_dropout(phi_Q)
         phi_K = self.feature_dropout(phi_K)
@@ -500,12 +501,10 @@ class LinearAttention(nn.Module):
             linear_attn = None
 
         # i have no idea why it enchance model performance
-        phi_Q*=phi_Q.mean(-1,keepdim=True)
-        phi_K*=phi_K.mean(-2,keepdim=True)
         
-        # gives around same performance
-        # phi_Q*=phi_Q.mean(-2,keepdim=True)
-        # phi_K*=phi_K.mean(-2,keepdim=True)
+        ## this is very good
+        phi_Q=phi_Q*(phi_Q**2).mean(-1,keepdim=True)
+        phi_K=phi_K*(phi_K**2).mean(-2,keepdim=True)
         
         # rearanged version that have linear complexity
         bottom = phi_Q @ phi_K.sum(-1,keepdim=True)
