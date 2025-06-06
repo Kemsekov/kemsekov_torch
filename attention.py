@@ -115,7 +115,7 @@ class TransformerDecoderLayerMultidim(nn.Module):
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
         return out.permute(0,2,1).view(tgt_shape)
 class PrunedSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None,normalization : Literal['batch','layer','group','instance',None] = 'layer'):
+    def __init__(self,input_dim,mlp_dim,top_k=None,heads=8,dropout=0.1,device=None,normalization : Literal['batch','layer','group','instance',None] = 'layer',attn_impl : Literal['pruned','linear'] = 'linear'):
         """
         Somewhat optimal pruned self-attention block
         
@@ -136,7 +136,7 @@ class PrunedSelfAttentionBlock(torch.nn.Module):
         device: where to locate module
         """
         super().__init__()
-        self.attn = PrunedCrossAttentionBlock(input_dim,mlp_dim,top_k,heads,dropout,device,normalization=normalization)
+        self.attn = PrunedCrossAttentionBlock(input_dim,mlp_dim,top_k,heads,dropout,device,normalization=normalization,attn_impl=attn_impl)
     def forward(self,x):
         return self.attn(x,x)
 class PrunedCrossAttentionBlock(torch.nn.Module):
@@ -474,6 +474,9 @@ class PrunedMultiheadAttention(nn.Module):
 
 def kernel_sigmoid(x):
     return (0.6053*x-4.102).sigmoid()
+def kernel_elu(x):
+    return torch.nn.functional.elu(x)+1
+
 class LinearAttention(nn.Module):
     """
     Accepts Q,K,V of shapes [batch,seq_length,dim]
@@ -483,8 +486,8 @@ class LinearAttention(nn.Module):
         self.feature_dropout = nn.Dropout(dropout)
     
     def forward(self,Q,K,V,compute_attn_weight  : bool = False):
-        phi_Q = kernel_sigmoid(Q)
-        phi_K = kernel_sigmoid(K).transpose(-1,-2)
+        phi_Q = kernel_elu(Q)
+        phi_K = kernel_elu(K).transpose(-1,-2)
         
         phi_Q = self.feature_dropout(phi_Q)
         phi_K = self.feature_dropout(phi_K)
@@ -496,6 +499,14 @@ class LinearAttention(nn.Module):
         else:
             linear_attn = None
 
+        # i have no idea why it enchance model performance
+        phi_Q*=phi_Q.mean(-1,keepdim=True)
+        phi_K*=phi_K.mean(-2,keepdim=True)
+        
+        # gives around same performance
+        # phi_Q*=phi_Q.mean(-2,keepdim=True)
+        # phi_K*=phi_K.mean(-2,keepdim=True)
+        
         # rearanged version that have linear complexity
         bottom = phi_Q @ phi_K.sum(-1,keepdim=True)
         linear_out_fast = phi_Q @ (phi_K @ V)
