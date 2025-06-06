@@ -476,7 +476,9 @@ def kernel_sigmoid(x):
     return (0.6053*x-4.102).sigmoid()
 def kernel_elu(x):
     return torch.nn.functional.elu(x)+1
-
+def kernel_tanh(x):
+    # P,C,D = 0.0007749827345833182, 0.3697875738143921, -2.2190189361572266
+    return torch.nn.functional.tanh(0.0007749827345833182*x**2+0.3697875738143921*x-2.2190189361572266)+1
 class LinearAttention(nn.Module):
     """
     Accepts Q,K,V of shapes [batch,seq_length,dim]
@@ -487,8 +489,8 @@ class LinearAttention(nn.Module):
     
     def forward(self,Q,K,V,compute_attn_weight  : bool = False):
         K=K.transpose(-1,-2)
-        phi_Q = kernel_sigmoid(Q)
-        phi_K = kernel_sigmoid(K)
+        phi_Q = kernel_tanh(Q)
+        phi_K = kernel_tanh(K)
         
         phi_Q = self.feature_dropout(phi_Q)
         phi_K = self.feature_dropout(phi_K)
