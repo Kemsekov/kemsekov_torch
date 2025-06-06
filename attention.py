@@ -508,7 +508,7 @@ class LinearAttention(nn.Module):
             linear_attn = None
         
         # rearanged version that have linear complexity
-        bottom = phi_Q @ phi_K.sum(-1,keepdim=True)
+        bottom = phi_Q @ phi_K.sum(-1,keepdim=True) + 1e-6
         linear_out_fast = phi_Q @ (phi_K @ V)
         linear_out_fast/=bottom
         
