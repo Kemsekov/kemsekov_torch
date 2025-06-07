@@ -49,8 +49,7 @@ class TransformerSelfAttentionBlock(nn.Module):
         
         src_shape = src.shape
         src = reshape_to_transformer_input(src)
-        if src_mask is not None:
-            src_mask = reshape_to_transformer_input(src_mask)
+        
         if src_key_padding_mask is not None:
             src_key_padding_mask = reshape_to_transformer_input(src_key_padding_mask)
         
