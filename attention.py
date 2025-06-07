@@ -347,7 +347,7 @@ class MultiHeadLinearAttention(nn.Module):
         phi_K = self.kernel_K(K)+1
         
         phi_Qh_flat = self.split_heads(phi_Q)   # → [B * n_heads, L_Q, head_dim]
-        phi_Kh_flat = self.split_heads(phi_K)   # → [B * n_heads, L_Q, head_dim]
+        phi_Kh_flat = self.split_heads(phi_K)   # → [B * n_heads, L_K, head_dim]
         
         Qh_flat = self.split_heads(Q)   # → [B * n_heads, L_Q, head_dim]
         Kh_flat = self.split_heads(K)   # → [B * n_heads, L_K, head_dim]
