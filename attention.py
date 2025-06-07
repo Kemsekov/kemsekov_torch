@@ -245,30 +245,24 @@ class LinearAttention(nn.Module):
     def __init__(self,embed_dim,dropout : float = 0.0, add_zero_token: bool = False):
         super().__init__()
         self.feature_dropout = nn.Dropout(dropout)
-        self.add_zero_token=add_zero_token
         self.embed_dim=embed_dim
-        if add_zero_token:
-            self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=False)
         
-        self.kernel_Q = nn.Sequential(
-            nn.Linear(embed_dim,embed_dim),
-            nn.Tanh()
-        )
+        # self.kernel_Q = nn.Sequential(
+        #     nn.Linear(embed_dim,embed_dim),
+        #     nn.Tanh()
+        # )
         
-        self.kernel_K = nn.Sequential(
-            nn.Linear(embed_dim,embed_dim),
-            nn.Tanh()
-        )
+        # self.kernel_K = nn.Sequential(
+        #     nn.Linear(embed_dim,embed_dim),
+        #     nn.Tanh()
+        # )
     
-    def forward(self,Q,K,V,compute_attn_weight  : bool = False):
-        if self.add_zero_token:
-            Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
-            K = torch.cat([Z, K], dim=1)
-            V = torch.cat([Z, V], dim=1)
+    def forward(self,Q,K,V,phi_Q,phi_K,compute_attn_weight  : bool = False):
 
         # instead of using predefined kernel function, we actually learn it
-        phi_Q = 1+self.kernel_Q(Q)
-        phi_K = 1+self.kernel_K(K).transpose(-1,-2)
+        # phi_Q = 1+self.kernel_Q(Q)
+        # phi_K = 1+self.kernel_K(K).transpose(-1,-2)
+        phi_K=phi_K.transpose(-1,-2)
         
         phi_Q = self.feature_dropout(phi_Q)
         phi_K = self.feature_dropout(phi_K)
@@ -312,8 +306,22 @@ class MultiHeadLinearAttention(nn.Module):
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
-
-        self.single_head_attn = LinearAttention(self.head_dim,dropout,add_zero_token)
+        
+        self.kernel_Q = nn.Sequential(
+            nn.Linear(embed_dim,embed_dim),
+            nn.Tanh()
+        )
+        
+        self.kernel_K = nn.Sequential(
+            nn.Linear(embed_dim,embed_dim),
+            nn.Tanh()
+        )
+        
+        self.add_zero_token=add_zero_token
+        if add_zero_token:
+            self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=False)
+        
+        self.single_head_attn = LinearAttention(self.head_dim,dropout)
         
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
@@ -327,16 +335,27 @@ class MultiHeadLinearAttention(nn.Module):
         K: [B, L_K,  embed_dim]
         V: [B, L_K,  embed_dim]
         """
+        if self.add_zero_token:
+            Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
+            K = torch.cat([Z, K], dim=1)
+            V = torch.cat([Z, V], dim=1)
+            
         B, L_Q, _ = Q.shape
         _, L_K, _ = K.shape
-
+        
+        phi_Q = self.kernel_Q(Q)+1
+        phi_K = self.kernel_K(K)+1
+        
+        phi_Qh_flat = self.split_heads(phi_Q)   # → [B * n_heads, L_Q, head_dim]
+        phi_Kh_flat = self.split_heads(phi_K)   # → [B * n_heads, L_Q, head_dim]
+        
         Qh_flat = self.split_heads(Q)   # → [B * n_heads, L_Q, head_dim]
         Kh_flat = self.split_heads(K)   # → [B * n_heads, L_K, head_dim]
         Vh_flat = self.split_heads(V)   # → [B * n_heads, L_K, head_dim]
 
         # 3. Run single‐head linear attention
         out_flat, attn_flat = self.single_head_attn(
-            Qh_flat, Kh_flat, Vh_flat, compute_attn_weight
+            Qh_flat, Kh_flat, Vh_flat,phi_Qh_flat,phi_Kh_flat, compute_attn_weight
         )
         # out_flat: [B * n_heads, L_Q, head_dim]
         # attn_flat (if requested): [B * n_heads, L_Q, L_K]
