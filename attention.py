@@ -176,6 +176,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             ),
             nn.LayerNorm(input_dim)
         )
+        
         self.V = nn.Sequential(
             nn.Linear(
                 input_dim,
@@ -250,12 +251,12 @@ class LinearAttention(nn.Module):
             self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=False)
         
         self.kernel_Q = nn.Sequential(
-            nn.Linear(embed_dim,2*embed_dim),
+            nn.Linear(embed_dim,embed_dim),
             nn.Tanh()
         )
         
         self.kernel_K = nn.Sequential(
-            nn.Linear(embed_dim,2*embed_dim),
+            nn.Linear(embed_dim,embed_dim),
             nn.Tanh()
         )
     
@@ -371,9 +372,6 @@ class MultiHeadLinearAttentionPermute(nn.Module):
         V_permute = V.view(k_view).permute(0,2,1)
         out,_ = self.la(Q_permute,K_permute,V_permute)
         return out.permute(0,2,1).view(Q.shape)
-    
-    
-
 
 #somewhat usable
 def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k: int) -> Tuple[torch.Tensor,torch.Tensor]:
