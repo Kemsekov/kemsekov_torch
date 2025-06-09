@@ -1,5 +1,5 @@
 import time
-from typing import Literal, Tuple
+from typing import List, Literal, Tuple
 import einops
 import torch
 from torch import nn
@@ -15,6 +15,33 @@ def reshape_to_transformer_input(x : torch.Tensor):
     x of shape [batch,channels,...dims...]
     """
     return x.flatten(2).permute(0,2,1)
+def restore_shape_of_transformer_output(out,src_shape : List[int]):
+    return out.permute(0,2,1).view(src_shape)
+
+class FlattenSpatialDimensions(nn.Module):
+    """
+    Prepares vison-like 1d,2d,3d sequential data into format suitable for transformer
+    
+    Permutes spatial dimension-like input 
+    `[batch,channels,dim1,dim2,...]` to `[batch,dim*dim2*...,channels]`
+    
+    Then feeds this tensor to input module m and reshapes it's output back to original shape.
+    """
+    def __init__(self, m):
+        super().__init__()
+        if isinstance(m,list) or isinstance(m,tuple):
+            self.m = nn.Sequential(*m)
+        else:
+            self.m  = m
+        
+    def forward(self,x):
+        x_shape = list(x.shape)
+        x_flat = reshape_to_transformer_input(x)
+        out = self.m(x_flat)
+        x_shape[1] = out.shape[-1] # update channels
+        return restore_shape_of_transformer_output(out,torch.Size(x_shape))
+
+# these two modules are kinda legacy, they don't implement anything, just for convenience
 class TransformerSelfAttentionBlock(nn.Module):
     """
     Full Self-Attention transformer encoder that accepts tensors of shape [batch,channels,...dims...]
@@ -43,18 +70,8 @@ class TransformerSelfAttentionBlock(nn.Module):
         src_key_padding_mask: torch.Tensor | None = None,
         is_causal: bool = False
     ):
-        """
-        src of shape [batch,channels, ..dims..]
-        """
-        
-        src_shape = src.shape
-        src = reshape_to_transformer_input(src)
-        
-        if src_key_padding_mask is not None:
-            src_key_padding_mask = reshape_to_transformer_input(src_key_padding_mask)
-        
         out = self.m(src,src_mask,src_key_padding_mask,is_causal)
-        return out.permute(0,2,1).view(src_shape)
+        return out
 class TransformerCrossAttentionBlock(nn.Module):
     """
     Full Cross-Attention transformer decoder that accepts tensors of shape [batch,channels,...dims...]
@@ -75,7 +92,6 @@ class TransformerCrossAttentionBlock(nn.Module):
     ):
         super().__init__()
         self.m = nn.TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout, activation, layer_norm_eps, batch_first, norm_first, bias, device, dtype)
-
         
     def forward(
         self,
@@ -88,29 +104,8 @@ class TransformerCrossAttentionBlock(nn.Module):
         tgt_is_causal: bool = False, 
         memory_is_causal: bool = False
     ):
-        """
-        tgt of shape [batch,channels, ..dims..]
-        memory of shape [batch,channels, ..dims..]
-        """
-        
-        tgt_shape = tgt.shape
-        tgt=reshape_to_transformer_input(tgt)
-        memory=reshape_to_transformer_input(memory)
-        
-        if tgt_mask is not None:
-            tgt_mask=reshape_to_transformer_input(tgt_mask)
-        
-        if memory_mask is not None:
-            memory_mask=reshape_to_transformer_input(memory_mask)
-        
-        if tgt_key_padding_mask is not None:
-            tgt_key_padding_mask=reshape_to_transformer_input(tgt_key_padding_mask)
-        
-        if memory_key_padding_mask is not None:
-            memory_key_padding_mask=reshape_to_transformer_input(memory_key_padding_mask)
-        
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
-        return out.permute(0,2,1).view(tgt_shape)
+        return out
 class LinearSelfAttentionBlock(torch.nn.Module):
     def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None):
         """
@@ -120,13 +115,7 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         
         mlp_dim: internal mlp dimension
         
-        top_k: count of elements to use for attention per head for each token. when set to `None` will use (input length) // heads
-        
         heads: heads for attention
-        
-        qkdim: query/key dimension, when `None` defaults to `input_dim`
-        
-        dimensions: dimensions count
         
         dropout: dropout to apply to attention layer
         
@@ -145,11 +134,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         
         mlp_dim: internal mlp dimension
         
-        top_k: count of elements to use for attention per head for each token. when set to `None` will use (input length) // heads
-        
         heads: heads for attention
-        
-        qkdim: query/key dimension, when `None` defaults to `input_dim`
         
         dimensions: dimensions count
         
@@ -164,7 +149,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
                 input_dim,
                 device=device,
             ),
-            nn.LayerNorm(input_dim)
+            nn.LayerNorm(input_dim,device=device)
         )
         
         self.K = nn.Sequential(
@@ -173,7 +158,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
                 input_dim,
                 device=device,
             ),
-            nn.LayerNorm(input_dim)
+            nn.LayerNorm(input_dim,device=device)
         )
         
         self.V = nn.Sequential(
@@ -182,22 +167,23 @@ class LinearCrossAttentionBlock(torch.nn.Module):
                 input_dim,
                 device=device,
             ),
-            nn.LayerNorm(input_dim)
+            nn.LayerNorm(input_dim,device=device)
         )
 
         self.attn = MultiHeadLinearAttention(
             input_dim,
             heads,
             dropout=dropout,
-            add_zero_token=True
+            add_zero_token=True,
+            device=device
         )
-        self.attn_norm = nn.LayerNorm(input_dim)
+        self.attn_norm = nn.LayerNorm(input_dim,device=device)
         
         self.mlp=Residual([
-            nn.Linear(input_dim,mlp_dim),
-            nn.Dropout(dropout),
+            nn.Linear(input_dim,mlp_dim,device=device),
+            nn.Dropout(dropout,inplace=True),
             nn.GELU(),
-            nn.Linear(mlp_dim,input_dim),
+            nn.Linear(mlp_dim,input_dim,device=device),
         ])
         
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
@@ -217,11 +203,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         #--------------------
         # start = time.time()
         
-        query_source_flat = query_source.flatten(2).permute(0,2,1)
-        context_flatten = context.flatten(2).permute(0,2,1)
-        
-        Q = self.Q(query_source_flat)
-        K,V = self.K(context_flatten),self.V(context_flatten)
+        Q = self.Q(query_source)
+        K,V = self.K(context),self.V(context)
         
         attn = self.attn(Q,K,V)[0]
         attn=self.attn_norm(attn)
@@ -231,47 +214,31 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # start = time.time()
         
         result = self.mlp(attn)
-        result = result.permute(0,2,1).view(query_source.shape).contiguous()
-        
+        result+=query_source
         #--------------------
         # print("mlp + reshape",time.time()-start)
         
-        return result + query_source
+        return result
 class LinearAttention(nn.Module):
     """
-    Accepts Q,K,V of shapes [batch,seq_length,dim]
+    Accepts Q,K,V of shapes [batch,heads,seq_length,dim]
     """
-    def __init__(self,embed_dim,dropout : float = 0.0, add_zero_token: bool = False):
+    def __init__(self,embed_dim):
         super().__init__()
-        self.feature_dropout = nn.Dropout(dropout)
         self.embed_dim=embed_dim
-        
-        # self.kernel_Q = nn.Sequential(
-        #     nn.Linear(embed_dim,embed_dim),
-        #     nn.Tanh()
-        # )
-        
-        # self.kernel_K = nn.Sequential(
-        #     nn.Linear(embed_dim,embed_dim),
-        #     nn.Tanh()
-        # )
     
     def forward(self,Q,K,V,phi_Q,phi_K,compute_attn_weight  : bool = False):
-
-        # instead of using predefined kernel function, we actually learn it
-        # phi_Q = 1+self.kernel_Q(Q)
-        # phi_K = 1+self.kernel_K(K).transpose(-1,-2)
-        phi_K=phi_K.transpose(-1,-2)
-        
-        phi_Q = self.feature_dropout(phi_Q)
-        phi_K = self.feature_dropout(phi_K)
+        phi_K=phi_K.transpose(-2,-1)
         
         # here we apply RALA-like approach to increase phi_q @ phi_k matrix rank by rescaling each sample
         # by it's relative importance to whole sequence
-        q_probe = torch.mean(Q, dim=1)  # Reduce from (b, L, C) to (b, C) by summing over L
-        score_l = torch.einsum("bc, blc -> bl",q_probe,K).unsqueeze(1)/(self.embed_dim**0.5)
-        score_l = score_l.softmax(-1)
+        q_probe = torch.mean(Q, dim=-2)  # Reduce from (b, L, C) to (b, C) by summing over L
+        q_probe/=(self.embed_dim**0.5)
+        
+        # score_l = torch.einsum("bhc, bhlc -> bhl",q_probe,K).unsqueeze(-2).softmax(-1)
+        score_l = (q_probe.unsqueeze(2) @ K.transpose(-2,-1)).softmax(-1)
         phi_K*=score_l
+        del q_probe, score_l
         
         # the full version linear attention
         if compute_attn_weight:
@@ -281,9 +248,12 @@ class LinearAttention(nn.Module):
             linear_attn = None
         
         # rearanged attention version that have linear complexity
-        linear_out_fast = phi_Q @ (phi_K @ V)
-        bottom = phi_Q @ phi_K.sum(-1,keepdim=True) + 1e-6
-        linear_out_fast/=bottom
+        K_sum = phi_K.sum(-1,keepdim=True) + 1e-6
+        KV = phi_K @ V
+        linear_out_fast = phi_Q @ KV
+        linear_out_fast/=phi_Q @ K_sum
+        
+        del K_sum,KV
 
         return linear_out_fast,linear_attn
 class MultiHeadLinearAttention(nn.Module):
@@ -299,7 +269,7 @@ class MultiHeadLinearAttention(nn.Module):
       - output: [batch, L_Q,  embed_dim]
       - attn:   [batch, n_heads, L_Q, L_K]   (if compute_attn_weight=True)
     """
-    def __init__(self, embed_dim, n_heads,dropout = 0.0,add_zero_token = False):
+    def __init__(self, embed_dim, n_heads,dropout = 0.0,add_zero_token = False,device = None):
         super().__init__()
         assert embed_dim % n_heads == 0, "embed_dim must be divisible by n_heads"
         self.embed_dim = embed_dim
@@ -307,26 +277,27 @@ class MultiHeadLinearAttention(nn.Module):
         self.head_dim = embed_dim // n_heads
         
         self.kernel_Q = nn.Sequential(
-            nn.Linear(embed_dim,embed_dim),
+            nn.Linear(embed_dim,embed_dim,device=device),
             nn.Tanh()
         )
         
         self.kernel_K = nn.Sequential(
-            nn.Linear(embed_dim,embed_dim),
+            nn.Linear(embed_dim,embed_dim,device=device),
             nn.Tanh()
         )
+        self.feature_dropout = nn.Dropout(dropout, inplace=True)
         
         self.add_zero_token=add_zero_token
         if add_zero_token:
-            self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim), requires_grad=False)
+            self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
         
-        self.single_head_attn = LinearAttention(self.head_dim,dropout)
+        self.single_head_attn = LinearAttention(self.head_dim)
         
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
         B = x.shape[0]
         x = x.view(B, -1, self.n_heads, self.head_dim)
-        return x.permute(0, 2, 1, 3).reshape(B * self.n_heads, -1, self.head_dim)
+        return x.permute(0, 2, 1, 3).view(B, self.n_heads, -1, self.head_dim)
     
     def forward(self, Q, K, V, compute_attn_weight : bool = False):
         """
@@ -338,7 +309,10 @@ class MultiHeadLinearAttention(nn.Module):
             Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
             K = torch.cat([Z, K], dim=1)
             V = torch.cat([Z, V], dim=1)
-            
+        
+        Q = self.feature_dropout(Q)
+        K = self.feature_dropout(K)
+        
         B, L_Q, _ = Q.shape
         _, L_K, _ = K.shape
         
@@ -347,11 +321,10 @@ class MultiHeadLinearAttention(nn.Module):
         
         phi_Qh_flat = self.split_heads(phi_Q)   # → [B * n_heads, L_Q, head_dim]
         phi_Kh_flat = self.split_heads(phi_K)   # → [B * n_heads, L_K, head_dim]
-        
         Qh_flat = self.split_heads(Q)   # → [B * n_heads, L_Q, head_dim]
         Kh_flat = self.split_heads(K)   # → [B * n_heads, L_K, head_dim]
         Vh_flat = self.split_heads(V)   # → [B * n_heads, L_K, head_dim]
-
+        
         # 3. Run single‐head linear attention
         out_flat, attn_flat = self.single_head_attn(
             Qh_flat, Kh_flat, Vh_flat,phi_Qh_flat,phi_Kh_flat, compute_attn_weight
@@ -373,23 +346,6 @@ class MultiHeadLinearAttention(nn.Module):
             attn = None
 
         return output, attn
-class MultiHeadLinearAttentionPermute(nn.Module):
-    """
-    Accepts Q,K,V of shapes [batch,channels,...]
-    """
-    def __init__(self, embed_dim, n_heads,dropout=0.0,add_zero_token = False):
-        super().__init__()
-        self.la = MultiHeadLinearAttention(embed_dim, n_heads,dropout=dropout,add_zero_token=add_zero_token)
-        
-    def forward(self,Q,K,V):
-        # (batch,ch,...) -> (batch,ch,seq_len) -> (batch,seq_len,ch)
-        q_view = list(Q.shape[:2])+[-1]
-        k_view = list(K.shape[:2])+[-1]
-        Q_permute = Q.view(q_view).permute(0,2,1)
-        K_permute = K.view(k_view).permute(0,2,1)
-        V_permute = V.view(k_view).permute(0,2,1)
-        out,_ = self.la(Q_permute,K_permute,V_permute)
-        return out.permute(0,2,1).view(Q.shape)
 
 #somewhat usable
 def dist_to_random_Q_selection_cosine(Q, K, V, reference_tokens_count: int,top_k: int) -> Tuple[torch.Tensor,torch.Tensor]:

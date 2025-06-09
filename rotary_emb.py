@@ -187,7 +187,7 @@ class RotaryEmbedding(Module):
         if seq_dim == -3:
             freqs = rearrange(freqs, 'n d -> n 1 d')
 
-        return apply_rotary_emb(freqs, t, scale = default(scale, 1.), seq_dim = seq_dim)
+        return self.apply_rotary_emb(freqs, t, scale = default(scale, 1.), seq_dim = seq_dim)
 
     def rotate_queries_with_cached_keys(self, q, k, seq_dim = None, offset = 0):
         dtype, device, seq_dim = q.dtype, q.device, default(seq_dim, self.default_seq_dim)
@@ -226,8 +226,8 @@ class RotaryEmbedding(Module):
             freqs = rearrange(freqs, 'n d -> n 1 d')
             scale = rearrange(scale, 'n d -> n 1 d')
 
-        rotated_q = apply_rotary_emb(freqs, q, scale = scale, seq_dim = seq_dim)
-        rotated_k = apply_rotary_emb(freqs, k, scale = scale ** -1, seq_dim = seq_dim)
+        rotated_q = self.apply_rotary_emb(freqs, q, scale = scale, seq_dim = seq_dim)
+        rotated_k = self.apply_rotary_emb(freqs, k, scale = scale ** -1, seq_dim = seq_dim)
 
         rotated_q = rotated_q.type(q.dtype)
         rotated_k = rotated_k.type(k.dtype)
@@ -450,6 +450,7 @@ class RotaryEmbInplace(torch.nn.Module):
                 'pixel': Uses linearly spaced frequencies from 1 to max_freq / 2, scaled by ππ, suitable for pixel-based inputs.
 
                 'constant': Uses a tensor of ones with shape (num_freqs,), for constant frequency embeddings.
+            learned_freq: use if you want to learn embedding
         """
         
         super().__init__()
