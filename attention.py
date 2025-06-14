@@ -28,6 +28,12 @@ class FlattenSpatialDimensions(nn.Module):
     Then feeds this tensor to input module m and reshapes it's output back to original shape.
     """
     def __init__(self, m):
+        """
+        Permutes spatial dimension-like input 
+        `[batch,channels,dim1,dim2,...]` to `[batch,dim*dim2*...,channels]`
+        
+        Then feeds this tensor to input module m and reshapes it's output back to original shape.
+        """
         super().__init__()
         if isinstance(m,list) or isinstance(m,tuple):
             self.m = nn.Sequential(*m)
@@ -285,6 +291,7 @@ class MultiHeadLinearAttention(nn.Module):
             nn.Linear(embed_dim,embed_dim,device=device),
             nn.Tanh()
         )
+        
         self.feature_dropout = nn.Dropout(dropout, inplace=True)
         
         self.add_zero_token=add_zero_token
