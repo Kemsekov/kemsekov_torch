@@ -1,5 +1,5 @@
 import math
-from typing import List
+from typing import List, Literal
 import torch.nn as nn
 from kemsekov_torch.vqvae.quantizer import *
 from kemsekov_torch.residual import Residual, ResidualBlock
@@ -21,6 +21,7 @@ class VQVAE2Scale3(nn.Module):
         epsilon=1e-5,
         dimensions=2,
         num_residual_layers=3,
+        normalization : Literal['batch','layer',None] = None
         ):
         """
         Creates new vqvae2.
@@ -50,7 +51,7 @@ class VQVAE2Scale3(nn.Module):
         
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         common = {
-            "normalization":None,
+            "normalization":normalization,
             "dimensions":dimensions,
             'activation':torch.nn.SiLU
         }
