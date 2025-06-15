@@ -59,7 +59,7 @@ class DiffusionUtils:
         x_prev = sqrt_alpha_bar_tm1 * x0_est + sqrt_one_minus_alpha_bar_tm1 * pred_noise
         return x_prev
     
-def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20):
+def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,regenerage_noise = True):
     """
     Samples diffusion model
     Parameters:
@@ -69,6 +69,7 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20):
             ***You must exactly specify this parameter to be same as used in training, else sampling will be broken!***
         inference_timesteps: 
             Timesteps for sampling
+        regenerage_noise: to regenerate noise each denoising step or not.
     """
     diff_util = DiffusionUtils(inference_timesteps)
     next_t = torch.randn(sample_shape,device=list(diffusion_model.parameters())[0].device)
@@ -83,20 +84,9 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20):
             pred_noise_ = diffusion_model(next_t,T)
 
         t=t.item()
-        prev = diff_util.diffusion_backward(next_t,pred_noise_,t,generate_noise=True)
+        prev = diff_util.diffusion_backward(next_t,pred_noise_,t,generate_noise=regenerage_noise)
         prev=prev
         
-        # prev-=prev.mean()
-        # prev/=prev.std()
-        
         next_t = prev
-        
-        # scaled_p = ((prev-prev.min())/(prev.max()-prev.min()))
-        
-        # to show how diffusion happens
-        # plt.subplot(cell,cell,inference_timesteps-t)
-        # plt.imshow(T.ToPILImage()(scaled_p))
-        # plt.title(f'{prev.mean():0.2f}+-{prev.std():0.2f}')
-        # plt.axis('off')
 
     return next_t

@@ -62,7 +62,7 @@ class InvertableScaleAndTranslate(nn.Module):
         x2 = (z2-translate)/scale
         concat = torch.concat([x1,x2],self.dimension_split)
         return concat
-
+  
 class InvertableSequential(nn.Sequential):
     """
     Sequential container for invertible modules, supporting forward and inverse transformations.
