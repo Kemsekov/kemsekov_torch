@@ -269,7 +269,22 @@ def train(
           model_script = None
     model=model_acc
 
-
+    def backward_loss(acc,loss):
+        """Returns true if computed backwards"""
+        is_nan = False
+        loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
+        if loss_is_iterable:
+            for l in loss:
+                if torch.isnan(l).any():
+                    is_nan = True
+                else:
+                    acc.backward(l)
+        else:
+            if torch.isnan(loss).any():
+                is_nan = True
+            else:
+                acc.backward(loss)
+        return not is_nan
     
     if tie_weights:
         model.tie_weights()
@@ -307,6 +322,9 @@ def train(
             model.train()
             for batch in pbar:
                 with acc.accumulate(model):
+                    for opt in optimizer_acc:
+                        opt.zero_grad()
+                    
                     # sometimes accelerate autocast fails to do it's job
                     # and we need manually cast batch to required dtype
                     if cast_batch_to_mixed_precision_dtype:
@@ -317,23 +335,20 @@ def train(
                     
                     add_batch_metric(metric, batch_metric)
                     
-                    loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
-                    if loss_is_iterable:
-                        for l in loss:
-                            acc.backward(l)
-                    else:
-                        acc.backward(loss)
+                    if not backward_loss(acc,loss):
+                        pbar.set_postfix(WARNING='NAN DETECTED!')
+                        continue
                     
                     grad_norm()
                     
                     for opt in optimizer_acc:
                         opt.step()
-                        opt.zero_grad()
                     
                     for sch in scheduler_acc:
                         if sch is None: continue
                         sch.step()
-                    if loss_is_iterable:
+                    
+                    if isinstance(loss,list) or isinstance(loss,tuple):
                         loss = sum([l.detach() for l in loss])/len(loss)
                     
                     batch_loss = loss.item()
@@ -519,7 +534,9 @@ def add_batch_metric(metric, batch_metric):
     for m in batch_metric:
         metric_val = batch_metric[m]
         if isinstance(metric_val,torch.Tensor):
-            batch_metric[m] = metric_val.detach().cpu().numpy()
+            v = metric_val.detach().cpu()
+            if not torch.isnan(v).any():
+                batch_metric[m] = v.numpy()
         if m not in metric.keys():
             metric[m]=0
         metric[m] += batch_metric[m]

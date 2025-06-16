@@ -55,11 +55,12 @@ class DiffusionUtils:
         x0_est = (x_t - sqrt_one_minus_alpha_bar_t * pred_noise) / sqrt_alpha_bar_t
         if generate_noise:
             pred_noise = torch.randn_like(pred_noise)
+        
         # DDIM deterministic step (η = 0)
         x_prev = sqrt_alpha_bar_tm1 * x0_est + sqrt_one_minus_alpha_bar_tm1 * pred_noise
         return x_prev
     
-def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,regenerage_noise = True):
+def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,regenerate_noise = True,normalize_pred = True):
     """
     Samples diffusion model
     Parameters:
@@ -69,24 +70,22 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,r
             ***You must exactly specify this parameter to be same as used in training, else sampling will be broken!***
         inference_timesteps: 
             Timesteps for sampling
-        regenerage_noise: to regenerate noise each denoising step or not.
+        regenerate_noise: to regenerate noise each denoising step or not.
     """
     diff_util = DiffusionUtils(inference_timesteps)
     next_t = torch.randn(sample_shape,device=list(diffusion_model.parameters())[0].device)
-
 
     # plt.figure(figsize=(12,12))
     for t in reversed(diff_util.timesteps[1:]):
         T = torch.tensor([t]*next_t.shape[0])
         with torch.no_grad():
-            # T = torch.round(T*train_timesteps/inference_timesteps).long()
-            T = T*train_timesteps//inference_timesteps
+            T = torch.round(T*train_timesteps/inference_timesteps).long()
             pred_noise_ = diffusion_model(next_t,T)
+            if normalize_pred:
+                pred_noise_/=pred_noise_.std()
+                pred_noise_-=pred_noise_.mean()
 
         t=t.item()
-        prev = diff_util.diffusion_backward(next_t,pred_noise_,t,generate_noise=regenerage_noise)
-        prev=prev
-        
-        next_t = prev
+        next_t = diff_util.diffusion_backward(next_t,pred_noise_,t,generate_noise=regenerate_noise)
 
     return next_t
