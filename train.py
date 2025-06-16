@@ -545,10 +545,10 @@ def add_batch_metric(metric, batch_metric):
             metric_val = torch.tensor(metric_val)
         v = metric_val.detach().cpu()
         is_value = not torch.isnan(v).any() and not torch.isinf(v).any()
+        if m not in metric.keys():
+            metric[m]=0
         if is_value:
             batch_metric[m] = v.numpy()
-            if m not in metric.keys():
-                metric[m]=0
             metric[m] += batch_metric[m]
 
 def load_best_metric_from_history(best_train_metric, train_metric_history):
