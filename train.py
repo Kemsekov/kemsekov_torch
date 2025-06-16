@@ -360,6 +360,10 @@ def train(
                     pbar.set_postfix(loss=f"{batch_loss:.4f}"[:6], **metrics_render)
                     
                     on_train_batch_end(model,batch,loss,batch_metric)
+            
+            if NANS_COUNT>0:
+                print("Nan detected in loss function, try to check your code.")
+            
             running_time = time.time()-start
             train_time_history.append(running_time)
             running_loss /= len(train_loader)
