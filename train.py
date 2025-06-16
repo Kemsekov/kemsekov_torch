@@ -340,6 +340,12 @@ def train(
                         NANS_COUNT+=1
                         gc.collect()
                         torch.cuda.empty_cache()
+                        pbar.set_postfix(nan_count=NANS_COUNT)
+                        # with torch.no_grad():
+                        #     for p in model.parameters():
+                        #         nan_mask = torch.isnan(p) | torch.isinf(p)
+                        #         nan_params = p[nan_mask]
+                        #         p[nan_mask]=torch.randn_like(nan_params)
                         continue
                     
                     add_batch_metric(metric, batch_metric)
@@ -544,12 +550,13 @@ def add_batch_metric(metric, batch_metric):
         if not isinstance(metric_val,torch.Tensor):
             metric_val = torch.tensor(metric_val)
         v = metric_val.detach().cpu()
-        is_value = not torch.isnan(v).any() and not torch.isinf(v).any()
         if m not in metric.keys():
             metric[m]=0
+        is_value = (not torch.isnan(v).any()) and (not torch.isinf(v).any())
         if is_value:
-            batch_metric[m] = v.numpy()
-            metric[m] += batch_metric[m]
+            v=v.numpy()
+            batch_metric[m] = v
+            metric[m] += v
 
 def load_best_metric_from_history(best_train_metric, train_metric_history):
     for metric_name in train_metric_history:

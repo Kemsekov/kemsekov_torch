@@ -254,10 +254,10 @@ class LinearAttention(nn.Module):
             linear_attn = None
         
         # rearanged attention version that have linear complexity
-        K_sum = phi_K.sum(-1,keepdim=True) + 1e-6
+        K_sum = phi_K.sum(-1,keepdim=True)
         KV = phi_K @ V
         linear_out_fast = phi_Q @ KV
-        linear_out_fast/=phi_Q @ K_sum
+        linear_out_fast /= phi_Q @ K_sum + 1e-6
         
         del K_sum,KV
 
