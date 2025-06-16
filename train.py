@@ -275,12 +275,12 @@ def train(
         loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
         if loss_is_iterable:
             for l in loss:
-                if torch.isnan(l).any():
+                if torch.isnan(l).any() or torch.isinf(l).any():
                     is_nan = True
                 else:
                     acc.backward(l)
         else:
-            if torch.isnan(loss).any():
+            if torch.isnan(loss).any() or torch.isinf(loss).any():
                 is_nan = True
             else:
                 acc.backward(loss)
@@ -318,7 +318,7 @@ def train(
                 opt.zero_grad()  # Reset gradients before accumulation
             pbar = tqdm(train_loader,desc=f"train {acc.process_index}")
             start = time.time()
-            
+            NANS_COUNT = 0
             model.train()
             for batch in pbar:
                 with acc.accumulate(model):
@@ -336,7 +336,7 @@ def train(
                     add_batch_metric(metric, batch_metric)
                     
                     if not backward_loss(acc,loss):
-                        pbar.set_postfix(WARNING='NAN DETECTED!')
+                        NANS_COUNT+=1
                         continue
                     
                     grad_norm()
@@ -354,7 +354,10 @@ def train(
                     batch_loss = loss.item()
                     running_loss += batch_loss
                     
-                    pbar.set_postfix(loss=f"{batch_loss:.4f}"[:6], **{name: f"{batch_metric[name]:.4f}"[:6] for name in batch_metric})
+                    metrics_render = {name: f"{batch_metric[name]:.4f}"[:6] for name in batch_metric}
+                    if NANS_COUNT>0:
+                        metrics_render['nan_count'] = NANS_COUNT
+                    pbar.set_postfix(loss=f"{batch_loss:.4f}"[:6], **metrics_render)
                     
                     on_train_batch_end(model,batch,loss,batch_metric)
             running_time = time.time()-start
@@ -535,7 +538,7 @@ def add_batch_metric(metric, batch_metric):
         metric_val = batch_metric[m]
         if isinstance(metric_val,torch.Tensor):
             v = metric_val.detach().cpu()
-            if not torch.isnan(v).any():
+            if not torch.isnan(v).any() and not torch.isinf(v).any():
                 batch_metric[m] = v.numpy()
         if m not in metric.keys():
             metric[m]=0
