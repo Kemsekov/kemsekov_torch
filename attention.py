@@ -257,7 +257,7 @@ class LinearAttention(nn.Module):
         K_sum = phi_K.sum(-1,keepdim=True)
         KV = phi_K @ V
         linear_out_fast = phi_Q @ KV
-        linear_out_fast /= phi_Q @ K_sum + 1e-6
+        linear_out_fast /= phi_Q @ K_sum + 1e-5
         
         del K_sum,KV
 

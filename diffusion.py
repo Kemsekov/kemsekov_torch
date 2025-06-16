@@ -31,7 +31,7 @@ class DiffusionUtils:
         x_t = alpha_bar_sqrt * x + one_minus_alpha_bar_sqrt * epsilon
         return x_t, epsilon
 
-    def diffusion_backward(self, x_t, pred_noise, t,generate_noise = False):
+    def diffusion_backward(self, x_t, pred_noise, t,generate_noise = False,rescale_generated_noise = False):
         """
         DDIM reverse step (η = 0): deterministic step using model-predicted noise.
         Assumes t > 0 and t is a LongTensor of shape [B].
@@ -54,13 +54,19 @@ class DiffusionUtils:
         # Estimate x0 from predicted noise
         x0_est = (x_t - sqrt_one_minus_alpha_bar_t * pred_noise) / sqrt_alpha_bar_t
         if generate_noise:
-            pred_noise = torch.randn_like(pred_noise)
+            new_noise = torch.randn_like(pred_noise)
+            if rescale_generated_noise:
+                new_noise*=pred_noise.std()
+                new_noise+=pred_noise.mean()
+            pred_noise = new_noise
         
         # DDIM deterministic step (η = 0)
         x_prev = sqrt_alpha_bar_tm1 * x0_est + sqrt_one_minus_alpha_bar_tm1 * pred_noise
         return x_prev
-    
-def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,regenerate_noise = True,normalize_pred = True):
+
+
+
+def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,normalize_pred = False,regenerate_noise = False,rescale_generated_noise=False):
     """
     Samples diffusion model
     Parameters:
@@ -70,7 +76,10 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,r
             ***You must exactly specify this parameter to be same as used in training, else sampling will be broken!***
         inference_timesteps: 
             Timesteps for sampling
+        normalize_pred: normalize predicted noise to be mean 0 std 1
         regenerate_noise: to regenerate noise each denoising step or not.
+        rescale_generated_noise: rescale generated noise to have same std and mean as predicted noise
+    Last three parameters for some datasets helps to generate better samples, but there is no single best configuration for them, play around with these three parameters
     """
     diff_util = DiffusionUtils(inference_timesteps)
     next_t = torch.randn(sample_shape,device=list(diffusion_model.parameters())[0].device)
@@ -86,6 +95,6 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,r
                 pred_noise_-=pred_noise_.mean()
 
         t=t.item()
-        next_t = diff_util.diffusion_backward(next_t,pred_noise_,t,generate_noise=regenerate_noise)
+        next_t = diff_util.diffusion_backward(next_t,pred_noise_,t,generate_noise=regenerate_noise,rescale_generated_noise=rescale_generated_noise)
 
     return next_t
