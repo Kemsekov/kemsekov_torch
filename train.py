@@ -1,3 +1,4 @@
+import gc
 import os
 import accelerate
 from matplotlib import pyplot as plt
@@ -333,14 +334,15 @@ def train(
                     with acc.autocast():
                         loss, batch_metric = compute_loss_and_metric(model,batch)
                     
-                    add_batch_metric(metric, batch_metric)
+                    grad_norm()
                     
                     if not backward_loss(acc,loss):
                         NANS_COUNT+=1
+                        gc.collect()
+                        torch.cuda.empty_cache()
                         continue
                     
-                    grad_norm()
-                    
+                    add_batch_metric(metric, batch_metric)
                     for opt in optimizer_acc:
                         opt.step()
                     
@@ -386,7 +388,6 @@ def train(
                         if isinstance(batch_metric,torch.Tensor):
                             batch_metric = batch_metric.detach().cpu()
                         add_batch_metric(metric, batch_metric)
-                        
                         loss_is_iterable = isinstance(loss,list) or isinstance(loss,tuple)
                         if loss_is_iterable:
                             loss = sum([l.detach() for l in loss])/len(loss)
@@ -540,13 +541,15 @@ def update_metric(train_loader, best_train_metric, train_metric_history, metric)
 def add_batch_metric(metric, batch_metric):
     for m in batch_metric:
         metric_val = batch_metric[m]
-        if isinstance(metric_val,torch.Tensor):
-            v = metric_val.detach().cpu()
-            if not torch.isnan(v).any() and not torch.isinf(v).any():
-                batch_metric[m] = v.numpy()
-        if m not in metric.keys():
-            metric[m]=0
-        metric[m] += batch_metric[m]
+        if not isinstance(metric_val,torch.Tensor):
+            metric_val = torch.tensor(metric_val)
+        v = metric_val.detach().cpu()
+        is_value = not torch.isnan(v).any() and not torch.isinf(v).any()
+        if is_value:
+            batch_metric[m] = v.numpy()
+            if m not in metric.keys():
+                metric[m]=0
+            metric[m] += batch_metric[m]
 
 def load_best_metric_from_history(best_train_metric, train_metric_history):
     for metric_name in train_metric_history:
