@@ -36,6 +36,11 @@ class InvertableScaleAndTranslate(nn.Module):
         self.seed = seed
         self.dimension_split = dimension_split  # Ensure integer type
     
+    def get_scale_and_translate(self,x):
+        scale,translate = self.model(x).chunk(2,self.dimension_split)
+        scale=scale.abs()
+        return scale,translate
+    
     def forward(self, input):
         """
         Forward transformation: split, scale/translate, concatenate, and shuffle.
@@ -47,13 +52,14 @@ class InvertableScaleAndTranslate(nn.Module):
                 Transformed tensor with the same shape as input and scale parameter.
         """
         x1,x2 = input.chunk(2,self.dimension_split)
-        scale,translate = self.model(x1).chunk(2,self.dimension_split)
+        scale,translate = self.get_scale_and_translate(x1)
+        
         z2 = x2*scale+translate
         concat = torch.concat([x1,z2],self.dimension_split)
         concat_deriv = torch.concat([torch.ones_like(x1),scale],self.dimension_split)
         
-        generator = torch.Generator().manual_seed(self.seed)
-        shuffle_ind = torch.rand(concat.shape[self.dimension_split],generator=generator).argsort()
+        generator = torch.Generator(device=input.device).manual_seed(self.seed)
+        shuffle_ind = torch.rand(concat.shape[self.dimension_split],generator=generator,device=input.device).argsort()
         concat_shuffle = concat.index_select(self.dimension_split,shuffle_ind)
         concat_shuffle_deriv = concat_deriv.index_select(self.dimension_split,shuffle_ind)
         
@@ -69,12 +75,13 @@ class InvertableScaleAndTranslate(nn.Module):
         Returns:
             torch.Tensor: Reconstructed input tensor.
         """
-        generator = torch.Generator().manual_seed(self.seed)
-        shuffle_ind = torch.rand(output.shape[self.dimension_split],generator=generator).argsort().argsort()
+        generator = torch.Generator(device=output.device).manual_seed(self.seed)
+        shuffle_ind = torch.rand(output.shape[self.dimension_split],generator=generator,device=output.device).argsort().argsort()
         output = output.index_select(self.dimension_split,shuffle_ind)
         
         x1,z2 = output.chunk(2,self.dimension_split)
-        scale,translate = self.model(x1).chunk(2,self.dimension_split)
+        scale,translate = self.get_scale_and_translate(x1)
+        
         x2 = (z2-translate)/(scale+1e-6)
         concat = torch.concat([x1,x2],self.dimension_split)
         return concat
@@ -94,15 +101,15 @@ class InvertableSequential(nn.Sequential):
         Computes forward pass of invertable neural networks composition.
         
         returns:
-        output and list of jacobians
+        output and list of jacobians determinants
         """
         out = input
-        det_jacobian = torch.ones_like(input)
+        jacobians = []
         for m in self:
-            out,deriv = m(out)
-            det_jacobian*=deriv
+            out,jacob = m(out)
+            jacobians.append(jacob)
         
-        return out,det_jacobian
+        return out,jacobians
     
     def inverse(self,out):
         """
