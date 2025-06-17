@@ -192,6 +192,21 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             nn.Linear(mlp_dim,input_dim,device=device),
         ])
         
+        self.local_attention = nn.Sequential(
+            nn.Conv1d(
+                input_dim,
+                input_dim,
+                kernel_size=5,
+                padding=2,
+                device=device,
+                groups=input_dim
+            ),
+            nn.Sigmoid()
+        )
+    
+    def _local_attnetion(self,x):
+        return x*self.local_attention(x.transpose(-2,-1)).transpose(-2,-1)
+    
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
         """
         Computes multihead cross attention for given context and query source.
@@ -212,8 +227,9 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         Q = self.Q(query_source)
         K,V = self.K(context),self.V(context)
         
-        attn = self.attn(Q,K,V)[0]
+        attn = self.attn(Q,K,V)[0]#*self.phi_qeury_source(query_source)
         attn=self.attn_norm(attn)
+        attn = self._local_attnetion(attn)
         
         #--------------------
         # print("total attn",time.time()-start)
@@ -230,38 +246,48 @@ class LinearAttention(nn.Module):
     Accepts Q,K,V of shapes [batch,heads,seq_length,dim]
     """
     def __init__(self,embed_dim):
+        """
+        Initialize linear attention module with given emb dim
+        
+        Accepts Q,K,V of shapes [batch,heads,seq_length,dim]
+        """
         super().__init__()
         self.embed_dim=embed_dim
-    
+
     def forward(self,Q,K,V,phi_Q,phi_K,compute_attn_weight  : bool = False):
-        phi_K=phi_K.transpose(-2,-1)
+        """
+        phi_Q,phi_K is produced from Q and K via kernel
+        """
+        phi_K = phi_K.transpose(-2,-1)
+        K = K.transpose(-2,-1)
         
         # here we apply RALA-like approach to increase phi_q @ phi_k matrix rank by rescaling each sample
-        # by it's relative importance to whole sequence
-        q_probe = torch.mean(Q, dim=-2)  # Reduce from (b, L, C) to (b, C) by summing over L
-        q_probe/=(self.embed_dim**0.5)
-        
-        # score_l = torch.einsum("bhc, bhlc -> bhl",q_probe,K).unsqueeze(-2).softmax(-1)
-        score_l = (q_probe.unsqueeze(2) @ K.transpose(-2,-1)).softmax(-1)
-        phi_K*=score_l
-        del q_probe, score_l
+        # compute global query
+        q_global = torch.mean(Q, dim=-2,keepdim=True)/(self.embed_dim**0.5)
+        alpha = (q_global @ K).softmax(-1)
+        phi_K=phi_K*alpha
         
         # the full version linear attention
         if compute_attn_weight:
-            linear_attn = phi_Q @ phi_K
-            linear_attn /= linear_attn.sum(-1,keepdim=True)
+            linear_attn = (phi_Q @ phi_K)
+            linear_attn = linear_attn/(linear_attn.sum(-1,keepdim=True) + 1e-6)
         else:
             linear_attn = None
         
         # rearanged attention version that have linear complexity
         K_sum = phi_K.sum(-1,keepdim=True)
         KV = phi_K @ V
-        linear_out_fast = phi_Q @ KV
-        linear_out_fast /= phi_Q @ K_sum + 1e-5
-        
-        del K_sum,KV
+        linear_out_fast = (phi_Q @ KV)/(phi_Q @ K_sum + 1e-6)
 
         return linear_out_fast,linear_attn
+
+class AddConst(nn.Module):
+    def __init__(self,c):
+        super().__init__()
+        self.c = c
+    def forward(self,x):
+        return x+self.c
+
 class MultiHeadLinearAttention(nn.Module):
     """
     Multi‐head wrapper around single‐head LinearAttention, allowing different
@@ -284,12 +310,14 @@ class MultiHeadLinearAttention(nn.Module):
         
         self.kernel_Q = nn.Sequential(
             nn.Linear(embed_dim,embed_dim,device=device),
-            nn.Tanh()
+            nn.Tanh(),
+            AddConst(1)
         )
         
         self.kernel_K = nn.Sequential(
             nn.Linear(embed_dim,embed_dim,device=device),
-            nn.Tanh()
+            nn.Tanh(),
+            AddConst(1)
         )
         
         self.feature_dropout = nn.Dropout(dropout, inplace=True)
@@ -323,8 +351,8 @@ class MultiHeadLinearAttention(nn.Module):
         B, L_Q, _ = Q.shape
         _, L_K, _ = K.shape
         
-        phi_Q = self.kernel_Q(Q)+1
-        phi_K = self.kernel_K(K)+1
+        phi_Q = self.kernel_Q(Q)
+        phi_K = self.kernel_K(K)
         
         phi_Qh_flat = self.split_heads(phi_Q)   # → [B * n_heads, L_Q, head_dim]
         phi_Kh_flat = self.split_heads(phi_K)   # → [B * n_heads, L_K, head_dim]
