@@ -378,6 +378,46 @@ class MultiHeadLinearAttention(nn.Module):
         return output, attn
 
 class EfficientChannelAttention(nn.Module):
+    """
+    Efficient Channel Attention (ECA) Module
+
+    Implements the Efficient Channel Attention mechanism from:
+    "ECA-Net: Efficient Channel Attention for Deep Convolutional Neural Networks"
+    (https://arxiv.org/abs/1910.03151)
+
+    This module computes attention weights across channels using a lightweight 
+    1D convolution applied to a globally pooled feature descriptor. It supports
+    inputs of 1D, 2D, or 3D spatial dimensions.
+
+    Parameters
+    ----------
+    channels : int
+        Number of input channels (C).
+    gamma : float, optional
+        Gamma value for computing the adaptive kernel size, by default 2.
+    b : int, optional
+        Bias term for computing the adaptive kernel size, by default 1.
+
+    Input Shape
+    -----------
+    x : torch.Tensor
+        Tensor of shape [N, C, D], [N, C, D1, D2], or [N, C, D1, D2, D3]
+
+    Output Shape
+    ------------
+    out : torch.Tensor
+        Tensor of same shape as input with channel-wise attention applied.
+
+    Example
+    -------
+    >>> eca = Efficient_Channel_Attention(channels=64)
+    >>> x1d = torch.randn(8, 64, 128)       # 1D input
+    >>> x2d = torch.randn(8, 64, 32, 32)    # 2D input
+    >>> x3d = torch.randn(8, 64, 8, 16, 16) # 3D input
+    >>> y1d = eca(x1d)
+    >>> y2d = eca(x2d)
+    >>> y3d = eca(x3d)
+    """
     def __init__(self, channels, gamma=2, b=1):
         super(EfficientChannelAttention, self).__init__()
         k = int(abs((math.log2(channels) / gamma) + (b / gamma)))
