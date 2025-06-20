@@ -38,7 +38,7 @@ class InvertableScaleAndTranslate(nn.Module):
     
     def get_scale_and_translate(self,x):
         scale,translate = self.model(x).chunk(2,self.dimension_split)
-        scale=scale.abs()
+        scale=scale.sigmoid()
         return scale,translate
     
     def forward(self, input):
@@ -55,15 +55,15 @@ class InvertableScaleAndTranslate(nn.Module):
         scale,translate = self.get_scale_and_translate(x1)
         
         z2 = x2*scale+translate
-        concat = torch.concat([x1,z2],self.dimension_split)
+        concat = torch.concat([z2,x1],self.dimension_split)
         concat_deriv = torch.concat([torch.ones_like(x1),scale],self.dimension_split)
+
+        # generator = torch.Generator(device=input.device).manual_seed(self.seed)
+        # shuffle_ind = torch.rand(concat.shape[self.dimension_split],generator=generator,device=input.device).argsort()
+        # concat = concat.index_select(self.dimension_split,shuffle_ind)
+        # concat_deriv = concat_deriv.index_select(self.dimension_split,shuffle_ind)
         
-        generator = torch.Generator(device=input.device).manual_seed(self.seed)
-        shuffle_ind = torch.rand(concat.shape[self.dimension_split],generator=generator,device=input.device).argsort()
-        concat_shuffle = concat.index_select(self.dimension_split,shuffle_ind)
-        concat_shuffle_deriv = concat_deriv.index_select(self.dimension_split,shuffle_ind)
-        
-        return concat_shuffle, concat_shuffle_deriv
+        return concat, concat_deriv
 
     def inverse(self,output):
         """
@@ -75,11 +75,11 @@ class InvertableScaleAndTranslate(nn.Module):
         Returns:
             torch.Tensor: Reconstructed input tensor.
         """
-        generator = torch.Generator(device=output.device).manual_seed(self.seed)
-        shuffle_ind = torch.rand(output.shape[self.dimension_split],generator=generator,device=output.device).argsort().argsort()
-        output = output.index_select(self.dimension_split,shuffle_ind)
+        # generator = torch.Generator(device=output.device).manual_seed(self.seed)
+        # shuffle_ind = torch.rand(output.shape[self.dimension_split],generator=generator,device=output.device).argsort().argsort()
+        # output = output.index_select(self.dimension_split,shuffle_ind)
         
-        x1,z2 = output.chunk(2,self.dimension_split)
+        z2,x1 = output.chunk(2,self.dimension_split)
         scale,translate = self.get_scale_and_translate(x1)
         
         x2 = (z2-translate)/(scale+1e-6)
