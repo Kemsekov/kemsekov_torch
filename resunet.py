@@ -2,12 +2,13 @@ from typing import List
 from residual import *
 from conv_modules import *
 from common_modules import Interpolate
+from attention import EfficientSpatialChannelAttention
 class Encoder(torch.nn.Module):
     """
     Encoder module for the Residual U-Net architecture.
 
     The Encoder progressively downsamples the input tensor using a sequence of ResidualBlocks,
-    each followed by an optional attention module (e.g., SCSEModule) and dropout for regularization.
+    each followed by an optional attention module (e.g., EfficientSpatialChannelAttention) and dropout for regularization.
     It preserves intermediate outputs as skip connections, which can be utilized by the Decoder
     for feature fusion during upsampling.
 
@@ -24,7 +25,7 @@ class Encoder(torch.nn.Module):
         dilations, 
         block_sizes,
         dropout_p=0.5,
-        attention = SCSEModule,
+        attention = EfficientSpatialChannelAttention,
         dimensions = 2,
         normalization : Literal['batch','instance','group',None] = 'batch',
         kernel_size=4,
@@ -34,7 +35,7 @@ class Encoder(torch.nn.Module):
         Initializes the Encoder module.
 
         Constructs a sequence of ResidualBlocks for downsampling, each optionally followed by an attention module
-        (e.g., SCSEModule) and dropout. The final ResidualBlock is stored separately as `down5` to mark the end
+        (e.g., EfficientSpatialChannelAttention) and dropout. The final ResidualBlock is stored separately as `down5` to mark the end
         of the downsampling path.
 
         **Args:**
@@ -43,7 +44,7 @@ class Encoder(torch.nn.Module):
             dilations (List[List[int]]): List of dilation rates for each ResidualBlock, allowing for multi-scale feature extraction.
             block_sizes (List[int]): Number of convolutional operations (repeats) in each ResidualBlock.
             dropout_p (float, optional): Dropout probability applied after each downsampling block. Default is 0.5.
-            attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block. If a single constructor is provided, it is applied to all blocks.
+            attention: Attention module constructor (e.g., EfficientSpatialChannelAttention) or a list of constructors for each block. If a single constructor is provided, it is applied to all blocks.
             dimensions (int, optional): Dimensionality of the input tensor (1, 2, or 3). Default is 2.
             normalization (Literal['batch','instance',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', or None). Default is 'batch'.
             kernel_size (int,tuple, optional): Kernel size for convolutions in ResidualBlocks. Default is 4.
@@ -127,7 +128,7 @@ class Decoder(torch.nn.Module):
     Decoder module for the Residual U-Net architecture.
 
     The Decoder progressively upsamples the input tensor using a sequence of transposed ResidualBlocks,
-    each optionally followed by an attention module (e.g., SCSEModule). It supports concatenation of skip
+    each optionally followed by an attention module (e.g., EfficientSpatialChannelAttention). It supports concatenation of skip
     connections from the Encoder, reducing the concatenated feature channels using 1x1 convolutions. Dropout
     is applied after each upsampling block to enhance regularization.
 
@@ -143,7 +144,7 @@ class Decoder(torch.nn.Module):
         up_out_channels, 
         block_sizes,
         dropout_p=0.5,
-        attention = SCSEModule,
+        attention = EfficientSpatialChannelAttention,
         dimensions = 2,
         normalization : Literal['batch','instance','group',None] = 'batch',
         kernel_size=4,
@@ -161,7 +162,7 @@ class Decoder(torch.nn.Module):
             up_out_channels (List[int]): List of output channel sizes for each ResidualBlock in the decoder.
             block_sizes (List[int]): Number of convolutional operations (repeats) in each ResidualBlock.
             dropout_p (float, optional): Dropout probability applied after each upsampling block. Default is 0.5.
-            attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block. If a single constructor is provided, it is applied to all blocks.
+            attention: Attention module constructor (e.g., EfficientSpatialChannelAttention) or a list of constructors for each block. If a single constructor is provided, it is applied to all blocks.
             dimensions (int, optional): Dimensionality of the input tensor (1, 2, or 3). Default is 2.
             normalization (Literal['batch','instance',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', or None). Default is 'batch'.
             kernel_size (int,tuple, optional): Kernel size for convolutions in ResidualBlocks. Default is 4.
@@ -279,7 +280,7 @@ class ResidualUnet(torch.nn.Module):
         block_sizes=[2,2,2,2,2],
         output_scale = 1,
         dimensions=2,
-        attention = SCSEModule,
+        attention = EfficientSpatialChannelAttention,
         dropout_p=0.1,
         normalization : Literal['batch','instance','group','layer',None] = 'batch',
         layers_count = 6
@@ -297,7 +298,7 @@ class ResidualUnet(torch.nn.Module):
             block_sizes (List[int], optional): List specifying the number of convolutional operations (repeats) for each ResidualBlock in the Encoder and Decoder. Default is [2, 2, 2, 2, 2].
             output_scale (float, optional): Scaling factor for the output tensor relative to the input size. Must be a positive power of 2. Default is 1 (no scaling).
             dimensions (int, optional): Dimensionality of the input tensor (1, 2, or 3). Default is 2.
-            attention: Attention module constructor (e.g., SCSEModule) or a list of constructors for each block in the Encoder and Decoder. If a single constructor is provided, it is applied to all blocks.
+            attention: Attention module constructor (e.g., EfficientSpatialChannelAttention) or a list of constructors for each block in the Encoder and Decoder. If a single constructor is provided, it is applied to all blocks.
             dropout_p (float, optional): Dropout probability applied in the Encoder, Decoder, and connectors. Default is 0.5.
             normalization (Literal['batch','instance','group',None], optional): Type of normalization to use in ResidualBlocks ('batch', 'instance', 'group', or None). Default is 'batch'.
             layers_count: count of layers to use, max is 6, can be smaller if needed

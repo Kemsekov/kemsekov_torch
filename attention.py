@@ -377,70 +377,58 @@ class MultiHeadLinearAttention(nn.Module):
 
         return output, attn
 
-class EfficientChannelAttention(nn.Module):
+class EfficientSpatialChannelAttention(nn.Module):
     """
-    Efficient Channel Attention (ECA) Module
+    Efficient Spatial Channel Attention (ESCA) Module
 
-    Implements the Efficient Channel Attention mechanism from:
-    "ECA-Net: Efficient Channel Attention for Deep Convolutional Neural Networks"
-    (https://arxiv.org/abs/1910.03151)
-
-    This module computes attention weights across channels using a lightweight 
-    1D convolution applied to a globally pooled feature descriptor. It supports
-    inputs of 1D, 2D, or 3D spatial dimensions.
+    Applies efficient spatial attention across channels using a 1D convolution
+    over the flattened spatial dimensions. This module computes attention weights
+    that modulate channel responses based on spatial structure, improving
+    feature representation with minimal overhead.
 
     Parameters
     ----------
     channels : int
         Number of input channels (C).
-    gamma : float, optional
-        Gamma value for computing the adaptive kernel size, by default 2.
-    b : int, optional
-        Bias term for computing the adaptive kernel size, by default 1.
+    ks : int, optional
+        Kernel size for the 1D convolution used in spatial attention,
+        by default 5. Must be an odd number for symmetric padding.
 
     Input Shape
     -----------
     x : torch.Tensor
-        Tensor of shape [N, C, D], [N, C, D1, D2], or [N, C, D1, D2, D3]
+        Input tensor of shape [N, C, *spatial_dims], where spatial_dims can be 1D, 2D, or 3D.
 
     Output Shape
     ------------
     out : torch.Tensor
-        Tensor of same shape as input with channel-wise attention applied.
+        Tensor of same shape as input, with spatially modulated channel responses.
 
     Example
     -------
-    >>> eca = Efficient_Channel_Attention(channels=64)
-    >>> x1d = torch.randn(8, 64, 128)       # 1D input
-    >>> x2d = torch.randn(8, 64, 32, 32)    # 2D input
-    >>> x3d = torch.randn(8, 64, 8, 16, 16) # 3D input
-    >>> y1d = eca(x1d)
-    >>> y2d = eca(x2d)
-    >>> y3d = eca(x3d)
+    >>> module = EfficientSpatialChannelAttention(channels=64, ks=5)
+    >>> x1d = torch.randn(8, 64, 128)
+    >>> x2d = torch.randn(8, 64, 32, 32)
+    >>> x3d = torch.randn(8, 64, 8, 16, 16)
+    >>> y1d = module(x1d)
+    >>> y2d = module(x2d)
+    >>> y3d = module(x3d)
     """
-    def __init__(self, channels, gamma=2, b=1):
-        super(EfficientChannelAttention, self).__init__()
-        k = int(abs((math.log2(channels) / gamma) + (b / gamma)))
-        k = k if k % 2 else k + 1
-
-        self.kernel_size = k
-        self.conv = nn.Conv1d(1, 1, kernel_size=k, padding=k // 2, bias=False)
-        self.sigmoid = nn.Sigmoid()
+    def __init__(self, channels,ks=5):
+        super().__init__()
+        self.spatial_attn = nn.Sequential(
+            nn.Conv1d(channels,channels,ks,padding=ks//2),
+            nn.Sigmoid()
+        )
 
     def forward(self, x):
         # x: [N, C, ...]
         N, C = x.shape[:2]
 
         # Global Average Pooling over spatial dims to [N, C, 1]
-        att = x.mean(dim=tuple(range(2, x.dim())), keepdim=True)  # [N, C, 1, ..., 1] → [N, C, 1]
-
-        # Reshape to [N, 1, C] for Conv1d
-        att = att.view(N, 1, C)
-        att = self.conv(att)
-        att = self.sigmoid(att)
-
-        # Reshape back to [N, C, 1, ..., 1]
-        att = att.view(N, C, *([1] * (x.dim() - 2)))
-
-        # Apply attention
-        return x * att
+        flat = x.view(N,C,-1)
+        spatian_attn = self.spatial_attn(flat)
+        
+        # out = torch.max(flat*ch_attn,flat*spatian_attn)
+        out = flat*spatian_attn
+        return out.view(x.shape)
