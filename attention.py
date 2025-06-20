@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from kemsekov_torch.residual import Residual
 import math
 
+from kemsekov_torch.common_modules import ChanLayerNorm
+
 def reshape_to_transformer_input(x : torch.Tensor):
     """
     x of shape [batch,channels,...dims...]
@@ -187,20 +189,17 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             nn.Linear(mlp_dim,input_dim,device=device),
         ])
         
-        self.local_attention = nn.Sequential(
-            nn.Conv1d(
-                input_dim,
-                input_dim,
-                kernel_size=5,
-                padding=2,
-                device=device,
-                groups=input_dim
-            ),
-            nn.Sigmoid()
+        self.local_attention = nn.Conv1d(
+            input_dim,
+            input_dim,
+            kernel_size=5,
+            padding=2,
+            device=device,
+            groups=heads
         )
     
     def _local_attnetion(self,x):
-        return x*self.local_attention(x.transpose(-2,-1)).transpose(-2,-1)
+        return x+self.local_attention(x.transpose(-2,-1)).transpose(-2,-1)
     
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
         """
@@ -223,8 +222,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         K,V = self.K(context),self.V(context)
         
         attn = self.attn(Q,K,V)[0]#*self.phi_qeury_source(query_source)
-        attn=self.attn_norm(attn)
         attn = self._local_attnetion(attn)
+        attn=self.attn_norm(attn)
         
         #--------------------
         # print("total attn",time.time()-start)
