@@ -19,9 +19,82 @@ class InvertableLeakyReLU(torch.nn.Module):
         output = torch.where(x >= 0, x, x / self.negative_slope)
         return output
 
+class InvertableTanh(torch.nn.Module):
+    def __init__(self,scale=1):
+        super().__init__()
+        self.scale=scale
+    
+    def forward(self, x):
+        return self.scale*torch.tanh(x)
+    
+    def inverse(self, y):
+        # Inverse: y = scale * tanh(x) => x = arctanh(y/scale)
+        # arctanh(z) = 0.5 * ln((1+z)/(1-z)), where z = y/scale
+        z = y / self.scale
+        # Clamp z to [-1+eps, 1-eps] to avoid numerical instability
+        z = torch.clamp(z, min=-1.0 + 1e-6, max=1.0 - 1e-6)
+        return 0.5 * torch.log((1 + z) / (1 - z))
+    
+    def derivative(self, x):
+        # Derivative: d/dx [scale * tanh(x)] = scale * (1 - tanh^2(x))
+        return self.scale * (1 - torch.tanh(x)**2)
+
+class SymetricLog(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self,x):
+        mask = x>0
+        out = x*0
+        out[mask]=(1+x[mask]).log().to(x.dtype)
+        out[~mask]=-(1-x[~mask]).log().to(x.dtype)
+        return out
+    
+    def inverse(self, y):
+        mask = y >= 0
+        out = torch.empty_like(y)
+        # positive branch: y = log(1+x)  ⇒  x = exp(y) - 1
+        out[mask] = torch.exp(y[mask]) - 1
+        # negative branch: y = -log(1-x) ⇒  x = 1 - exp(-y)
+        out[~mask] = 1 - torch.exp(-y[~mask])
+        return out
+    
+    def derivative(self, x):
+        mask = x > 0
+        out = torch.empty_like(x)
+        # for x > 0: d/dx [log(1+x)] = 1/(1+x)
+        out[mask] = 1.0 / (1 + x[mask] + 1e-6)
+        # for x <= 0: d/dx [-log(1-x)] = 1/(1-x)
+        out[~mask] = 1.0 / (1 - x[~mask] + 1e-6)
+        return out
+
+class SymetricSqrt(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self,x):
+        mask = x>0
+        out = x*0
+        out[mask]=((1+x[mask]).sqrt()-1).to(x.dtype)
+        out[~mask]=(1-(1-x[~mask]).sqrt()).to(x.dtype)
+        return out
+    def inverse(self, y):
+        mask = y >= 0
+        out = torch.empty_like(y)
+        out[mask]   = (y[mask] + 1).pow(2) - 1
+        out[~mask]  = 1 - (1 - y[~mask]).pow(2)
+        return out
+    
+    def derivative(self, x):
+        mask = x > 0
+        out = torch.empty_like(x)
+        # for x>0: d/dx [sqrt(1+x)-1] = 1/(2*sqrt(1+x))
+        out[mask] = 1.0 / (2 * (1 + x[mask]).sqrt()+1e-6)
+        # for x<=0: d/dx [1 - sqrt(1-x)] = 1/(2*sqrt(1-x))
+        out[~mask] = 1.0 / (2 * (1 - x[~mask]).sqrt()+1e-6)
+        return out
+    
 class InvertableScaleAndTranslate(nn.Module):
     """
-    Invertible neural network for normalizing flows, applying scaling, translation, and shuffling.
+    Invertible neural network for normalizing flows, applying scaling, translation, and shuffling with nonlinear function, which provides infinitely differentiable invertable neural network.
     
     Args:
         model (nn.Module): Neural network to compute scaling and translation factors. It must returns twise dimensions as it takes as input.
@@ -35,10 +108,13 @@ class InvertableScaleAndTranslate(nn.Module):
             seed = torch.randint(0, 1000, [1])[0].item()  # Generate random integer
         self.seed = seed
         self.dimension_split = dimension_split  # Ensure integer type
+        self.non_linearity = InvertableTanh(2)
     
     def get_scale_and_translate(self,x):
         scale,translate = self.model(x).chunk(2,self.dimension_split)
-        scale=scale.sigmoid()
+        # make scale positive
+        scale=torch.nn.functional.elu(scale)+1
+        
         return scale,translate
     
     def forward(self, input):
@@ -55,15 +131,11 @@ class InvertableScaleAndTranslate(nn.Module):
         scale,translate = self.get_scale_and_translate(x1)
         
         z2 = x2*scale+translate
-        concat = torch.concat([z2,x1],self.dimension_split)
-        concat_deriv = torch.concat([torch.ones_like(x1),scale],self.dimension_split)
-
-        # generator = torch.Generator(device=input.device).manual_seed(self.seed)
-        # shuffle_ind = torch.rand(concat.shape[self.dimension_split],generator=generator,device=input.device).argsort()
-        # concat = concat.index_select(self.dimension_split,shuffle_ind)
-        # concat_deriv = concat_deriv.index_select(self.dimension_split,shuffle_ind)
+        concat = torch.concat([self.non_linearity(z2),x1],self.dimension_split)
         
-        return concat, concat_deriv
+        jacob_det = self.non_linearity.derivative(z2)*scale
+        
+        return concat, jacob_det
 
     def inverse(self,output):
         """
@@ -75,13 +147,10 @@ class InvertableScaleAndTranslate(nn.Module):
         Returns:
             torch.Tensor: Reconstructed input tensor.
         """
-        # generator = torch.Generator(device=output.device).manual_seed(self.seed)
-        # shuffle_ind = torch.rand(output.shape[self.dimension_split],generator=generator,device=output.device).argsort().argsort()
-        # output = output.index_select(self.dimension_split,shuffle_ind)
+        f_z2,x1 = output.chunk(2,self.dimension_split)
+        z2 = self.non_linearity.inverse(f_z2)
         
-        z2,x1 = output.chunk(2,self.dimension_split)
         scale,translate = self.get_scale_and_translate(x1)
-        
         x2 = (z2-translate)/(scale+1e-6)
         concat = torch.concat([x1,x2],self.dimension_split)
         return concat

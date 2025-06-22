@@ -222,7 +222,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         K,V = self.K(context),self.V(context)
         
         attn = self.attn(Q,K,V)[0]#*self.phi_qeury_source(query_source)
-        attn = self._local_attnetion(attn)
+        attn += self._local_attnetion(query_source)
         attn=self.attn_norm(attn)
         
         #--------------------
@@ -254,12 +254,15 @@ class LinearAttention(nn.Module):
         """
         phi_K = phi_K.transpose(-2,-1)
         K = K.transpose(-2,-1)
+        embed_dim = Q.shape[-1]
+        seq_len = Q.shape[-2]
         
         # here we apply RALA-like approach to increase phi_q @ phi_k matrix rank by rescaling each sample
         # compute global query
-        q_global = torch.mean(Q, dim=-2,keepdim=True)/(self.embed_dim**0.5)
-        alpha = (q_global @ K).softmax(-1)
-        phi_K=phi_K*alpha
+        
+        q_global = torch.mean(Q,-2,keepdim=True)/(embed_dim**0.5)
+        alpha = (q_global @ phi_K).softmax(-1)*seq_len
+        phi_K=alpha*phi_K
         
         # the full version linear attention
         if compute_attn_weight:

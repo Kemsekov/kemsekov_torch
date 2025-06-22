@@ -90,25 +90,7 @@ class Mean0Std1Norm(torch.nn.Module):
         mean = x.mean(dims,keepdim=True)
         std = x.std(dims,keepdim=True)+1e-6
         return (x-mean)/std
-class SymetricLog(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self,x):
-        mask = x>0
-        out = x*0
-        out[mask]=(1+x[mask]).log().to(x.dtype)
-        out[~mask]=-(1-x[~mask]).log().to(x.dtype)
-        return out
 
-class SymetricSqrt(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self,x):
-        mask = x>0
-        out = x*0
-        out[mask]=((1+x[mask]).sqrt()-1).to(x.dtype)
-        out[~mask]=(1-(1-x[~mask]).sqrt()).to(x.dtype)
-        return out
 def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance','layer', 'group','Mean0Std1', None]):
     """Get normalization for given dimensions from its name.
 
