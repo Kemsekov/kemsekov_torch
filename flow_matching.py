@@ -62,7 +62,7 @@ def flow_matching_pair(model,input_domain,target_domain):
     pred_direction = model(xt,time)
     
     return pred_direction,target, nmse_loss(pred_direction,target)
-    
+
 def sample_with_euler_integrator(model, x0, steps, churn_scale=0.005, inverse=False):
     """
     Samples from a flow-matching model with Euler integration.
@@ -82,9 +82,11 @@ def sample_with_euler_integrator(model, x0, steps, churn_scale=0.005, inverse=Fa
         ts = torch.linspace(1, 0, steps+1, device=device)
     else:
         ts = torch.linspace(0, 1, steps+1, device=device)
-    
+    # ts=ts.sqrt()
     x0 = x0.to(device)
     xt = x0
+    dt = -1/steps if inverse else 1/steps
+    
     with torch.no_grad():
         for i in range(0,steps-1):
             t = ts[i]
@@ -93,51 +95,7 @@ def sample_with_euler_integrator(model, x0, steps, churn_scale=0.005, inverse=Fa
             xt = churn_scale * noise + (1 - churn_scale) * xt
 
             pred = model(xt, t[None])  # ensure shape (1,) or (batch,)
-            dt = ts[i + 1] - t
             # forward or reverse Euler update
             xt = xt + dt * pred
-
-    return xt
-
-
-# second-order Heun integrator
-def sample_with_heun_integrator(model, x0, steps, churn_scale=0.005, inverse=False):
-    """
-    Samples from a flow-matching model using the second-order Heun integrator.
-
-    Args:
-        model: Callable vθ(x, t) predicting vector field/motion.
-        x0: Starting point (image or noise tensor).
-        steps: Number of Heun steps.
-        churn_scale: Amount of noise added for stability each step.
-        inverse (bool): If False, integrate forward from x0 to x1 (image → noise).
-                        If True, reverse for noise → image.
-    Returns:
-        xt: Final sample tensor.
-    """
-    device = next(model.parameters()).device
-    if inverse:
-        ts = torch.linspace(1, 0, steps + 1, device=device)
-    else:
-        ts = torch.linspace(0, 1, steps + 1, device=device)
-
-    x0 = x0.to(device)
-    xt = x0
-    with torch.no_grad():
-        for i in range(steps - 1):
-            t = ts[i]
-            t_next = ts[i + 1]
-            # Optional churn noise
-            noise = xt.std() * torch.randn_like(xt) + xt.mean()
-            xt = churn_scale * noise + (1 - churn_scale) * xt
-
-            v1 = model(xt, t[None])  # Ensure shape (1,) or (batch,)
-            step_size = t_next - t
-
-            x_mid = xt + step_size * v1
-            v2 = model(x_mid, t_next[None])
-
-            # Forward or reverse Heun update
-            xt = xt + step_size * 0.5 * (v1 + v2)
 
     return xt
