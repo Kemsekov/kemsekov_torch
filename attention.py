@@ -221,8 +221,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         Q = self.Q(query_source)
         K,V = self.K(context),self.V(context)
         
-        attn = self.attn(Q,K,V)[0]#*self.phi_qeury_source(query_source)
-        attn += self._local_attnetion(query_source)
+        attn = self.attn(Q,K,V)[0]
+        attn = self._local_attnetion(attn)
         attn=self.attn_norm(attn)
         
         #--------------------
