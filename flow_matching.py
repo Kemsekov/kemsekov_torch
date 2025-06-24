@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 
 def nmse_loss(preds, targets, eps=1e-8):
     preds = preds.flatten(1)
