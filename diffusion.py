@@ -150,6 +150,7 @@ class DiffusionBlock(torch.nn.Module):
             kernel_size=4,
             stride=2,
             dimensions=dimensions,
+            activation=nn.GELU,
             normalization=normalization
         )
         
@@ -188,7 +189,8 @@ class Diffusion(torch.nn.Module):
         
         commin_res_block=dict(
             normalization=common_diff_block['normalization'],
-            dimensions=common_diff_block['dimensions']
+            dimensions=common_diff_block['dimensions'],
+            activation = nn.GELU
         )
         
         self.dimensions = common_diff_block['dimensions']
