@@ -67,7 +67,7 @@ class DiffusionUtils:
 
 
 
-def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,normalize_pred = False,regenerate_noise = False,rescale_generated_noise=False):
+def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,normalize_pred = True,regenerate_noise = True,rescale_generated_noise=True):
     """
     Samples diffusion model
     Parameters:
