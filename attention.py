@@ -187,7 +187,6 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         self.attn_norm = nn.LayerNorm(input_dim,device=device)
         
         self.mlp=Residual([
-            activation(),
             nn.Linear(input_dim,mlp_dim,device=device),
             nn.Dropout(dropout,inplace=True),
             activation(),
@@ -205,8 +204,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         )
     
     def _local_attnetion(self,x):
-        la = self.local_attention(x.transpose(-2,-1)).transpose(-2,-1)
-        return self.local_attention_gamma*la
+        return self.local_attention_gamma*self.local_attention(x.transpose(-2,-1)).transpose(-2,-1)
     
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
         """
