@@ -2,7 +2,51 @@ from typing import List, Literal, Tuple
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-
+class ConcatTensors(torch.nn.Module):
+    """
+        This module accepts list of tensors and concatenates them along axis `dim`
+    """
+    def __init__(self, dim = 1):
+        """
+        This module accepts list of tensors and concatenates them along axis `dim`
+        """
+        super().__init__()
+        self.dim = dim
+    def forward(self,tensors):
+        """
+        tensors: a list of `torch.Tensor` objects that need to be concatenated
+        """
+        return torch.concat(tensors,self.dim)
+class Residual(torch.nn.Module):
+    """
+    Residual module that sums outputs of module with it's input. It supports any models that outputs any shape.
+    """
+    def __init__(self,m : torch.nn.Module | List[torch.nn.Module],init_at_zero = True):
+        """
+        Residual module that wraps around module `m`.
+        
+        This module uses Re-Zero approach to add module output(multiplied by `alpha`) with it's inputs.
+        
+        When module output shape != input tensor shape, it uses nearest-exact resize approach to match input shape to output, 
+        and performs addition as described.
+        
+        m: torch module, or list of modules (will be converted to sequential)
+        init_at_zero: init module with learnable parameter 0.0, so only skip connection is present
+        """
+        super().__init__()
+        if isinstance(m,list) or isinstance(m,tuple):
+            m = torch.nn.Sequential(*m)
+        
+        self.m = m
+        if init_at_zero:
+            self.alpha = torch.nn.Parameter(torch.tensor(0.0))
+        else:
+            self.alpha = 1
+            
+    def forward(self,x):
+        out = self.m(x)
+        x_resize = resize_tensor(x,out.shape[1:])
+        return self.alpha*out+x_resize
 # Channel-wise Layer Normalization for N'd inputs
 class ChanLayerNorm(nn.Module):
     def __init__(self, dim):
@@ -60,7 +104,6 @@ def resize_tensor(input : torch.Tensor,output_size : List[int],dimension_resize_
     if is_unsqueeze:
         return resize_channel[:,0,:]
     return resize_channel
-
 class Resize(nn.Module):
     """
     A PyTorch module that adjusts the spatial dimensions and channel count of an input tensor by simply resizing it.
@@ -71,7 +114,6 @@ class Resize(nn.Module):
 
     def forward(self, x):
         return resize_tensor(x,self.output_size)
-
 class Interpolate(nn.Module):
     def __init__(self, scale_factor):
         super().__init__()
@@ -83,7 +125,10 @@ class Interpolate(nn.Module):
         return resize_tensor(x,shape)
 
 class Mean0Std1Norm(torch.nn.Module):
-    def __init__(self, *args, **kwargs):
+    """
+    Transforms input of shape [Batch,Channels,...] to have mean 0 std 1 along spatial dimensions (...)
+    """
+    def __init__(self):
         super().__init__()
     def forward(self,x):
         dims = list(range(len(x.shape)))[2:]

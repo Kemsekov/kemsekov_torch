@@ -5,38 +5,6 @@ import torch
 import torch.nn as nn
 from conv_modules import *
 from common_modules import *
-
-class Residual(torch.nn.Module):
-    """
-    Residual module that sums outputs of module with it's input. It supports any models that outputs any shape.
-    """
-    def __init__(self,m : torch.nn.Module | List[torch.nn.Module],init_at_zero = True):
-        """
-        Residual module that wraps around module `m`.
-        
-        This module uses Re-Zero approach to add module output(multiplied by `alpha`) with it's inputs.
-        
-        When module output shape != input tensor shape, it uses nearest-exact resize approach to match input shape to output, 
-        and performs addition as described.
-        
-        m: torch module, or list of modules (will be converted to sequential)
-        init_at_zero: init module with learnable parameter 0.0, so only skip connection is present
-        """
-        super().__init__()
-        if isinstance(m,list) or isinstance(m,tuple):
-            m = torch.nn.Sequential(*m)
-        
-        self.m = m
-        if init_at_zero:
-            self.alpha = torch.nn.Parameter(torch.tensor(0.0))
-        else:
-            self.alpha = 1
-            
-    def forward(self,x):
-        out = self.m(x)
-        x_resize = resize_tensor(x,out.shape[1:])
-        return self.alpha*out+x_resize
-
 class ResidualBlock(torch.nn.Module):
     def __init__(
         self,

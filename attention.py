@@ -7,12 +7,12 @@ import math
 
 from kemsekov_torch.common_modules import ChanLayerNorm
 
-def reshape_to_transformer_input(x : torch.Tensor):
+def _reshape_to_transformer_input(x : torch.Tensor):
     """
     x of shape [batch,channels,...dims...]
     """
     return x.flatten(2).permute(0,2,1)
-def restore_shape_of_transformer_output(out,src_shape : List[int]):
+def _restore_shape_of_transformer_output(out,src_shape : List[int]):
     return out.permute(0,2,1).view(src_shape)
 
 class FlattenSpatialDimensions(nn.Module):
@@ -39,15 +39,15 @@ class FlattenSpatialDimensions(nn.Module):
         
     def forward(self,x):
         x_shape = list(x.shape)
-        x_flat = reshape_to_transformer_input(x)
+        x_flat = _reshape_to_transformer_input(x)
         out = self.m(x_flat)
         x_shape[1] = out.shape[-1] # update channels
-        return restore_shape_of_transformer_output(out,torch.Size(x_shape))
+        return _restore_shape_of_transformer_output(out,torch.Size(x_shape))
 
 # these two modules are kinda legacy, they don't implement anything, just for convenience
 class TransformerSelfAttentionBlock(nn.Module):
     """
-    Full Self-Attention transformer encoder that accepts tensors of shape [batch,channels,...dims...]
+    Full Self-Attention transformer encoder that accepts tensors of shape [batch,length,channels]
     """
     def __init__(
         self, 
@@ -77,7 +77,7 @@ class TransformerSelfAttentionBlock(nn.Module):
         return out
 class TransformerCrossAttentionBlock(nn.Module):
     """
-    Full Cross-Attention transformer decoder that accepts tensors of shape [batch,channels,...dims...]
+    Full Cross-Attention transformer decoder that accepts tensors of shape [batch,length,channels]
     """
     def __init__(
         self, 
@@ -110,7 +110,7 @@ class TransformerCrossAttentionBlock(nn.Module):
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
         return out
 class LinearSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU):
         """
         Linear self-attention block
         
@@ -123,13 +123,15 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         dropout: dropout to apply to attention layer
         
         device: where to locate module
+        
+        activation: what activation function to use
         """
         super().__init__()
-        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device)
+        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation)
     def forward(self,x):
         return self.attn(x,x)
 class LinearCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU):
         """
         Linear cross-attention block
         
@@ -144,6 +146,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         dropout: dropout to apply to attention layer
         
         device: where to locate module
+        
+        activation: what activation function to use
         """
         super().__init__()
         self.Q = nn.Sequential(
@@ -183,9 +187,10 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         self.attn_norm = nn.LayerNorm(input_dim,device=device)
         
         self.mlp=Residual([
+            activation(),
             nn.Linear(input_dim,mlp_dim,device=device),
             nn.Dropout(dropout,inplace=True),
-            nn.GELU(),
+            activation(),
             nn.Linear(mlp_dim,input_dim,device=device),
         ])
         
