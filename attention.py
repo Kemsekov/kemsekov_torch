@@ -1,48 +1,7 @@
-from typing import List
 import torch
 from torch import nn
-import torch.nn.functional as F
 from kemsekov_torch.residual import Residual
-import math
-
-from kemsekov_torch.common_modules import ChanLayerNorm
-
-def _reshape_to_transformer_input(x : torch.Tensor):
-    """
-    x of shape [batch,channels,...dims...]
-    """
-    return x.flatten(2).permute(0,2,1)
-def _restore_shape_of_transformer_output(out,src_shape : List[int]):
-    return out.permute(0,2,1).view(src_shape)
-
-class FlattenSpatialDimensions(nn.Module):
-    """
-    Prepares vison-like 1d,2d,3d sequential data into format suitable for transformer
-    
-    Permutes spatial dimension-like input 
-    `[batch,channels,dim1,dim2,...]` to `[batch,dim*dim2*...,channels]`
-    
-    Then feeds this tensor to input module m and reshapes it's output back to original shape.
-    """
-    def __init__(self, m):
-        """
-        Permutes spatial dimension-like input 
-        `[batch,channels,dim1,dim2,...]` to `[batch,dim*dim2*...,channels]`
-        
-        Then feeds this tensor to input module m and reshapes it's output back to original shape.
-        """
-        super().__init__()
-        if isinstance(m,list) or isinstance(m,tuple):
-            self.m = nn.Sequential(*m)
-        else:
-            self.m  = m
-        
-    def forward(self,x):
-        x_shape = list(x.shape)
-        x_flat = _reshape_to_transformer_input(x)
-        out = self.m(x_flat)
-        x_shape[1] = out.shape[-1] # update channels
-        return _restore_shape_of_transformer_output(out,torch.Size(x_shape))
+from kemsekov_torch.common_modules import AddConst
 
 # these two modules are kinda legacy, they don't implement anything, just for convenience
 class TransformerSelfAttentionBlock(nn.Module):
@@ -282,13 +241,6 @@ class LinearAttention(nn.Module):
         linear_out_fast = (phi_Q @ KV)/(phi_Q @ K_sum + 1e-6)
 
         return linear_out_fast,linear_attn
-
-class AddConst(nn.Module):
-    def __init__(self,c):
-        super().__init__()
-        self.c = c
-    def forward(self,x):
-        return x+self.c
 
 class MultiHeadLinearAttention(nn.Module):
     """

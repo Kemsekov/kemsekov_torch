@@ -1,6 +1,5 @@
 from typing import List, Literal, Tuple
 import torch
-import torch.nn.functional as F
 import torch.nn as nn
 class ConcatTensors(torch.nn.Module):
     """
@@ -47,23 +46,52 @@ class Residual(torch.nn.Module):
         out = self.m(x)
         x_resize = resize_tensor(x,out.shape[1:])
         return self.alpha*out+x_resize
-# Channel-wise Layer Normalization for N'd inputs
-class ChanLayerNorm(nn.Module):
-    def __init__(self, dim):
+class AddConst(nn.Module):
+    """Adds constant `c` to tensor"""
+    def __init__(self,c):
         super().__init__()
-        self.ln = nn.LayerNorm(dim)
+        self.c = c
+    def forward(self,x):
+        return x+self.c
 
-    def forward(self, x):
-        x_shape = x.shape
-        x = x.flatten(2)
-        # Input x has shape (batch_size, dim, seq_len)
-        # Transpose to (batch_size, seq_len, dim) for nn.LayerNorm
-        x = x.transpose(1, 2)
-        # Apply layer normalization over the last dimension (dim)
-        x = self.ln(x)
-        # Transpose back to (batch_size, dim, seq_len)
-        x = x.transpose(1, 2)
-        return x.view(x_shape)
+def _reshape_to_transformer_input(x : torch.Tensor):
+    """
+    x of shape [batch,channels,...dims...]
+    """
+    return x.flatten(2).permute(0,2,1)
+def _restore_shape_of_transformer_output(out,src_shape : List[int]):
+    return out.permute(0,2,1).view(src_shape)
+class FlattenSpatialDimensions(nn.Module):
+    """
+    Prepares vison-like 1d,2d,3d sequential data into format suitable for transformer
+    
+    Permutes spatial dimension-like input 
+    `[batch,channels,dim1,dim2,...]` to `[batch,dim*dim2*...,channels]`
+    
+    Then feeds this tensor to input module m and reshapes it's output back to original shape.
+    """
+    def __init__(self, m):
+        """
+        Permutes spatial dimension-like input 
+        `[batch,channels,dim1,dim2,...]` to `[batch,dim*dim2*...,channels]`
+        
+        Then feeds this tensor to input module m and reshapes it's output back to original shape.
+
+        m: `torch.nn.Module` or `List[torch.nn.Module]`
+        """
+        super().__init__()
+        if isinstance(m,list) or isinstance(m,tuple):
+            self.m = nn.Sequential(*m)
+        else:
+            self.m  = m
+        
+    def forward(self,x):
+        x_shape = list(x.shape)
+        x_flat = _reshape_to_transformer_input(x)
+        out = self.m(x_flat)
+        x_shape[1] = out.shape[-1] # update channels
+        return _restore_shape_of_transformer_output(out,torch.Size(x_shape))
+
 class ConstModule(torch.nn.Module):
     """Module that returns constant"""
     def __init__(self,constant = 0):
@@ -71,7 +99,6 @@ class ConstModule(torch.nn.Module):
         self.constant=constant
     def forward(self,x):
         return self.constant
-
 # @torch.jit.script
 def resize_tensor(input : torch.Tensor,output_size : List[int],dimension_resize_mode : str = 'nearest-exact',channel_resize_mode : str='nearest-exact'):
     """
@@ -104,6 +131,18 @@ def resize_tensor(input : torch.Tensor,output_size : List[int],dimension_resize_
     if is_unsqueeze:
         return resize_channel[:,0,:]
     return resize_channel
+class Interpolate(nn.Module):
+    """
+    Scales `[batch,channels,...]` tensor (...) dimensions by a factor of `scale_factor`
+    """
+    def __init__(self, scale_factor):
+        super().__init__()
+        self.scale_factor=scale_factor
+        
+    def forward(self,x):
+        shape =  x.shape
+        shape = torch.Size(list(shape[:2])+[int(v*self.scale_factor) for v in shape[2:]])[1:]
+        return resize_tensor(x,shape)
 class Resize(nn.Module):
     """
     A PyTorch module that adjusts the spatial dimensions and channel count of an input tensor by simply resizing it.
@@ -114,16 +153,24 @@ class Resize(nn.Module):
 
     def forward(self, x):
         return resize_tensor(x,self.output_size)
-class Interpolate(nn.Module):
-    def __init__(self, scale_factor):
-        super().__init__()
-        self.scale_factor=scale_factor
-        
-    def forward(self,x):
-        shape =  x.shape
-        shape = torch.Size(list(shape[:2])+[int(v*self.scale_factor) for v in shape[2:]])[1:]
-        return resize_tensor(x,shape)
 
+# Channel-wise Layer Normalization for N'd inputs
+class ChanLayerNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.ln = nn.LayerNorm(dim)
+
+    def forward(self, x):
+        x_shape = x.shape
+        x = x.flatten(2)
+        # Input x has shape (batch_size, dim, seq_len)
+        # Transpose to (batch_size, seq_len, dim) for nn.LayerNorm
+        x = x.transpose(1, 2)
+        # Apply layer normalization over the last dimension (dim)
+        x = self.ln(x)
+        # Transpose back to (batch_size, dim, seq_len)
+        x = x.transpose(1, 2)
+        return x.view(x_shape)
 class Mean0Std1Norm(torch.nn.Module):
     """
     Transforms input of shape [Batch,Channels,...] to have mean 0 std 1 along spatial dimensions (...)

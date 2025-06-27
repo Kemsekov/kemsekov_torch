@@ -1,4 +1,3 @@
-
 import torch
 def r2_score(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     """
