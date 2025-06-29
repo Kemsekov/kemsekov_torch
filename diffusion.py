@@ -104,7 +104,7 @@ from kemsekov_torch.residual import Residual, ResidualBlock
 from kemsekov_torch.attention import *
 from kemsekov_torch.rotary_emb import RotaryEmbInplace
 from kemsekov_torch.positional_emb import PositionalEncodingPermute,ConcatPositionalEmbeddingPermute
-
+from kemsekov_torch.common_modules import FlattenSpatialDimensions
 class TimeContextEmbedding(torch.nn.Module):
     def __init__(self,in_channels,max_timesteps=64):
         """
