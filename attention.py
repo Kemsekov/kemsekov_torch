@@ -261,13 +261,8 @@ class MultiHeadLinearAttention(nn.Module):
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
         
-        self.kernel_Q = nn.Sequential(
-            nn.Linear(embed_dim,embed_dim,device=device),
-        )
-        
-        self.kernel_K = nn.Sequential(
-            nn.Linear(embed_dim,embed_dim,device=device),
-        )
+        self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
+        self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
         
         self.feature_dropout = nn.Dropout(dropout, inplace=True)
         
