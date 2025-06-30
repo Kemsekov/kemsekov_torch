@@ -221,11 +221,10 @@ class LinearAttention(nn.Module):
         embed_dim = Q.shape[-1]
         seq_len = Q.shape[-2]
         
-        # here we apply RALA-like approach to increase phi_q @ phi_k matrix rank by rescaling each sample
-        # compute global query
-        
+        # here we apply RALA-like approach to increase KV matrix rank by rescaling each sample
+        # by it's importance relative to global query
         q_global = torch.mean(Q,-2,keepdim=True)/(embed_dim**0.5)
-        alpha = (q_global @ phi_K).softmax(-1)*seq_len
+        alpha = (q_global @ K).softmax(-1)*seq_len
         phi_K=alpha*phi_K
         
         # the full version linear attention
@@ -264,14 +263,10 @@ class MultiHeadLinearAttention(nn.Module):
         
         self.kernel_Q = nn.Sequential(
             nn.Linear(embed_dim,embed_dim,device=device),
-            nn.Tanh(),
-            AddConst(1)
         )
         
         self.kernel_K = nn.Sequential(
             nn.Linear(embed_dim,embed_dim,device=device),
-            nn.Tanh(),
-            AddConst(1)
         )
         
         self.feature_dropout = nn.Dropout(dropout, inplace=True)
@@ -279,9 +274,11 @@ class MultiHeadLinearAttention(nn.Module):
         self.add_zero_token=add_zero_token
         if add_zero_token:
             self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
-        
         self.single_head_attn = LinearAttention(self.head_dim)
-        
+    
+    def kernel_f(self,x):
+        return torch.nn.functional.tanh(x)+1
+    
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
         B = x.shape[0]
@@ -305,8 +302,8 @@ class MultiHeadLinearAttention(nn.Module):
         B, L_Q, _ = Q.shape
         _, L_K, _ = K.shape
         
-        phi_Q = self.kernel_Q(Q)
-        phi_K = self.kernel_K(K)
+        phi_Q = self.kernel_f(self.kernel_Q(Q))
+        phi_K = self.kernel_f(self.kernel_K(K))
         
         phi_Qh_flat = self.split_heads(phi_Q)   # → [B * n_heads, L_Q, head_dim]
         phi_Kh_flat = self.split_heads(phi_K)   # → [B * n_heads, L_K, head_dim]
