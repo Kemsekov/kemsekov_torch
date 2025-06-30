@@ -24,7 +24,6 @@ class TransformerSelfAttentionBlock(nn.Module):
     ):
         super().__init__()
         self.m = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout, activation, layer_norm_eps, batch_first, norm_first, bias, device, dtype)
-    
     def forward(
         self,
         src: torch.Tensor,
@@ -181,7 +180,6 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         
         #--------------------
         # start = time.time()
-        
         Q = self.Q(query_source)
         K,V = self.K(context),self.V(context)
         
@@ -203,7 +201,7 @@ class LinearAttention(nn.Module):
     """
     Accepts Q,K,V of shapes [batch,heads,seq_length,dim]
     """
-    def __init__(self,embed_dim):
+    def __init__(self,embed_dim,device=None):
         """
         Initialize linear attention module with given emb dim
         
@@ -212,10 +210,12 @@ class LinearAttention(nn.Module):
         super().__init__()
         self.embed_dim=embed_dim
 
+    
     def forward(self,Q,K,V,phi_Q,phi_K,compute_attn_weight  : bool = False):
         """
         phi_Q,phi_K is produced from Q and K via kernel
         """
+        
         phi_K = phi_K.transpose(-2,-1)
         K = K.transpose(-2,-1)
         embed_dim = Q.shape[-1]
@@ -260,16 +260,13 @@ class MultiHeadLinearAttention(nn.Module):
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
-        
-        self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
-        self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
-        
         self.feature_dropout = nn.Dropout(dropout, inplace=True)
-        
         self.add_zero_token=add_zero_token
         if add_zero_token:
             self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
         self.single_head_attn = LinearAttention(self.head_dim)
+        self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
+        self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
     
     def kernel_f(self,x):
         return torch.nn.functional.tanh(x)+1
@@ -293,36 +290,34 @@ class MultiHeadLinearAttention(nn.Module):
         
         Q = self.feature_dropout(Q)
         K = self.feature_dropout(K)
+        phi_Q = self.kernel_f(self.kernel_Q(Q))
+        phi_K = self.kernel_f(self.kernel_K(K))
         
         B, L_Q, _ = Q.shape
         _, L_K, _ = K.shape
         
-        phi_Q = self.kernel_f(self.kernel_Q(Q))
-        phi_K = self.kernel_f(self.kernel_K(K))
-        
-        phi_Qh_flat = self.split_heads(phi_Q)   # → [B * n_heads, L_Q, head_dim]
-        phi_Kh_flat = self.split_heads(phi_K)   # → [B * n_heads, L_K, head_dim]
-        Qh_flat = self.split_heads(Q)   # → [B * n_heads, L_Q, head_dim]
-        Kh_flat = self.split_heads(K)   # → [B * n_heads, L_K, head_dim]
-        Vh_flat = self.split_heads(V)   # → [B * n_heads, L_K, head_dim]
-        
+        Qh = self.split_heads(Q)   # → [B * n_heads, L_Q, head_dim]
+        Kh = self.split_heads(K)   # → [B * n_heads, L_K, head_dim]
+        Vh = self.split_heads(V)   # → [B * n_heads, L_K, head_dim]
+        phi_Qh = self.split_heads(phi_Q)   # → [B * n_heads, L_K, head_dim]
+        phi_Kh = self.split_heads(phi_K)   # → [B * n_heads, L_K, head_dim]
         # 3. Run single‐head linear attention
-        out_flat, attn_flat = self.single_head_attn(
-            Qh_flat, Kh_flat, Vh_flat,phi_Qh_flat,phi_Kh_flat, compute_attn_weight
+        out, attn = self.single_head_attn(
+            Qh, Kh, Vh,phi_Qh,phi_Kh, compute_attn_weight
         )
-        # out_flat: [B * n_heads, L_Q, head_dim]
-        # attn_flat (if requested): [B * n_heads, L_Q, L_K]
+        # out: [B * n_heads, L_Q, head_dim]
+        # attn (if requested): [B * n_heads, L_Q, L_K]
 
         # 4. Un‐flatten heads
-        out_heads = out_flat.view(B, self.n_heads, L_Q, self.head_dim)
+        out_heads = out.view(B, self.n_heads, L_Q, self.head_dim)
         # → [B, n_heads, L_Q, head_dim]
         out_heads = out_heads.permute(0, 2, 1, 3).contiguous()
         # → [B, L_Q, n_heads, head_dim]
         output = out_heads.view(B, L_Q, self.embed_dim)
         # → [B, L_Q, embed_dim]
 
-        if attn_flat is not None:
-            attn = attn_flat.view(B, self.n_heads, L_Q, L_K)
+        if attn is not None:
+            attn = attn.view(B, self.n_heads, L_Q, L_K)
         else:
             attn = None
 

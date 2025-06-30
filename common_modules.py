@@ -92,6 +92,54 @@ class FlattenSpatialDimensions(nn.Module):
         x_shape[1] = out.shape[-1] # update channels
         return _restore_shape_of_transformer_output(out,torch.Size(x_shape))
 
+class Permute(nn.Module):
+    """
+    Permutes input tensor with given permutation
+    """
+    def __init__(self, permutation):
+        """
+        Permutes input tensor with given permutation
+        """
+        super().__init__()
+        self.permuitation = permutation
+        
+    def forward(self,x):
+        return x.permute(self.permuitation)
+
+class Flatten(nn.Module):
+    def __init__(self, start_dim,end_dim,submodule):
+        """
+        A wrapper module that flattens a subset of input tensor dimensions before applying a submodule,
+        and then reshapes the output back to the original input shape.
+
+        This is useful when you want to apply a submodule (e.g., Linear or LayerNorm) over a flattened
+        region of a tensor (e.g., over spatial or temporal dimensions) while keeping the batch and channel
+        structure intact.
+
+        Args:
+            start_dim (int): First dimension to flatten.
+            end_dim (int): Last dimension to flatten (inclusive).
+            submodule (nn.Module): The module to apply to the flattened tensor.
+
+        Forward Input:
+            x (Tensor): Arbitrary-shaped tensor.
+
+        Forward Output:
+            Tensor: Output of submodule, reshaped to original input shape.
+        """
+        super().__init__()
+        self.start_dim = start_dim
+        self.end_dim = end_dim
+        if isinstance(submodule,tuple) or isinstance(submodule,list):
+            self.m = nn.Sequential(*submodule)
+        else:
+            self.m = submodule
+    def forward(self,x):
+        x_shape = x.shape
+        x_flat = torch.flatten(x,self.start_dim,self.end_dim)
+        y = self.m(x_flat)
+        return y.reshape(x_shape)
+
 class ConstModule(torch.nn.Module):
     """Module that returns constant"""
     def __init__(self,constant = 0):
