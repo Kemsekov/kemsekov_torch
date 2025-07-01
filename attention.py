@@ -88,6 +88,7 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation)
     def forward(self,x):
         return self.attn(x,x)
+from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
 class LinearCrossAttentionBlock(torch.nn.Module):
     def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU):
         """
@@ -160,9 +161,46 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             device=device,
             groups=heads
         )
+        self.rot_emb = RotaryEmbHeadsInplace(input_dim)
     
     def _local_attnetion(self,x):
-        return self.local_attention_gamma*self.local_attention(x.transpose(-2,-1)).transpose(-2,-1)
+        # x: [batch, ... ,channels]
+        xt = x
+        
+        # batch = xt.shape[0]
+        # ch = xt.shape[-1]
+        
+        # xt: [batch,(...),channels]
+        # xt = xt.view(batch,-1,ch)
+        
+        # xt: [batch,channels,(...)]
+        xt = xt.transpose(-2,-1)
+        
+        # out: [batch,channels,(...)]
+        out = self.local_attention_gamma*self.local_attention(xt)
+        
+        # out: [batch,(...),channels]
+        out = out.transpose(-2,-1)
+        
+        # out: [batch, ... ,channels]
+        # out = out.view(x.shape)
+        
+        return out
+    
+    def add_rotary_emb(self,Q,K):
+        Q,K = self.rot_emb.forward_multiple([Q[:,None],K[:,None]])
+        Q=Q[:,0]
+        K=K[:,0]
+        return Q,K
+    
+    def flatten_qkv(self,Q,K,V):
+        batch = Q.shape[0]
+        qk_dim = Q.shape[-1]
+        v_dim = V.shape[-1]
+        Qf = Q.view(batch,-1,qk_dim)
+        Kf = K.view(batch,-1,qk_dim)
+        Vf = V.view(batch,-1,v_dim)
+        return Qf,Kf,Vf
     
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
         """
@@ -177,11 +215,11 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         
         When context==query_source, the results will be same as self-attention.
         """
-        
         #--------------------
         # start = time.time()
-        Q = self.Q(query_source)
-        K,V = self.K(context),self.V(context)
+        Q, K, V = self.Q(query_source),self.K(context),self.V(context)
+        # Q,K = self.add_rotary_emb(Q,K)
+        # Q,K,V = self.flatten_qkv(Q,K,V)
         
         attn = self.attn(Q,K,V)[0]
         attn = attn+self._local_attnetion(attn)
@@ -191,7 +229,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # print("total attn",time.time()-start)
         # start = time.time()
         
-        result = self.mlp(attn)
+        result = self.mlp(attn)#.view(query_source.shape)
         result+=query_source
         #--------------------
         # print("mlp + reshape",time.time()-start)
@@ -209,7 +247,6 @@ class LinearAttention(nn.Module):
         """
         super().__init__()
         self.embed_dim=embed_dim
-
     
     def forward(self,Q,K,V,phi_Q,phi_K,compute_attn_weight  : bool = False):
         """
@@ -218,6 +255,7 @@ class LinearAttention(nn.Module):
         
         phi_K = phi_K.transpose(-2,-1)
         K = K.transpose(-2,-1)
+        
         embed_dim = Q.shape[-1]
         seq_len = Q.shape[-2]
         
@@ -265,8 +303,12 @@ class MultiHeadLinearAttention(nn.Module):
         if add_zero_token:
             self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
         self.single_head_attn = LinearAttention(self.head_dim)
+        
         self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
         self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
+        
+        # self.kernel_Q = nn.Identity()
+        # self.kernel_K = nn.Identity()
     
     def kernel_f(self,x):
         return torch.nn.functional.tanh(x)+1
@@ -296,11 +338,12 @@ class MultiHeadLinearAttention(nn.Module):
         B, L_Q, _ = Q.shape
         _, L_K, _ = K.shape
         
-        Qh = self.split_heads(Q)   # → [B * n_heads, L_Q, head_dim]
-        Kh = self.split_heads(K)   # → [B * n_heads, L_K, head_dim]
-        Vh = self.split_heads(V)   # → [B * n_heads, L_K, head_dim]
-        phi_Qh = self.split_heads(phi_Q)   # → [B * n_heads, L_K, head_dim]
-        phi_Kh = self.split_heads(phi_K)   # → [B * n_heads, L_K, head_dim]
+        Qh = self.split_heads(Q)   # → [B, n_heads, L_Q, head_dim]
+        Kh = self.split_heads(K)   # → [B, n_heads, L_K, head_dim]
+        Vh = self.split_heads(V)   # → [B, n_heads, L_K, head_dim]
+        phi_Qh = self.split_heads(phi_Q)   # → [B, n_heads, L_K, head_dim]
+        phi_Kh = self.split_heads(phi_K)   # → [B, n_heads, L_K, head_dim]
+        
         # 3. Run single‐head linear attention
         out, attn = self.single_head_attn(
             Qh, Kh, Vh,phi_Qh,phi_Kh, compute_attn_weight

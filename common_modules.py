@@ -91,6 +91,19 @@ class FlattenSpatialDimensions(nn.Module):
         out = self.m(x_flat)
         x_shape[1] = out.shape[-1] # update channels
         return _restore_shape_of_transformer_output(out,torch.Size(x_shape))
+class Unsqeeze(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+    def forward(self,x):
+        return x.unsqueeze(self.dim)
+
+class Take(nn.Module):
+    def __init__(self, slice):
+        super().__init__()
+        self.slice=slice
+    def forward(self,x):
+        return x[self.slice]
 
 class Permute(nn.Module):
     """
@@ -105,6 +118,22 @@ class Permute(nn.Module):
         
     def forward(self,x):
         return x.permute(self.permuitation)
+
+class Transpose(nn.Module):
+    """
+    Transpose input tensor along given dims
+    """
+    def __init__(self, dim1,dim2):
+        """
+        Permutes input tensor with given permutation
+        """
+        super().__init__()
+        self.dim1 = dim1
+        self.dim2= dim2
+        
+    def forward(self,x):
+        return x.transpose(self.dim1,self.dim2)
+
 
 class Flatten(nn.Module):
     def __init__(self, start_dim,end_dim,submodule):

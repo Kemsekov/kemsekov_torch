@@ -435,12 +435,81 @@ class RotaryEmbedding(Module):
 
         rotations = repeat(rotations, '... n -> ... (n r)', r = 2)
         return self.apply_rotary_emb(rotations, t, start_index = start_index)
+def reorder_last_dim(A: torch.Tensor) -> torch.Tensor:
+    C = A.size(-1)
+    # build an index tensor [0,1,2,...,C-1]
+    idx = torch.arange(C, device=A.device)
+    # reverse the slice of odd indices in-place
+    idx[1::2] = idx[1::2].flip(0)
+    # use advanced indexing to reorder
+    # return A[..., idx]
+    
+    dims = A.dim()
+    # create shape [1,1,...,C] of length dims
+    shape = [1] * dims
+    shape[-1] = C
+    # view then expand to A.shape
+    idx = idx.view(shape).expand_as(A)
+
+    # gather along last dimension
+    return A.gather(dim=dims-1, index=idx)
+
+class RotaryEmbHeadsInplace(torch.nn.Module):
+    """
+    Inplace module that accepts any-dim input x, applies rotary emb and returns it.
+    
+    Accepts inputs of shape `(BATCH, HEADS, (...), DIM)`
+    where (...) is spatial dimensions
+    """
+    def __init__(self, in_channels=16,freqs_for : Literal['lang','pixel','constant']='pixel', learned_freq = False):
+        """
+        Inplace module that accepts any-dim input x, applies rotary emb and returns it.
+    
+        Accepts inputs of shape `(BATCH, HEADS, (...), DIM)` where `(...)` is spatial dimensions
+        Parameters:
+            in_channels: input tensor channel dim
+            freqs_for : Literal['lang', 'pixel', 'constant'], default='lang'
+                Specifies the type of frequencies to compute,
+
+                'lang': Computes frequencies optimal for large sequences, commonly used in language models.
+
+                'pixel': Uses linearly spaced frequencies from 1 to max_freq / 2, scaled by ππ, suitable for pixel-based inputs.
+
+                'constant': Uses a tensor of ones with shape (num_freqs,), for constant frequency embeddings.
+            learned_freq: use if you want to learn embedding
+        """
+        
+        super().__init__()
+        self.pos_emb = RotaryEmbedding(
+            dim = in_channels//4,
+            freqs_for = freqs_for,
+            max_freq = 256,
+            # set this to True to make rotary embeddings extrapolate 
+            # better to sequence lengths greater than the one used 
+            # at training time
+            use_xpos = True,
+            learned_freq=learned_freq,
+        )
+        
+    def forward(self,x):
+        x_t = x # batch, heads, dim1,dim2, channels
+        freqs = self.pos_emb.get_axial_freqs(x_t.shape[1:-1])
+        # rotate in frequencies
+        x_t_emb = self.pos_emb.apply_rotary_emb(freqs, x_t)
+        return reorder_last_dim(x_t_emb)
+
+    def forward_multiple(self,tensors_list : List[torch.Tensor]):
+        x_t = tensors_list[0] # batch, heads, dim1,dim2, channels
+        freqs = self.pos_emb.get_axial_freqs(x_t.shape[1:-1])
+        # rotate in frequencies
+        x_t_emb = [reorder_last_dim(self.pos_emb.apply_rotary_emb(freqs, x_t)) for xt in tensors_list]
+        return x_t_emb
 
 class RotaryEmbInplace(torch.nn.Module):
     """
     Inplace module that accepts any-dim input x, applies rotary emb and returns it.
     
-    Accepts inputs of shape (BATCH,HEADS,...,DIM)
+    Accepts inputs of shape (BATCH,DIM,...)
     where (...) is spatial dimensions
     
     """
@@ -448,7 +517,7 @@ class RotaryEmbInplace(torch.nn.Module):
         """
         Inplace module that accepts any-dim input x, applies rotary emb and returns it.
     
-        Accepts inputs of shape `(BATCH,HEADS,...,DIM)` where `(...)` is spatial dimensions
+        Accepts inputs of shape `(BATCH,DIM,...)` where `(...)` is spatial dimensions
         Parameters:
             in_channels: input tensor channel dim
             freqs_for : Literal['lang', 'pixel', 'constant'], default='lang'
@@ -472,11 +541,16 @@ class RotaryEmbInplace(torch.nn.Module):
         )
         
     def forward(self,x):
+
+        x_t = x.transpose(1,-1).unsqueeze(1) # batch, heads, dim1,dim2, channels
+
         # get axial frequencies - (8, 64, 32, 16 * 3 = 48)
         # will automatically do partial rotary
-        freqs = self.pos_emb.get_axial_freqs(x.shape[1:-1])
+
+        freqs = self.pos_emb.get_axial_freqs(x_t.shape[1:-1])
 
         # rotate in frequencies
-        x_t_emb = self.pos_emb.apply_rotary_emb(freqs, x)
+        x_t_emb = self.pos_emb.apply_rotary_emb(freqs, x_t)
+        x_t_emb = reorder_last_dim(x_t_emb)
 
-        return x_t_emb
+        return x_t_emb[:,0].transpose(1,-1)
