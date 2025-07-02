@@ -101,10 +101,8 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,n
     return next_t
 
 from kemsekov_torch.residual import Residual, ResidualBlock
-from kemsekov_torch.attention import *
-from kemsekov_torch.rotary_emb import RotaryEmbInplace
+from kemsekov_torch.linear_attention_imports import *
 from kemsekov_torch.positional_emb import PositionalEncodingPermute,ConcatPositionalEmbeddingPermute
-from kemsekov_torch.common_modules import FlattenSpatialDimensions
 class TimeContextEmbedding(torch.nn.Module):
     def __init__(self,in_channels,max_timesteps=64):
         """
@@ -156,8 +154,9 @@ class DiffusionBlock(torch.nn.Module):
         
         self.embed_context_to_down = TimeContextEmbedding(out_channels,max_timesteps)
         self.sa = Residual([
-            RotaryEmbInplace(out_channels),
-            ConcatPositionalEmbeddingPermute(out_channels,256,dimensions=dimensions),
+            # RotaryEmbInplace(out_channels),
+            # ConcatPositionalEmbeddingPermute(out_channels,256,dimensions=dimensions),
+            LearnedPosEmb(out_channels,dimensions),
             *[
                 FlattenSpatialDimensions([
                     # TransformerSelfAttentionBlock(out_channels,attn_heads,mlp_dim),
