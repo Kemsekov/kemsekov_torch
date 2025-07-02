@@ -70,6 +70,8 @@ class TransformerCrossAttentionBlock(nn.Module):
 class LinearSelfAttentionBlock(torch.nn.Module):
     def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU):
         """
+        Accepts inputs of size [batch, L_Q,  embed_dim]
+        
         Linear self-attention block
         
         input_dim: input dimensions
@@ -92,6 +94,8 @@ from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
 class LinearCrossAttentionBlock(torch.nn.Module):
     def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU):
         """
+        Accepts inputs of size [batch, L_Q,  embed_dim]
+        
         Linear cross-attention block
         
         input_dim: input dimensions
