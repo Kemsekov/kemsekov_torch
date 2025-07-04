@@ -308,13 +308,13 @@ class MultiHeadLinearAttention(nn.Module):
         self.add_zero_token=add_zero_token
         if add_zero_token:
             self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
-        self.single_head_attn = LinearAttentionT(self.head_dim)
+        self.single_head_attn = LinearAttention(self.head_dim)
         
-        # self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
-        # self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
+        self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
+        self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
         
-        self.kernel_Q = nn.Identity()
-        self.kernel_K = nn.Identity()
+        # self.kernel_Q = nn.Identity()
+        # self.kernel_K = nn.Identity()
     
     def kernel_f(self,x):
         return torch.nn.functional.tanh(x)+1
