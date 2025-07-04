@@ -1,3 +1,4 @@
+import math
 import torch
 from torch import nn
 from kemsekov_torch.residual import Residual
@@ -263,7 +264,7 @@ class LinearAttention(nn.Module):
         alpha = torch.einsum('bihd,blhd->bihl', q_global, K).softmax(dim=-1) * L  # [B, 1, H, L]
 
         # Broadcast alpha to match phi_K: reshape to [B, L, H, 1]
-        alpha_reshaped = alpha.squeeze(1).permute(0, 2, 1).unsqueeze(-1)  # [B, L, H, 1]
+        alpha_reshaped = alpha.squeeze_(1).permute(0, 2, 1).unsqueeze_(-1)  # [B, L, H, 1]
         phi_K_scaled = phi_K * alpha_reshaped  # [B, L, H, D]
 
         # Optional full attention weights: [B, L, H, L]
@@ -281,10 +282,16 @@ class LinearAttention(nn.Module):
         # numerator: phi_Q dot KV over D -> [B, L, H, D]
         numerator = torch.einsum('blhd,bhde->blhe', phi_Q, KV)
         # denominator: phi_Q dot K_sum over D -> [B, L, H, 1]
-        denominator = torch.einsum('blhd,bhd->blh', phi_Q, K_sum).unsqueeze(-1) + self.eps
-
+        denominator = torch.einsum('blhd,bhd->blh', phi_Q, K_sum).unsqueeze_(-1) + self.eps
         out = numerator / denominator  # [B, L, H, D]
         return out, linear_attn
+
+class TanhKernel(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self,x):
+        return torch.nn.functional.tanh(x)+1
+
 class MultiHeadLinearAttention(nn.Module):
     """
     Multi‐head wrapper around single‐head LinearAttention, allowing different
@@ -310,20 +317,23 @@ class MultiHeadLinearAttention(nn.Module):
             self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
         self.single_head_attn = LinearAttention(self.head_dim)
         
-        self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
-        self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
+        self.kernel_Q = nn.Sequential(
+            nn.Linear(embed_dim,embed_dim,device=device),
+            TanhKernel()
+        )
+        
+        self.kernel_K = nn.Sequential(
+            nn.Linear(embed_dim,embed_dim,device=device),
+            TanhKernel()
+        )
         
         # self.kernel_Q = nn.Identity()
         # self.kernel_K = nn.Identity()
     
-    def kernel_f(self,x):
-        return torch.nn.functional.tanh(x)+1
-    
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
         B = x.shape[0]
-        x = x.view(B, -1, self.n_heads, self.head_dim)
-        return x#.permute(0, 2, 1, 3).view(B, self.n_heads, -1, self.head_dim)
+        return x.view(B, -1, self.n_heads, self.head_dim)
     
     def forward(self, Q, K, V, compute_attn_weight : bool = False):
         """
@@ -338,8 +348,8 @@ class MultiHeadLinearAttention(nn.Module):
         
         Q = self.feature_dropout(Q)
         K = self.feature_dropout(K)
-        phi_Q = self.kernel_f(self.kernel_Q(Q))
-        phi_K = self.kernel_f(self.kernel_K(K))
+        phi_Q = self.kernel_Q(Q)
+        phi_K = self.kernel_K(K)
         
         B, L_Q, _ = Q.shape
         _, L_K, _ = K.shape
@@ -347,6 +357,7 @@ class MultiHeadLinearAttention(nn.Module):
         Qh = self.split_heads(Q)   # → [B, n_heads, L_Q, head_dim]
         Kh = self.split_heads(K)   # → [B, n_heads, L_K, head_dim]
         Vh = self.split_heads(V)   # → [B, n_heads, L_K, head_dim]
+        
         phi_Qh = self.split_heads(phi_Q)   # → [B, n_heads, L_K, head_dim]
         phi_Kh = self.split_heads(phi_K)   # → [B, n_heads, L_K, head_dim]
         

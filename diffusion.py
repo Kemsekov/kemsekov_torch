@@ -102,7 +102,7 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,n
 
 from kemsekov_torch.residual import Residual, ResidualBlock
 from kemsekov_torch.linear_attention_imports import *
-from kemsekov_torch.positional_emb import PositionalEncodingPermute,ConcatPositionalEmbeddingPermute
+from kemsekov_torch.positional_emb import PositionalEncodingPermute,ConcatPositionalEmbeddingPermute, AddPositionalEmbeddingPermute
 class TimeContextEmbedding(torch.nn.Module):
     def __init__(self,in_channels,max_timesteps=64):
         """
@@ -154,9 +154,9 @@ class DiffusionBlock(torch.nn.Module):
         
         self.embed_context_to_down = TimeContextEmbedding(out_channels,max_timesteps)
         self.sa = Residual([
-            # RotaryEmbInplace(out_channels),
             # ConcatPositionalEmbeddingPermute(out_channels,256,dimensions=dimensions),
-            LearnedPosEmb(out_channels,dimensions),
+            AddPositionalEmbeddingPermute(out_channels,256,dimensions),
+            # LearnedPosEmb(out_channels,dimensions),
             *[
                 FlattenSpatialDimensions([
                     # TransformerSelfAttentionBlock(out_channels,attn_heads,mlp_dim),
@@ -181,7 +181,7 @@ class Diffusion(torch.nn.Module):
         
         common_diff_block = dict(
             normalization='group',
-            attn_heads = 16,
+            attn_heads = 32,
             dimensions = 2,
             max_timesteps=max_timesteps
         )
@@ -191,34 +191,34 @@ class Diffusion(torch.nn.Module):
             dimensions=common_diff_block['dimensions'],
             activation = nn.GELU
         )
+        scale=1
         
         self.dimensions = common_diff_block['dimensions']
         self.upscale_input = ResidualBlock(
             in_channels,
-            64,
+            scale*64,
             kernel_size=3,
             **commin_res_block
         )
+        self.down1 = DiffusionBlock(scale*64,scale*128,**common_diff_block)
+        self.down2 = DiffusionBlock(scale*128,scale*128,**common_diff_block)
+        self.down3 = DiffusionBlock(scale*128,scale*256,**common_diff_block)
+        self.down4 = DiffusionBlock(scale*256,scale*512,**common_diff_block)
         
-        self.down1 = DiffusionBlock(64,128,**common_diff_block)
-        self.down2 = DiffusionBlock(128,128,**common_diff_block)
-        self.down3 = DiffusionBlock(128,256,**common_diff_block)
-        self.down4 = DiffusionBlock(256,512,**common_diff_block)
+        self.up1 = DiffusionBlock(scale*512,scale*256,**common_diff_block).transpose()
+        self.merge_up1_down3 = ResidualBlock(scale*512,scale*256,kernel_size=1,**commin_res_block)
         
-        self.up1 = DiffusionBlock(512,256,**common_diff_block).transpose()
-        self.merge_up1_down3 = ResidualBlock(512,[256,256],kernel_size=1,**commin_res_block)
+        self.up2 = DiffusionBlock(scale*256,scale*128,**common_diff_block).transpose()
+        self.merge_up2_down2 = ResidualBlock(scale*256,128,kernel_size=1,**commin_res_block)
         
-        self.up2 = DiffusionBlock(256,128,**common_diff_block).transpose()
-        self.merge_up2_down2 = ResidualBlock(256,[128,128],kernel_size=1,**commin_res_block)
-        
-        self.up3 = DiffusionBlock(128,128,**common_diff_block).transpose()
-        self.merge_up3_down1 = ResidualBlock(256,[128,128],kernel_size=1,**commin_res_block)
+        self.up3 = DiffusionBlock(scale*128,scale*128,**common_diff_block).transpose()
+        self.merge_up3_down1 = ResidualBlock(scale*256,scale*128,kernel_size=1,**commin_res_block)
 
-        self.up4 = DiffusionBlock(128,64,transformer_blocks=0,**common_diff_block).transpose()
-        self.merge_up4_x = ResidualBlock(128,[64,64],kernel_size=1,**commin_res_block)
+        self.up4 = DiffusionBlock(scale*128,scale*64,transformer_blocks=0,**common_diff_block).transpose()
+        self.merge_up4_x = ResidualBlock(scale*128,scale*64,kernel_size=1,**commin_res_block)
         
         # to produce proper logits, combine model output that input
-        self.final = [torch.nn.Conv1d,torch.nn.Conv2d,torch.nn.Conv3d][self.dimensions-1](64,in_channels,kernel_size=1)
+        self.final = [torch.nn.Conv1d,torch.nn.Conv2d,torch.nn.Conv3d][self.dimensions-1](scale*64,in_channels,kernel_size=1)
     
     # x is batched single example with all noise levels
     # timestep is indices of noise levels for each sample is x

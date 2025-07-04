@@ -40,6 +40,7 @@ class LearnedPosEmb(nn.Module):
             nn.Linear(dimensions, hidden),
             nn.ReLU(inplace=True),
             nn.Linear(hidden, dim),
+            nn.Tanh()
         )
         # add residual scaler
         # self.gamma = nn.Parameter(torch.tensor(0.1))

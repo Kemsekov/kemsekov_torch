@@ -114,7 +114,6 @@ class InvertableScaleAndTranslate(nn.Module):
         scale,translate = self.model(x).chunk(2,self.dimension_split)
         # make scale positive
         scale=torch.nn.functional.elu(scale)+1
-        
         return scale,translate
     
     def forward(self, input):
