@@ -239,50 +239,52 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # print("mlp + reshape",time.time()-start)
         
         return result
+
+
 class LinearAttention(nn.Module):
     """
-    Accepts Q,K,V of shapes [batch,heads,seq_length,dim]
+    Linear attention with RALA-style rescaling,
+    Accepts inputs of shape [B, seq_len, H, D] and internally reshapes to [B, H, seq_len, D].
+    Works with inputs where heads are the third dimension.
     """
-    def __init__(self,embed_dim,device=None):
-        """
-        Initialize linear attention module with given emb dim
-        
-        Accepts Q,K,V of shapes [batch,heads,seq_length,dim]
-        """
+    def __init__(self, embed_dim):
         super().__init__()
-        self.embed_dim=embed_dim
-    
-    def forward(self,Q,K,V,phi_Q,phi_K,compute_attn_weight  : bool = False):
-        """
-        phi_Q,phi_K is produced from Q and K via kernel
-        """
-        
-        phi_K = phi_K.transpose(-2,-1)
-        K = K.transpose(-2,-1)
-        
-        embed_dim = Q.shape[-1]
-        seq_len = Q.shape[-2]
-        
-        # here we apply RALA-like approach to increase KV matrix rank by rescaling each sample
-        # by it's importance relative to global query
-        q_global = torch.mean(Q,-2,keepdim=True)/(embed_dim**0.5)
-        alpha = (q_global @ K).softmax(-1)*seq_len
-        phi_K=alpha*phi_K
-        
-        # the full version linear attention
+        self.embed_dim = embed_dim
+        self.eps = 1e-6
+
+    def forward(self, Q, K, V, phi_Q, phi_K, compute_attn_weight: bool = False):
+        # Expect Q, K, V, phi_Q, phi_K shapes: [B, L, H, D]
+        B, L, H, D = Q.shape
+
+        # RALA rescaling: compute global q mean over sequence dim
+        q_global = Q.mean(dim=1, keepdim=True) / (self.embed_dim ** 0.5)  # [B, 1, H, D]
+
+        # Compute scaling alpha: dot(q_global, K) over D -> [B, 1, H, L]
+        alpha = torch.einsum('bihd,blhd->bihl', q_global, K).softmax(dim=-1) * L  # [B, 1, H, L]
+
+        # Broadcast alpha to match phi_K: reshape to [B, L, H, 1]
+        alpha_reshaped = alpha.squeeze(1).permute(0, 2, 1).unsqueeze(-1)  # [B, L, H, 1]
+        phi_K_scaled = phi_K * alpha_reshaped  # [B, L, H, D]
+
+        # Optional full attention weights: [B, L, H, L]
         if compute_attn_weight:
-            linear_attn = (phi_Q @ phi_K)
-            linear_attn = linear_attn/(linear_attn.sum(-1,keepdim=True) + 1e-6)
+            linear_attn = torch.einsum('blhd,bmhd->blhm', phi_Q, phi_K_scaled)
+            linear_attn = linear_attn / (linear_attn.sum(dim=-1, keepdim=True) + self.eps)
         else:
             linear_attn = None
-        
-        # rearanged attention version that have linear complexity
-        K_sum = phi_K.sum(-1,keepdim=True)
-        KV = phi_K @ V
-        linear_out_fast = (phi_Q @ KV)/(phi_Q @ K_sum + 1e-6)
 
-        return linear_out_fast,linear_attn
+        # Linear path
+        # Sum over keys: [B, H, D]
+        K_sum = phi_K_scaled.sum(dim=1)  # [B, H, D]
+        # KV: sum over sequence for outer-product: [B, H, D, D]
+        KV = torch.einsum('blhd,blhe->bhde', phi_K_scaled, V)
+        # numerator: phi_Q dot KV over D -> [B, L, H, D]
+        numerator = torch.einsum('blhd,bhde->blhe', phi_Q, KV)
+        # denominator: phi_Q dot K_sum over D -> [B, L, H, 1]
+        denominator = torch.einsum('blhd,bhd->blh', phi_Q, K_sum).unsqueeze(-1) + self.eps
 
+        out = numerator / denominator  # [B, L, H, D]
+        return out, linear_attn
 class MultiHeadLinearAttention(nn.Module):
     """
     Multi‐head wrapper around single‐head LinearAttention, allowing different
@@ -306,13 +308,13 @@ class MultiHeadLinearAttention(nn.Module):
         self.add_zero_token=add_zero_token
         if add_zero_token:
             self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
-        self.single_head_attn = LinearAttention(self.head_dim)
+        self.single_head_attn = LinearAttentionT(self.head_dim)
         
-        self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
-        self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
+        # self.kernel_Q = nn.Linear(embed_dim,embed_dim,device=device)
+        # self.kernel_K = nn.Linear(embed_dim,embed_dim,device=device)
         
-        # self.kernel_Q = nn.Identity()
-        # self.kernel_K = nn.Identity()
+        self.kernel_Q = nn.Identity()
+        self.kernel_K = nn.Identity()
     
     def kernel_f(self,x):
         return torch.nn.functional.tanh(x)+1
@@ -321,7 +323,7 @@ class MultiHeadLinearAttention(nn.Module):
         # x: [B, seq_len, embed_dim]
         B = x.shape[0]
         x = x.view(B, -1, self.n_heads, self.head_dim)
-        return x.permute(0, 2, 1, 3).view(B, self.n_heads, -1, self.head_dim)
+        return x#.permute(0, 2, 1, 3).view(B, self.n_heads, -1, self.head_dim)
     
     def forward(self, Q, K, V, compute_attn_weight : bool = False):
         """
@@ -349,22 +351,17 @@ class MultiHeadLinearAttention(nn.Module):
         phi_Kh = self.split_heads(phi_K)   # → [B, n_heads, L_K, head_dim]
         
         # 3. Run single‐head linear attention
-        out, attn = self.single_head_attn(
+        out_heads, attn = self.single_head_attn(
             Qh, Kh, Vh,phi_Qh,phi_Kh, compute_attn_weight
         )
-        # out: [B * n_heads, L_Q, head_dim]
-        # attn (if requested): [B * n_heads, L_Q, L_K]
-
-        # 4. Un‐flatten heads
-        out_heads = out.view(B, self.n_heads, L_Q, self.head_dim)
-        # → [B, n_heads, L_Q, head_dim]
-        out_heads = out_heads.permute(0, 2, 1, 3).contiguous()
-        # → [B, L_Q, n_heads, head_dim]
-        output = out_heads.view(B, L_Q, self.embed_dim)
-        # → [B, L_Q, embed_dim]
+        
+        # [B, L_Q,n_heads, head_dim]
+        # out_heads
+        
+        output = out_heads.reshape(B, L_Q, -1)
 
         if attn is not None:
-            attn = attn.view(B, self.n_heads, L_Q, L_K)
+            attn = attn.permute([0,2,1,3])
         else:
             attn = None
 
