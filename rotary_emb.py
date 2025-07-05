@@ -1,3 +1,13 @@
+"""
+the current state of this implementation is so that it corresponds to
+https://github.com/lucidrains/rotary-embedding-torch?tab=readme-ov-file
+when used to get axial rotary embeddings
+
+
+"""
+
+
+
 from __future__ import annotations
 from math import pi, log
 
@@ -19,27 +29,50 @@ def broadcat(tensors, dim = -1):
     broadcasted_tensors = broadcast_tensors(*tensors)
     return torch.cat(broadcasted_tensors, dim = dim)
 
-def slice_at_dim(t, dim_slice: slice, *, dim):
-    dim += (t.ndim if dim < 0 else 0)
-    colons = [slice(None)] * t.ndim
-    colons[dim] = dim_slice
-    return t[tuple(colons)]
-
+def take_last(
+    t: torch.Tensor,
+    seq_len: int,
+    dim: int
+) -> torch.Tensor:
+    # normalize negative dims
+    if dim < 0:
+        dim = dim + t.ndim
+    # compute start index
+    total = t.size(dim)
+    start = total - seq_len
+    return t.narrow(dim, start, seq_len)
 # rotary embedding helper functions
 
+
+
 def rotate_half(x):
-    x = rearrange(x, '... (d r) -> ... d r', r = 2)
-    x1, x2 = x.unbind(dim = -1)
-    x = torch.stack((-x2, x1), dim = -1)
-    return rearrange(x, '... d r -> ... (d r)')
+    # x shape: (..., 2*d)
+    xs = x.shape
+    prefix = list(xs[:-1])
+    last = xs[-1]
+    
+    d = last // 2
+    
+    # reshape to (..., d, 2)
+    x = x.reshape(prefix + [d, 2])
+    
+    # split along that last dimension
+    x1, x2 = x.unbind(dim=-1)       # each is shape (..., d)
+    
+    # apply the rotation: (-x2, x1)
+    x = torch.stack((-x2, x1), dim=-1)  # shape (..., d, 2)
+    
+    # flatten back to (..., 2*d)
+    return x.reshape(prefix + [last])
+
 
 def apply_rotary_emb(
     freqs,
     t,
-    start_index = 0,
-    scale = 1.,
-    seq_dim = -2,
-    freqs_seq_dim = None
+    start_index : int = 0,
+    scale : float = 1.,
+    seq_dim : int = -2,
+    freqs_seq_dim : int|None = None
 ):
     dtype = t.dtype
 
@@ -48,9 +81,9 @@ def apply_rotary_emb(
             freqs_seq_dim = 0
 
     if t.ndim == 3 or freqs_seq_dim is not None:
-        seq_len = t.shape[seq_dim]
-        freqs = slice_at_dim(freqs, slice(-seq_len, None), dim = freqs_seq_dim)
-
+        seq_len = t.size(seq_dim)
+        fs_dim = freqs_seq_dim if freqs_seq_dim is not None else 0
+        freqs = take_last(freqs, seq_len, fs_dim)
     rot_dim = freqs.shape[-1]
     end_index = start_index + rot_dim
 
@@ -262,53 +295,90 @@ class RotaryEmbedding(Module):
 
     #     return scale
 
-    def get_axial_freqs(
-        self,
-        dims,
-        offsets: (
-            tuple[int | float, ...] |
-            Tensor |
-            None
-        ) = None
-    ):
-        Colon = slice(None)
+    def get_axial_freqs(self, dims : List[int], offsets : List[int]|None =None):
         all_freqs = []
+        num_dims = len(dims)
 
-        # handle offset
+        if offsets is None:
+            offsets = [0] * num_dims
 
-        if offsets is not None:
-            if not is_tensor(offsets):
-                offsets = tensor(offsets)
+        assert len(dims) <= 5, "Only supports up to 5 dimensions"
 
-            assert len(offsets) == len(dims)
-
-        # get frequencies for each axis
-
-        for ind, dim in enumerate(dims):
-
-            offset = 0
-            if offsets is not None:
-                offset = offsets[ind]
+        for ind in range(num_dims):
+            dim = dims[ind]
+            offset = offsets[ind]
 
             if self.freqs_for == 'pixel':
-                pos = torch.linspace(-1, 1, steps = dim, device = self.device)
+                pos = torch.linspace(-1, 1, steps=dim, device=self.device)
             else:
-                pos = torch.arange(dim, device = self.device)
+                pos = torch.arange(dim, device=self.device)
 
             pos = pos + offset
+            freqs = self.forward(pos, seq_len=dim)
 
-            freqs = self.forward(pos, seq_len = dim)
+            # Insert singleton dimensions for correct shape, depending on axis index
+            
+            # now insert singleton dims via indexing
+            if num_dims == 1:
+                # want [dim, rot] → [dim, rot] (no change)
+                pass
 
-            all_axis = [None] * len(dims)
-            all_axis[ind] = Colon
+            elif num_dims == 2:
+                if ind == 0:
+                    # [dim, rot] → [dim, 1, rot]
+                    freqs = freqs[:, None, :]
+                else:  # ind == 1
+                    # [dim, rot] → [1, dim, rot]
+                    freqs = freqs[None, :, :]
 
-            new_axis_slice = (Ellipsis, *all_axis, Colon)
-            all_freqs.append(freqs[new_axis_slice])
+            elif num_dims == 3:
+                if ind == 0:
+                    # [dim, rot] → [dim, 1, 1, rot]
+                    freqs = freqs[:, None, None, :]
+                elif ind == 1:
+                    # [dim, rot] → [1, dim, 1, rot]
+                    freqs = freqs[None, :, None, :]
+                else:  # ind == 2
+                    # [dim, rot] → [1, 1, dim, rot]
+                    freqs = freqs[None, None, :, :]
 
-        # concat all freqs
+            elif num_dims == 4:
+                if ind == 0:
+                    # [dim, rot] → [dim, 1, 1, 1, rot]
+                    freqs = freqs[:, None, None, None, :]
+                elif ind == 1:
+                    # [dim, rot] → [1, dim, 1, 1, rot]
+                    freqs = freqs[None, :, None, None, :]
+                elif ind == 2:
+                    # [dim, rot] → [1, 1, dim, 1, rot]
+                    freqs = freqs[None, None, :, None, :]
+                else:  # ind == 3
+                    # [dim, rot] → [1, 1, 1, dim, rot]
+                    freqs = freqs[None, None, None, :, :]
 
-        all_freqs = broadcast_tensors(*all_freqs)
-        return torch.cat(all_freqs, dim = -1)
+            else:  # num_dims == 5
+                if ind == 0:
+                    freqs = freqs[:, None, None, None, None, :]
+                elif ind == 1:
+                    freqs = freqs[None, :, None, None, None, :]
+                elif ind == 2:
+                    freqs = freqs[None, None, :, None, None, :]
+                elif ind == 3:
+                    freqs = freqs[None, None, None, :, None, :]
+                else:  # ind == 4
+                    freqs = freqs[None, None, None, None, :, :]
+
+            all_freqs.append(freqs)
+        if len(all_freqs)==2:
+            all_freqs = torch.broadcast_tensors(all_freqs[0],all_freqs[1])
+        elif len(all_freqs)==3:
+            all_freqs = torch.broadcast_tensors(all_freqs[0],all_freqs[1],all_freqs[2])
+        elif len(all_freqs)==4:
+            all_freqs = torch.broadcast_tensors(all_freqs[0],all_freqs[1],all_freqs[2],all_freqs[3])
+        elif len(all_freqs)==5:
+            all_freqs = torch.broadcast_tensors(all_freqs[0],all_freqs[1],all_freqs[2],all_freqs[3],all_freqs[4])
+        return torch.cat(all_freqs, dim=-1)
+
 
     def forward(
         self,
@@ -382,8 +452,7 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
             use_xpos = True,
             learned_freq=learned_freq,
         )
-
-    def forward_multiple(self,tensors_list : List[torch.Tensor]):
+    def forward(self,tensors_list : List[torch.Tensor]):
         x_t = tensors_list[0] # batch, heads, dim1,dim2, channels
         freqs = self.pos_emb.get_axial_freqs(x_t.shape[1:-1])
         # rotate in frequencies
