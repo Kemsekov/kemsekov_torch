@@ -259,42 +259,6 @@ class RotaryEmbedding(Module):
 
         return rotated_q, rotated_k
 
-    # def get_scale(
-    #     self,
-    #     t: Tensor,
-    #     seq_len: int | None = None,
-    #     offset : int = 0
-    # ):
-    #     assert self.use_xpos
-    #     if offset is not None and seq_len is not None:
-    #         offset_p_seqlen=(offset + seq_len)
-    #     else:
-    #         offset_p_seqlen=0
-    #     should_cache = (
-    #         self.cache_if_possible and
-    #         seq_len is not None and
-    #         offset_p_seqlen <= self.cache_max_seq_len
-    #     )
-
-    #     if (
-    #         should_cache and \
-    #         self.cached_scales is not None and \
-    #         (seq_len + offset) <= self.cached_scales_seq_len
-    #     ):
-    #         return self.cached_scales[offset:offset_p_seqlen]
-
-    #     scale = 1.
-    #     if self.use_xpos:
-    #         power = (t - len(t) // 2) / self.scale_base
-    #         scale = self.scale ** rearrange(power, 'n -> n 1')
-    #         scale = repeat(scale, 'n d -> n (d r)', r = 2)
-
-    #     if should_cache and offset == 0:
-    #         self.cached_scales[:seq_len] = scale.detach()
-    #         self.cached_scales_seq_len = seq_len
-
-    #     return scale
-
     def get_axial_freqs(self, dims : List[int], offsets : List[int]|None =None):
         all_freqs = []
         num_dims = len(dims)
@@ -457,5 +421,5 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
         x_t = tensors_list[0] # batch, heads, dim1,dim2, channels
         freqs = self.pos_emb.get_axial_freqs(x_t.shape[1:-1])
         # rotate in frequencies
-        x_t_emb = [apply_rotary_emb(freqs, x_t) for xt in tensors_list]
+        x_t_emb = [apply_rotary_emb(freqs, xt) for xt in tensors_list]
         return x_t_emb
