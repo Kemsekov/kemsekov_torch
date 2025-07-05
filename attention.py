@@ -69,9 +69,9 @@ class TransformerCrossAttentionBlock(nn.Module):
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
         return out
 class LinearSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False):
         """
-        Accepts inputs of size [batch, L_Q,  embed_dim]
+        Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
         Linear self-attention block
         
@@ -88,14 +88,14 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         activation: what activation function to use
         """
         super().__init__()
-        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation)
+        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,add_rotary_emb=add_rotary_emb)
     def forward(self,x):
         return self.attn(x,x)
 from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
 class LinearCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False):
         """
-        Accepts inputs of size [batch, L_Q,  embed_dim]
+        Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
         Linear cross-attention block
         
@@ -146,7 +146,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             heads,
             dropout=dropout,
             add_zero_token=True,
-            device=device
+            device=device,
+            add_rotary_emb=add_rotary_emb
         )
         self.attn_norm = nn.LayerNorm(input_dim,device=device)
         
@@ -166,17 +167,16 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             device=device,
             groups=heads
         )
-        self.rot_emb = RotaryEmbHeadsInplace(input_dim)
     
     def _local_attnetion(self,x):
         # x: [batch, ... ,channels]
         xt = x
         
-        # batch = xt.shape[0]
-        # ch = xt.shape[-1]
+        batch = xt.shape[0]
+        ch = xt.shape[-1]
         
         # xt: [batch,(...),channels]
-        # xt = xt.view(batch,-1,ch)
+        xt = xt.view(batch,-1,ch)
         
         # xt: [batch,channels,(...)]
         xt = xt.transpose(-2,-1)
@@ -188,24 +188,10 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         out = out.transpose(-2,-1)
         
         # out: [batch, ... ,channels]
-        # out = out.view(x.shape)
+        out = out.view(x.shape)
         
         return out
     
-    def add_rotary_emb(self,Q,K):
-        Q,K = self.rot_emb.forward_multiple([Q[:,None],K[:,None]])
-        Q=Q[:,0]
-        K=K[:,0]
-        return Q,K
-    
-    def flatten_qkv(self,Q,K,V):
-        batch = Q.shape[0]
-        qk_dim = Q.shape[-1]
-        v_dim = V.shape[-1]
-        Qf = Q.view(batch,-1,qk_dim)
-        Kf = K.view(batch,-1,qk_dim)
-        Vf = V.view(batch,-1,v_dim)
-        return Qf,Kf,Vf
     
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
         """
@@ -349,10 +335,7 @@ class MultiHeadLinearAttention(nn.Module):
         # self.kernel_K = nn.Identity()
         
         self.add_rotary_emb=add_rotary_emb
-        if add_rotary_emb:
-            self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim)
-        else:
-            self.rotary_emb = nn.Identity()
+        self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim)
     
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
@@ -386,10 +369,7 @@ class MultiHeadLinearAttention(nn.Module):
         K: [B, L_K,  embed_dim]
         V: [B, L_K,  embed_dim]
         """
-        # if self.add_zero_token:
-        #     Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
-        #     K = torch.cat([Z, K], dim=1)
-        #     V = torch.cat([Z, V], dim=1)
+        
         
         Q = self.feature_dropout(Q)
         K = self.feature_dropout(K)
@@ -409,6 +389,12 @@ class MultiHeadLinearAttention(nn.Module):
         
         phi_Qh = self.kernel_Q(Qh)   # → [B, L_K, n_heads, head_dim]
         phi_Kh = self.kernel_K(Kh)   # → [B, L_K, n_heads, head_dim]
+        
+        # todo add zero token support
+        # if self.add_zero_token:
+        #     Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
+        #     K = torch.cat([Z, K], dim=1)
+        #     V = torch.cat([Z, V], dim=1)
         
         # 3. Run single‐head linear attention
         out_heads, attn = self.single_head_attn(

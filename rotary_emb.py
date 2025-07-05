@@ -321,6 +321,7 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
             max_freq = max_freq,
             cache_max_seq_len=8192*2
         )
+    
     def forward(self,tensors_list : List[torch.Tensor]):
         x_t = tensors_list[0] # batch, heads, dim1,dim2, channels
         freqs = self.pos_emb.get_axial_freqs(x_t.shape[1:-1])
