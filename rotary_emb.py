@@ -1,9 +1,9 @@
 """
-the current state of this implementation is so that it corresponds to
+This this module you only ever should use `RotaryEmbHeadsInplace` class!
+
+The current state of this implementation is so that it corresponds to
 https://github.com/lucidrains/rotary-embedding-torch?tab=readme-ov-file
-when used to get axial rotary embeddings
-
-
+when used to get axial rotary embeddings via `RotaryEmbHeadsInplace` and it is fully torch-script compilable.
 """
 
 
@@ -423,7 +423,7 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
     Accepts inputs of shape `(BATCH, HEADS, (...), DIM)`
     where (...) is spatial dimensions
     """
-    def __init__(self, in_channels=16,freqs_for : Literal['lang','pixel','constant']='pixel', learned_freq = False):
+    def __init__(self, in_channels=16,freqs_for : Literal['lang','pixel','constant']='pixel',max_freq=256, learned_freq = False):
         """
         Inplace module that accepts any-dim input x, applies rotary emb and returns it.
     
@@ -438,6 +438,7 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
                 'pixel': Uses linearly spaced frequencies from 1 to max_freq / 2, scaled by ππ, suitable for pixel-based inputs.
 
                 'constant': Uses a tensor of ones with shape (num_freqs,), for constant frequency embeddings.
+            max_freq: max amout of frequencies used in rotations
             learned_freq: use if you want to learn embedding
         """
         
@@ -445,7 +446,7 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
         self.pos_emb = RotaryEmbedding(
             dim = in_channels//4,
             freqs_for = freqs_for,
-            max_freq = 256,
+            max_freq = max_freq,
             # set this to True to make rotary embeddings extrapolate 
             # better to sequence lengths greater than the one used 
             # at training time
