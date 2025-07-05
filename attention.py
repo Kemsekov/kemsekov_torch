@@ -291,7 +291,13 @@ class TanhKernel(nn.Module):
         super().__init__()
     def forward(self,x):
         return torch.nn.functional.tanh(x)+1
+class EluKernel(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self,x):
+        return torch.nn.functional.elu(x)+1
 
+from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
 class MultiHeadLinearAttention(nn.Module):
     """
     Multi‐head wrapper around single‐head LinearAttention, allowing different
@@ -305,7 +311,19 @@ class MultiHeadLinearAttention(nn.Module):
       - output: [batch, L_Q,  embed_dim]
       - attn:   [batch, n_heads, L_Q, L_K]   (if compute_attn_weight=True)
     """
-    def __init__(self, embed_dim, n_heads,dropout = 0.0,add_zero_token = False,device = None):
+    def __init__(self, embed_dim, n_heads,dropout = 0.0,add_zero_token = False,device = None,add_rotary_emb = False):
+        """
+        Multi‐head wrapper around single‐head LinearAttention, allowing different
+        sequence lengths for Q vs. K/V (i.e. cross‐attention).
+        
+        - embed_dim = n_heads * head_dim
+        - Q: [batch, L_Q,  embed_dim]
+        - K: [batch, L_K,  embed_dim]
+        - V: [batch, L_K,  embed_dim]
+        Returns:
+        - output: [batch, L_Q,  embed_dim]
+        - attn:   [batch, n_heads, L_Q, L_K]   (if compute_attn_weight=True)
+        """
         super().__init__()
         assert embed_dim % n_heads == 0, "embed_dim must be divisible by n_heads"
         self.embed_dim = embed_dim
@@ -318,22 +336,49 @@ class MultiHeadLinearAttention(nn.Module):
         self.single_head_attn = LinearAttention(self.head_dim)
         
         self.kernel_Q = nn.Sequential(
-            nn.Linear(embed_dim,embed_dim,device=device),
-            TanhKernel()
+            # nn.Linear(embed_dim,embed_dim,device=device),
+            EluKernel()
         )
         
         self.kernel_K = nn.Sequential(
-            nn.Linear(embed_dim,embed_dim,device=device),
-            TanhKernel()
+            # nn.Linear(embed_dim,embed_dim,device=device),
+            EluKernel()
         )
         
         # self.kernel_Q = nn.Identity()
         # self.kernel_K = nn.Identity()
+        
+        self.add_rotary_emb=add_rotary_emb
+        if add_rotary_emb:
+            self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim)
+        else:
+            self.rotary_emb = nn.Identity()
     
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
         B = x.shape[0]
-        return x.view(B, -1, self.n_heads, self.head_dim)
+        D = x.shape[-1]
+        return x.view(B, -1, self.n_heads, D//self.n_heads)
+    
+    def permute_to_rotary_input(self,x):
+        # [B, ..., embed_dim] -> [B, ...,n_heads, embed_dim]
+        x = x.view(list(x.shape[:-1]) + [self.n_heads, self.head_dim])
+        # [B, ..., n_heads, embed_dim] -> [B, n_heads, ..., embed_dim]
+        dims = list(range(len(x.shape)))[1:-2]
+        x = x.permute([0,-2]+dims+[-1])
+        return x
+    
+    def unpermute(self,x):
+        # [B, n_heads, ..., embed_dim] -> [B, ..., n_heads, embed_dim]
+        dims = list(range(len(x.shape)))[2:-1]
+        x = x.permute([0]+dims+[1,-1])
+        return x.view(x.shape[0],-1,self.n_heads,self.head_dim)
+    
+    def split_heads_with_rotary_emb(self, x : torch.Tensor):
+        x = self.permute_to_rotary_input(x)
+        x = self.rotary_emb([x])[0]
+        x = self.unpermute(x)
+        return x
     
     def forward(self, Q, K, V, compute_attn_weight : bool = False):
         """
@@ -341,25 +386,29 @@ class MultiHeadLinearAttention(nn.Module):
         K: [B, L_K,  embed_dim]
         V: [B, L_K,  embed_dim]
         """
-        if self.add_zero_token:
-            Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
-            K = torch.cat([Z, K], dim=1)
-            V = torch.cat([Z, V], dim=1)
+        # if self.add_zero_token:
+        #     Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
+        #     K = torch.cat([Z, K], dim=1)
+        #     V = torch.cat([Z, V], dim=1)
         
         Q = self.feature_dropout(Q)
         K = self.feature_dropout(K)
-        phi_Q = self.kernel_Q(Q)
-        phi_K = self.kernel_K(K)
+        # phi_Q = self.kernel_Q(Q)
+        # phi_K = self.kernel_K(K)
         
-        B, L_Q, _ = Q.shape
-        _, L_K, _ = K.shape
+        v_dim = V.shape[-1]
         
-        Qh = self.split_heads(Q)   # → [B, n_heads, L_Q, head_dim]
-        Kh = self.split_heads(K)   # → [B, n_heads, L_K, head_dim]
-        Vh = self.split_heads(V)   # → [B, n_heads, L_K, head_dim]
+        if self.add_rotary_emb:
+            Qh = self.split_heads_with_rotary_emb(Q)
+            Kh = self.split_heads_with_rotary_emb(K)
+        else:
+            Qh = self.split_heads(Q)   # → [B, L_Q, n_heads, head_dim]
+            Kh = self.split_heads(K)   # → [B, L_K, n_heads, head_dim]
         
-        phi_Qh = self.split_heads(phi_Q)   # → [B, n_heads, L_K, head_dim]
-        phi_Kh = self.split_heads(phi_K)   # → [B, n_heads, L_K, head_dim]
+        Vh = self.split_heads(V)   # → [B, L_K, n_heads, head_dim]
+        
+        phi_Qh = self.kernel_Q(Qh)   # → [B, L_K, n_heads, head_dim]
+        phi_Kh = self.kernel_K(Kh)   # → [B, L_K, n_heads, head_dim]
         
         # 3. Run single‐head linear attention
         out_heads, attn = self.single_head_attn(
@@ -369,7 +418,7 @@ class MultiHeadLinearAttention(nn.Module):
         # [B, L_Q,n_heads, head_dim]
         # out_heads
         
-        output = out_heads.reshape(B, L_Q, -1)
+        output = out_heads.reshape(list(Q.shape[:-1]) + [v_dim])
 
         if attn is not None:
             attn = attn.permute([0,2,1,3])

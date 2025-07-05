@@ -111,7 +111,7 @@ class RotaryEmbedding(Module):
         # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
         # has some connection to NTK literature
         # https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/
-
+        
         theta *= theta_rescale_factor ** (dim / (dim - 2))
 
         self.freqs_for = freqs_for
@@ -319,6 +319,7 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
             dim = in_channels//4,
             freqs_for = freqs_for,
             max_freq = max_freq,
+            cache_max_seq_len=8192*2
         )
     def forward(self,tensors_list : List[torch.Tensor]):
         x_t = tensors_list[0] # batch, heads, dim1,dim2, channels
