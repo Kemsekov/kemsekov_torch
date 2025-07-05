@@ -357,12 +357,10 @@ class RotaryEmbedding(Module):
             
         should_cache = (
             self.cache_if_possible and
-            not self.learned_freq and
             seq_len is not None and
             self.freqs_for != 'pixel' and
             offset_p_seqlen <= self.cache_max_seq_len
         )
-
         if (
             should_cache and \
             self.cached_freqs is not None and \
@@ -387,7 +385,7 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
     Accepts inputs of shape `(BATCH, HEADS, (...), DIM)`
     where (...) is spatial dimensions
     """
-    def __init__(self, in_channels=16,freqs_for : Literal['lang','pixel','constant']='pixel',max_freq=256, learned_freq = False):
+    def __init__(self, in_channels=16,freqs_for : Literal['lang','pixel','constant']='pixel',max_freq=256):
         """
         Inplace module that accepts any-dim input x, applies rotary emb and returns it.
     
@@ -403,7 +401,6 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
 
                 'constant': Uses a tensor of ones with shape (num_freqs,), for constant frequency embeddings.
             max_freq: max amout of frequencies used in rotations
-            learned_freq: use if you want to learn embedding
         """
         
         super().__init__()
@@ -411,11 +408,6 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
             dim = in_channels//4,
             freqs_for = freqs_for,
             max_freq = max_freq,
-            # set this to True to make rotary embeddings extrapolate 
-            # better to sequence lengths greater than the one used 
-            # at training time
-            use_xpos = True,
-            learned_freq=learned_freq,
         )
     def forward(self,tensors_list : List[torch.Tensor]):
         x_t = tensors_list[0] # batch, heads, dim1,dim2, channels
