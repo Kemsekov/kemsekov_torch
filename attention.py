@@ -171,12 +171,11 @@ class LinearCrossAttentionBlock(torch.nn.Module):
     def _local_attnetion(self,x):
         # x: [batch, ... ,channels]
         xt = x
-        
-        batch = xt.shape[0]
-        ch = xt.shape[-1]
-        
-        # xt: [batch,(...),channels]
-        xt = xt.view(batch,-1,ch)
+        if len(x.shape)>3:
+            batch = xt.shape[0]
+            ch = xt.shape[-1]
+            # xt: [batch,(...),channels]
+            xt = xt.view(batch,-1,ch)
         
         # xt: [batch,channels,(...)]
         xt = xt.transpose(-2,-1)
@@ -187,8 +186,9 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # out: [batch,(...),channels]
         out = out.transpose(-2,-1)
         
-        # out: [batch, ... ,channels]
-        out = out.view(x.shape)
+        if len(x.shape)>3:
+            # out: [batch, ... ,channels]
+            out = out.view(x.shape)
         
         return out
     
@@ -345,22 +345,23 @@ class MultiHeadLinearAttention(nn.Module):
     
     def permute_to_rotary_input(self,x):
         # [B, ..., embed_dim] -> [B, ...,n_heads, embed_dim]
-        x = x.view(list(x.shape[:-1]) + [self.n_heads, self.head_dim])
+        x = x.view(list(x.shape[:-1]) + [self.n_heads, -1])
         # [B, ..., n_heads, embed_dim] -> [B, n_heads, ..., embed_dim]
         dims = list(range(len(x.shape)))[1:-2]
         x = x.permute([0,-2]+dims+[-1])
         return x
     
-    def unpermute(self,x):
+    def unpermute_from_rotary_output(self,x):
         # [B, n_heads, ..., embed_dim] -> [B, ..., n_heads, embed_dim]
+        dim = x.shape[-1]
         dims = list(range(len(x.shape)))[2:-1]
         x = x.permute([0]+dims+[1,-1])
-        return x.view(x.shape[0],-1,self.n_heads,self.head_dim)
+        return x.view(x.shape[0],-1,self.n_heads,dim)
     
     def split_heads_with_rotary_emb(self, x : torch.Tensor):
         x = self.permute_to_rotary_input(x)
         x = self.rotary_emb([x])[0]
-        x = self.unpermute(x)
+        x = self.unpermute_from_rotary_output(x)
         return x
     
     def forward(self, Q, K, V, compute_attn_weight : bool = False):
@@ -369,7 +370,6 @@ class MultiHeadLinearAttention(nn.Module):
         K: [B, L_K,  embed_dim]
         V: [B, L_K,  embed_dim]
         """
-        
         
         Q = self.feature_dropout(Q)
         K = self.feature_dropout(K)
