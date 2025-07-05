@@ -6,28 +6,16 @@ https://github.com/lucidrains/rotary-embedding-torch?tab=readme-ov-file
 when used to get axial rotary embeddings via `RotaryEmbHeadsInplace` and it is fully torch-script compilable.
 """
 
-
-
 from __future__ import annotations
-from math import pi, log
-
+from math import pi
 import torch
-from torch.nn import Module, ModuleList
-from torch import nn, einsum, broadcast_tensors, is_tensor, tensor, Tensor
-
-from einops import rearrange, repeat
-
+from torch.nn import Module
+from torch import nn, einsum, Tensor
 from typing import List, Literal
 
 # helper functions
 def default(val, d):
     return val if val is not None else d
-
-# broadcat, as tortoise-tts was using it
-
-def broadcat(tensors, dim = -1):
-    broadcasted_tensors = broadcast_tensors(*tensors)
-    return torch.cat(broadcasted_tensors, dim = dim)
 
 def take_last(
     t: torch.Tensor,
@@ -42,7 +30,6 @@ def take_last(
     start = total - seq_len
     return t.narrow(dim, start, seq_len)
 # rotary embedding helper functions
-
 
 
 def rotate_half(x):
@@ -101,17 +88,6 @@ def apply_rotary_emb(
 
     return out.type(dtype)
 
-# learned rotation helpers
-
-# def apply_learned_rotations(rotations, t, start_index = 0, freq_ranges = None):
-#     if freq_ranges is not None:
-#         rotations = einsum('..., f -> ... f', rotations, freq_ranges)
-#         rotations = rearrange(rotations, '... r f -> ... (r f)')
-
-#     rotations = repeat(rotations, '... n -> ... (n r)', r = 2)
-#     return apply_rotary_emb(rotations, t, start_index = start_index)
-
-# classes
 
 class RotaryEmbedding(Module):
     def __init__(
@@ -194,70 +170,6 @@ class RotaryEmbedding(Module):
     @property
     def device(self):
         return self.dummy.device
-
-    def get_seq_pos(self, seq_len, device, dtype, offset : int = 0):
-        return (torch.arange(seq_len, device = device, dtype = dtype) + offset) / self.interpolate_factor
-
-    def rotate_queries_or_keys(self, t, seq_dim = None, offset : int = 0, scale = None):
-        seq_dim = default(seq_dim, self.default_seq_dim)
-
-        assert not self.use_xpos or scale is not None, 'you must use `.rotate_queries_and_keys` method instead and pass in both queries and keys, for length extrapolatable rotary embeddings'
-
-        device, dtype, seq_len = t.device, t.dtype, t.shape[seq_dim]
-
-        seq = self.get_seq_pos(seq_len, device = device, dtype = dtype, offset = offset)
-
-        freqs = self.forward(seq, seq_len = seq_len, offset = offset)
-
-        if seq_dim == -3:
-            freqs = rearrange(freqs, 'n d -> n 1 d')
-
-        return apply_rotary_emb(freqs, t, scale = default(scale, 1.), seq_dim = seq_dim)
-
-    def rotate_queries_with_cached_keys(self, q, k, seq_dim = None, offset : int = 0):
-        dtype, device, seq_dim = q.dtype, q.device, default(seq_dim, self.default_seq_dim)
-
-        q_len, k_len = q.shape[seq_dim], k.shape[seq_dim]
-        assert q_len <= k_len
-
-        q_scale = k_scale = 1.
-
-        if self.use_xpos:
-            seq = self.get_seq_pos(k_len, dtype = dtype, device = device)
-
-            q_scale = self.get_scale(seq[-q_len:]).type(dtype)
-            k_scale = self.get_scale(seq).type(dtype)
-
-        rotated_q = self.rotate_queries_or_keys(q, seq_dim = seq_dim, scale = q_scale, offset = k_len - q_len + offset)
-        rotated_k = self.rotate_queries_or_keys(k, seq_dim = seq_dim, scale = k_scale ** -1)
-
-        rotated_q = rotated_q.type(q.dtype)
-        rotated_k = rotated_k.type(k.dtype)
-
-        return rotated_q, rotated_k
-
-    def rotate_queries_and_keys(self, q, k, seq_dim = None):
-        seq_dim = default(seq_dim, self.default_seq_dim)
-
-        assert self.use_xpos
-        device, dtype, seq_len = q.device, q.dtype, q.shape[seq_dim]
-
-        seq = self.get_seq_pos(seq_len, dtype = dtype, device = device)
-
-        freqs = self.forward(seq, seq_len = seq_len)
-        scale = self.get_scale(seq, seq_len = seq_len).to(dtype)
-
-        if seq_dim == -3:
-            freqs = rearrange(freqs, 'n d -> n 1 d')
-            scale = rearrange(scale, 'n d -> n 1 d')
-
-        rotated_q = apply_rotary_emb(freqs, q, scale = scale, seq_dim = seq_dim)
-        rotated_k = apply_rotary_emb(freqs, k, scale = scale ** -1, seq_dim = seq_dim)
-
-        rotated_q = rotated_q.type(q.dtype)
-        rotated_k = rotated_k.type(k.dtype)
-
-        return rotated_q, rotated_k
 
     def get_axial_freqs(self, dims : List[int], offsets : List[int]|None =None):
         all_freqs = []
@@ -342,7 +254,6 @@ class RotaryEmbedding(Module):
         elif len(all_freqs)==5:
             all_freqs = torch.broadcast_tensors(all_freqs[0],all_freqs[1],all_freqs[2],all_freqs[3],all_freqs[4])
         return torch.cat(all_freqs, dim=-1)
-
 
     def forward(
         self,
