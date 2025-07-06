@@ -482,7 +482,7 @@ class EfficientSpatialChannelAttention(nn.Module):
         super().__init__()
         self.spatial_attn = nn.Sequential(
             nn.Conv1d(channels,channels,ks,padding=ks//2),
-            nn.Sigmoid()
+            nn.Tanh()
         )
 
     def forward(self, x):
@@ -491,7 +491,7 @@ class EfficientSpatialChannelAttention(nn.Module):
 
         # Global Average Pooling over spatial dims to [N, C, 1]
         flat = x.view(N,C,-1)
-        spatian_attn = self.spatial_attn(flat)
+        spatian_attn = 1+self.spatial_attn(flat)
         
         # out = torch.max(flat*ch_attn,flat*spatian_attn)
         out = flat*spatian_attn
