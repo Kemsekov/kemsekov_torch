@@ -1,8 +1,9 @@
-import math
 import torch
 from torch import nn
 from kemsekov_torch.residual import Residual
 from kemsekov_torch.common_modules import AddConst
+from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
+import torch.nn.functional as F
 
 # these two modules are kinda legacy, they don't implement anything, just for convenience
 class TransformerSelfAttentionBlock(nn.Module):
@@ -283,7 +284,32 @@ class EluKernel(nn.Module):
     def forward(self,x):
         return torch.nn.functional.elu(x)+1
 
-from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
+
+def compute_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """
+    Computes scaled dot-product attention.
+
+    Args:
+        q, k, v: Tensors of shape [batch_size, seq_length, num_heads, head_dim]
+
+    Returns:
+        Tensor of shape [batch_size, seq_length, num_heads, head_dim]
+    """
+
+    # Permute to [batch_size, num_heads, seq_length, head_dim]
+    q = q.permute(0, 2, 1, 3)
+    k = k.permute(0, 2, 1, 3)
+    v = v.permute(0, 2, 1, 3)
+
+    # Compute attention
+    attn_output = F.scaled_dot_product_attention(q, k, v)
+
+    # Permute back to [batch_size, seq_length, num_heads, head_dim]
+    attn_output = attn_output.permute(0, 2, 1, 3)
+
+    return attn_output
+
+
 class MultiHeadLinearAttention(nn.Module):
     """
     Multi‐head wrapper around single‐head LinearAttention, allowing different
@@ -322,20 +348,20 @@ class MultiHeadLinearAttention(nn.Module):
         self.single_head_attn = LinearAttention(self.head_dim)
         
         self.kernel_Q = nn.Sequential(
-            # nn.Linear(embed_dim,embed_dim,device=device),
-            EluKernel()
+            nn.Linear(embed_dim,embed_dim,device=device),
+            TanhKernel()
         )
         
         self.kernel_K = nn.Sequential(
-            # nn.Linear(embed_dim,embed_dim,device=device),
-            EluKernel()
+            nn.Linear(embed_dim,embed_dim,device=device),
+            TanhKernel()
         )
         
         # self.kernel_Q = nn.Identity()
         # self.kernel_K = nn.Identity()
         
         self.add_rotary_emb=add_rotary_emb
-        self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim)
+        # self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim)
     
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
@@ -343,26 +369,26 @@ class MultiHeadLinearAttention(nn.Module):
         D = x.shape[-1]
         return x.view(B, -1, self.n_heads, D//self.n_heads)
     
-    def permute_to_rotary_input(self,x):
-        # [B, ..., embed_dim] -> [B, ...,n_heads, embed_dim]
-        x = x.view(list(x.shape[:-1]) + [self.n_heads, -1])
-        # [B, ..., n_heads, embed_dim] -> [B, n_heads, ..., embed_dim]
-        dims = list(range(len(x.shape)))[1:-2]
-        x = x.permute([0,-2]+dims+[-1])
-        return x
+    # def permute_to_rotary_input(self,x):
+    #     # [B, ..., embed_dim] -> [B, ...,n_heads, embed_dim]
+    #     x = x.view(list(x.shape[:-1]) + [self.n_heads, -1])
+    #     # [B, ..., n_heads, embed_dim] -> [B, n_heads, ..., embed_dim]
+    #     dims = list(range(len(x.shape)))[1:-2]
+    #     x = x.permute([0,-2]+dims+[-1])
+    #     return x
     
-    def unpermute_from_rotary_output(self,x):
-        # [B, n_heads, ..., embed_dim] -> [B, ..., n_heads, embed_dim]
-        dim = x.shape[-1]
-        dims = list(range(len(x.shape)))[2:-1]
-        x = x.permute([0]+dims+[1,-1])
-        return x.view(x.shape[0],-1,self.n_heads,dim)
+    # def unpermute_from_rotary_output(self,x):
+    #     # [B, n_heads, ..., embed_dim] -> [B, ..., n_heads, embed_dim]
+    #     dim = x.shape[-1]
+    #     dims = list(range(len(x.shape)))[2:-1]
+    #     x = x.permute([0]+dims+[1,-1])
+    #     return x.view(x.shape[0],-1,self.n_heads,dim)
     
-    def split_heads_with_rotary_emb(self, x : torch.Tensor):
-        x = self.permute_to_rotary_input(x)
-        x = self.rotary_emb([x])[0]
-        x = self.unpermute_from_rotary_output(x)
-        return x
+    # def split_heads_with_rotary_emb(self, x : torch.Tensor):
+    #     x = self.permute_to_rotary_input(x)
+    #     x = self.rotary_emb([x])[0]
+    #     x = self.unpermute_from_rotary_output(x)
+    #     return x
     
     def forward(self, Q, K, V, compute_attn_weight : bool = False):
         """
@@ -370,25 +396,23 @@ class MultiHeadLinearAttention(nn.Module):
         K: [B, L_K,  embed_dim]
         V: [B, L_K,  embed_dim]
         """
+        v_dim = V.shape[-1]
         
         Q = self.feature_dropout(Q)
         K = self.feature_dropout(K)
-        # phi_Q = self.kernel_Q(Q)
-        # phi_K = self.kernel_K(K)
-        
-        v_dim = V.shape[-1]
-        
-        if self.add_rotary_emb:
-            Qh = self.split_heads_with_rotary_emb(Q)
-            Kh = self.split_heads_with_rotary_emb(K)
-        else:
-            Qh = self.split_heads(Q)   # → [B, L_Q, n_heads, head_dim]
-            Kh = self.split_heads(K)   # → [B, L_K, n_heads, head_dim]
+
+        phi_Q = self.kernel_Q(Q)   # → [B, L_K, n_heads, head_dim]
+        phi_K = self.kernel_K(K)   # → [B, L_K, n_heads, head_dim]
+        # if self.add_rotary_emb:
+        #     Qh = self.split_heads_with_rotary_emb(Q)
+        #     Kh = self.split_heads_with_rotary_emb(K)
+        # else:
+        Qh = self.split_heads(Q)   # → [B, L_Q, n_heads, head_dim]
+        Kh = self.split_heads(K)   # → [B, L_K, n_heads, head_dim]
         
         Vh = self.split_heads(V)   # → [B, L_K, n_heads, head_dim]
-        
-        phi_Qh = self.kernel_Q(Qh)   # → [B, L_K, n_heads, head_dim]
-        phi_Kh = self.kernel_K(Kh)   # → [B, L_K, n_heads, head_dim]
+        phi_Qh = self.split_heads(phi_Q)
+        phi_Kh = self.split_heads(phi_K)
         
         # todo add zero token support
         # if self.add_zero_token:
@@ -400,6 +424,10 @@ class MultiHeadLinearAttention(nn.Module):
         out_heads, attn = self.single_head_attn(
             Qh, Kh, Vh,phi_Qh,phi_Kh, compute_attn_weight
         )
+        
+        # we can try to use full scaled dot product attention
+        # attn = None
+        # out_heads = compute_attention(Qh,Kh,Vh)
         
         # [B, L_Q,n_heads, head_dim]
         # out_heads
