@@ -214,7 +214,7 @@ class ResidualUnet(nn.Module):
         # Down path
         encodings = []
         for down in self.down_blocks:
-            print(x.shape)
+            # print(x.shape)
             x = down(x)
             encodings.append(x)
 
@@ -225,15 +225,15 @@ class ResidualUnet(nn.Module):
 
         # Up path
         for up, combine, skip in zip(self.up_blocks, self.combine_blocks, skips):
-            print(x.shape)
+            # print(x.shape)
             x = up(x)
             x = combine([x, skip])
-        print(x.shape)
+        # print(x.shape)
 
         # Final combine with expanded input
         x = self.final_up(x)
         x = self.final_combine([x, e])
-        print(x.shape)
+        # print(x.shape)
 
         # Collapse to output channels
         return self.collapse_output(x)
