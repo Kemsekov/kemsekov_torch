@@ -260,6 +260,13 @@ class Mean0Std1Norm(torch.nn.Module):
         std = x.std(dims,keepdim=True)+1e-6
         return (x-mean)/std
 
+def module_params_count(module : nn.Module):
+    """
+    Returns count of module parameters
+    """
+    return sum([n.numel() for n in module.parameters()])
+    
+
 def get_normalization_from_name(dimensions, normalization: Literal['batch', 'instance','layer', 'group','Mean0Std1', None]):
     """Get normalization for given dimensions from its name.
 
