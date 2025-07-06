@@ -11,7 +11,7 @@ class ConcatTensors(torch.nn.Module):
         """
         super().__init__()
         self.dim = dim
-    def forward(self,tensors):
+    def forward(self,tensors : List[torch.Tensor]):
         """
         tensors: a list of `torch.Tensor` objects that need to be concatenated
         """

@@ -32,7 +32,7 @@ class DiffusionUtils:
         x_t = alpha_bar_sqrt * x + one_minus_alpha_bar_sqrt * epsilon
         return x_t, epsilon
 
-    def diffusion_backward(self, x_t, pred_noise, t,generate_noise = False,rescale_generated_noise = False):
+    def diffusion_backward(self, x_t, pred_noise, t,generate_noise = False):
         """
         DDIM reverse step (η = 0): deterministic step using model-predicted noise.
         Assumes t > 0 and t is a LongTensor of shape [B].
@@ -56,9 +56,6 @@ class DiffusionUtils:
         x0_est = (x_t - sqrt_one_minus_alpha_bar_t * pred_noise) / sqrt_alpha_bar_t
         if generate_noise:
             new_noise = torch.randn_like(pred_noise)
-            if rescale_generated_noise:
-                new_noise*=pred_noise.std()
-                new_noise+=pred_noise.mean()
             pred_noise = new_noise
         
         # DDIM deterministic step (η = 0)
@@ -67,7 +64,7 @@ class DiffusionUtils:
 
 
 
-def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,normalize_pred = True,regenerate_noise = True,rescale_generated_noise=True):
+def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,normalize_pred = True,regenerate_noise = True):
     """
     Samples diffusion model
     Parameters:
@@ -79,7 +76,6 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,n
             Timesteps for sampling
         normalize_pred: normalize predicted noise to be mean 0 std 1
         regenerate_noise: to regenerate noise each denoising step or not.
-        rescale_generated_noise: rescale generated noise to have same std and mean as predicted noise
     Last three parameters for some datasets helps to generate better samples, but there is no single best configuration for them, play around with these three parameters
     """
     diff_util = DiffusionUtils(inference_timesteps)
@@ -96,7 +92,7 @@ def sample(diffusion_model,sample_shape,train_timesteps,inference_timesteps=20,n
                 pred_noise_-=pred_noise_.mean()
 
         t=t.item()
-        next_t = diff_util.diffusion_backward(next_t,pred_noise_,t,generate_noise=regenerate_noise,rescale_generated_noise=rescale_generated_noise)
+        next_t = diff_util.diffusion_backward(next_t,pred_noise_,t,generate_noise=regenerate_noise)
 
     return next_t
 
@@ -139,7 +135,7 @@ class TimeContextEmbedding(torch.nn.Module):
         return x_t
 
 class DiffusionBlock(torch.nn.Module):
-    def __init__(self,in_channels,out_channels,transformer_blocks = 2,attn_heads=8,max_timesteps=64,normalization='batch',dimensions=2):
+    def __init__(self,in_channels,out_channels,transformer_blocks = 2,attn_heads=16,max_timesteps=64,normalization='batch',dimensions=2):
         super().__init__()
         mlp_dim = 2*out_channels
         self.down = ResidualBlock(
@@ -153,18 +149,21 @@ class DiffusionBlock(torch.nn.Module):
         )
         
         self.embed_context_to_down = TimeContextEmbedding(out_channels,max_timesteps)
-        self.sa = Residual([
-            # ConcatPositionalEmbeddingPermute(out_channels,256,dimensions=dimensions),
-            AddPositionalEmbeddingPermute(out_channels,256,dimensions),
-            # LearnedPosEmb(out_channels,dimensions),
-            *[
-                FlattenSpatialDimensions([
-                    # TransformerSelfAttentionBlock(out_channels,attn_heads,mlp_dim),
-                    LinearSelfAttentionBlock(out_channels,mlp_dim,attn_heads)
-                ])
-                for i in range(transformer_blocks)
-            ]
-        ])
+        if transformer_blocks>0:
+            self.sa = Residual([
+                # ConcatPositionalEmbeddingPermute(out_channels,256,dimensions=dimensions),
+                AddPositionalEmbeddingPermute(out_channels,256,dimensions),
+                # LearnedPosEmb(out_channels,dimensions),
+                *[
+                    FlattenSpatialDimensions([
+                        # TransformerSelfAttentionBlock(out_channels,attn_heads,mlp_dim),
+                        LinearSelfAttentionBlock(out_channels,mlp_dim,attn_heads)
+                    ])
+                    for i in range(transformer_blocks)
+                ]
+            ])
+        else:
+            self.sa = nn.Identity()
         
     def forward(self,x,time):
         xt = self.down(x)
@@ -181,7 +180,7 @@ class Diffusion(torch.nn.Module):
         
         common_diff_block = dict(
             normalization='group',
-            attn_heads = 32,
+            attn_heads = 16,
             dimensions = 2,
             max_timesteps=max_timesteps
         )
@@ -191,34 +190,33 @@ class Diffusion(torch.nn.Module):
             dimensions=common_diff_block['dimensions'],
             activation = nn.GELU
         )
-        scale=1
         
         self.dimensions = common_diff_block['dimensions']
         self.upscale_input = ResidualBlock(
             in_channels,
-            scale*64,
+            64,
             kernel_size=3,
             **commin_res_block
         )
-        self.down1 = DiffusionBlock(scale*64,scale*128,**common_diff_block)
-        self.down2 = DiffusionBlock(scale*128,scale*128,**common_diff_block)
-        self.down3 = DiffusionBlock(scale*128,scale*256,**common_diff_block)
-        self.down4 = DiffusionBlock(scale*256,scale*512,**common_diff_block)
+        self.down1 = DiffusionBlock(64,128,**common_diff_block)
+        self.down2 = DiffusionBlock(128,128,**common_diff_block)
+        self.down3 = DiffusionBlock(128,256,**common_diff_block)
+        self.down4 = DiffusionBlock(256,512,**common_diff_block)
         
-        self.up1 = DiffusionBlock(scale*512,scale*256,**common_diff_block).transpose()
-        self.merge_up1_down3 = ResidualBlock(scale*512,scale*256,kernel_size=1,**commin_res_block)
+        self.up1 = DiffusionBlock(512,256,**common_diff_block).transpose()
+        self.merge_up1_down3 = ResidualBlock(512,[256]*2,kernel_size=1,**commin_res_block)
         
-        self.up2 = DiffusionBlock(scale*256,scale*128,**common_diff_block).transpose()
-        self.merge_up2_down2 = ResidualBlock(scale*256,128,kernel_size=1,**commin_res_block)
+        self.up2 = DiffusionBlock(256,128,**common_diff_block).transpose()
+        self.merge_up2_down2 = ResidualBlock(256,[128]*2,kernel_size=1,**commin_res_block)
         
-        self.up3 = DiffusionBlock(scale*128,scale*128,**common_diff_block).transpose()
-        self.merge_up3_down1 = ResidualBlock(scale*256,scale*128,kernel_size=1,**commin_res_block)
+        self.up3 = DiffusionBlock(128,128,**common_diff_block).transpose()
+        self.merge_up3_down1 = ResidualBlock(256,[128]*2,kernel_size=1,**commin_res_block)
 
-        self.up4 = DiffusionBlock(scale*128,scale*64,transformer_blocks=0,**common_diff_block).transpose()
-        self.merge_up4_x = ResidualBlock(scale*128,scale*64,kernel_size=1,**commin_res_block)
+        self.up4 = DiffusionBlock(128,64,transformer_blocks=0,**common_diff_block).transpose()
+        self.merge_up4_x = ResidualBlock(128,[64]*2,kernel_size=1,**commin_res_block)
         
         # to produce proper logits, combine model output that input
-        self.final = [torch.nn.Conv1d,torch.nn.Conv2d,torch.nn.Conv3d][self.dimensions-1](scale*64,in_channels,kernel_size=1)
+        self.final = [torch.nn.Conv1d,torch.nn.Conv2d,torch.nn.Conv3d][self.dimensions-1](64,in_channels,kernel_size=1)
     
     # x is batched single example with all noise levels
     # timestep is indices of noise levels for each sample is x

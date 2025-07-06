@@ -1,9 +1,35 @@
-from typing import Literal
+from typing import List, Literal
+
+import torch
 from kemsekov_torch.residual import ResidualBlock
 from kemsekov_torch.common_modules import ConcatTensors
 from kemsekov_torch.attention import EfficientSpatialChannelAttention
 import torch.nn as nn
+class ListSequential(nn.Module):
+    """
+    A Sequential container like nn.Sequential, but whose forward
+    takes *one* argument: a List[Tensor].  Each submodule must
+    accept whatever the previous returned (often List[Tensor]
+    or Tensor) and return it in turn.
 
+    Usage:
+        seq = ListSequential(
+            SomeModuleThatTakesList(),
+            AnotherModuleThatTakesList(),
+            FinalModuleThatTakesTensor()
+        )
+        out = seq([x1, x2, x3])   # -> tensor or list, depending on final module
+    """
+
+    def __init__(self, *modules: nn.Module):
+        super(ListSequential, self).__init__()
+        self.modules_list = nn.ModuleList(modules)
+
+    def forward(self, inputs: List[torch.Tensor]) -> torch.Tensor:
+        x = inputs
+        for module in self.modules_list:
+            x = module(x)
+        return x
 class ResidualUnet(nn.Module):
     """
     Residual U‑Net architecture with fully dynamic channel configuration
@@ -189,7 +215,7 @@ class ResidualUnet(nn.Module):
                 ResidualBlock(channels[i], channels[i - 1], **common).transpose(),
                 EfficientSpatialChannelAttention(channels[i - 1])
             )
-            combine_block = nn.Sequential(
+            combine_block = ListSequential(
                 ConcatTensors(1),
                 conv(channels[i - 1] * 2, channels[i - 1], kernel_size=1)
             )
@@ -201,7 +227,7 @@ class ResidualUnet(nn.Module):
             ResidualBlock(channels[0], channels[0], **common).transpose(),
             EfficientSpatialChannelAttention(channels[0])
         )
-        self.final_combine = nn.Sequential(
+        self.final_combine = ListSequential(
             ConcatTensors(1),
             conv(channels[0] * 2, channels[0], kernel_size=1)
         )
@@ -224,10 +250,10 @@ class ResidualUnet(nn.Module):
         skips = encodings[:-1][::-1]
 
         # Up path
-        for up, combine, skip in zip(self.up_blocks, self.combine_blocks, skips):
+        for i,(up, combine) in enumerate(zip(self.up_blocks, self.combine_blocks)):
             # print(x.shape)
             x = up(x)
-            x = combine([x, skip])
+            x = combine([x, skips[i]])
         # print(x.shape)
 
         # Final combine with expanded input
