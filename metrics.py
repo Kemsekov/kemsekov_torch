@@ -21,3 +21,12 @@ def r2_score(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     r2 = 1 - (residual_variance / total_variance)
     
     return r2.item()
+
+
+def iou_metric(pred, target, threshold=0.5):
+    with torch.no_grad():
+        pred = (pred> threshold).float()  # Convert to binary
+        intersection = (pred * target).sum()
+        union = pred.sum() + target.sum() - intersection
+        iou = intersection / (union + 1e-6)
+        return iou.cpu().item()
