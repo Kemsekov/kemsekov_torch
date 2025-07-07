@@ -19,7 +19,7 @@ def train(
         save_results_dir="runs/train",
         load_checkpoint_dir = None,
         num_epochs = 10,
-        checkpoints_count = 5,
+        checkpoints_count = 1,
         save_on_metric_improve = 'any',
         optimizer = None,
         scheduler = None,
@@ -64,7 +64,7 @@ def train(
         Number of epochs for training. Default is 10.
 
     checkpoints_count : int, optional
-        Number of last best checkpoints to save. Default is 5.
+        Number of last best checkpoints to save. Default is 1.
 
     save_on_metric_improve: 'any', 'all', list[metric_name]
         When `'any'` a checkpoint will be saved when any of the metrics improve. If one or more metrics show improvement, a new checkpoint will be saved.
@@ -498,8 +498,9 @@ def train(
                             c_dir = os.path.join(checkpoints_dir,c)
                             shutil.rmtree(c_dir,ignore_errors=True)
                     if checkpoints_count==1:
-                        c_dir = os.path.join(checkpoints_dir,checkpoints[0])
-                        shutil.rmtree(c_dir,ignore_errors=True)
+                        for c in checkpoints:
+                            c_dir = os.path.join(checkpoints_dir,c)
+                            shutil.rmtree(c_dir,ignore_errors=True)
                         
                     checkpoints_dir_with_epoch=os.path.join(checkpoints_dir,f"epoch-{epoch+1}")
                     # for each improvement save training state and model
