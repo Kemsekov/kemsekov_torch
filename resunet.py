@@ -50,6 +50,14 @@ class ResidualUnet(nn.Module):
         - channels[0] is used for the first expansion layer (no downsample).
         - Subsequent entries define the depth of the encoder; longer lists
           produce a deeper UNet.
+    dilations: List[int|List[int]] 
+        defines unet encoder layer dilations. 
+        Dilations automatically expanded over channel dimensions.
+        
+        So if you have `channels=[16,32,64]` and `dilations=[1,1,[1,1,2]]` 
+        first two encoder layers will have dilation 1, 
+        the last one will have 2/3 channels 
+        with dilation 1 and 1/3 channels with dilation 2
     dimensions : int in {1,2,3}, default=2
         Number of spatial dimensions. Selects Conv1d/Conv2d/Conv3d accordingly.
     dropout : float, default=0.1
@@ -158,20 +166,7 @@ class ResidualUnet(nn.Module):
         stride=2,
         normalization: Literal['batch', 'instance', 'group', 'layer', None] = 'group',
     ):
-        """
-        Unet network to work with multidimensional data (up to 3 dimensions)
-        
-        Depending on `dimensions` parameters accepts tensors of shape 
-            `[batch,channels,d1]` or `[batch,channels,d1,d2]` or `[batch,channels,d1,d2,d3]`
-        
-        in_channels: input tensor channels
-        out_channels: output channels
-        channels: ...
-        dimensions: input spatial dimensions count
-        dropout: dropout probability
-        kernel_size: int or list/tuple with dimension-wise kernel_size
-        stride: int or list/tuple with dimension-wise stride
-        """
+
         super().__init__()
         assert dimensions>=1 and dimensions<=3, "dimensions parameter should be in range [1:3]"
         if isinstance(kernel_size,list) or isinstance(kernel_size,tuple):
@@ -188,7 +183,9 @@ class ResidualUnet(nn.Module):
 
         # Initial expansion and final collapse
         self.expand_input = conv(in_channels, channels[0], kernel_size=1)
-        self.collapse_output = conv(channels[0], out_channels, kernel_size=1)
+        
+        # at the end mix features from inputs and outputs
+        self.collapse_output = conv(channels[0], out_channels, kernel_size=3,padding=1)
 
         common = dict(
             normalization=normalization,
