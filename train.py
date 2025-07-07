@@ -497,7 +497,10 @@ def train(
                         for c in checkpoints[:-checkpoints_count+1]:
                             c_dir = os.path.join(checkpoints_dir,c)
                             shutil.rmtree(c_dir,ignore_errors=True)
-                    
+                    if checkpoints_count==1:
+                        c_dir = os.path.join(checkpoints_dir,checkpoints[0])
+                        shutil.rmtree(c_dir,ignore_errors=True)
+                        
                     checkpoints_dir_with_epoch=os.path.join(checkpoints_dir,f"epoch-{epoch+1}")
                     # for each improvement save training state and model
                     # copy current saved state from last to checkpoint
