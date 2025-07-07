@@ -216,8 +216,10 @@ class ResidualUnet(nn.Module):
         self.up_blocks = nn.ModuleList()
         self.combine_blocks = nn.ModuleList()
         for i in reversed(range(1, self.depth)):
-            dilation=dilations[i]
-            if dilation is None: dilation=1
+            if dilations is None: 
+                dilation=1
+            else:
+                dilation=dilations[i]
             
             up_block = nn.Sequential(
                 ResidualBlock(channels[i], channels[i - 1],dilation=dilation, **common).transpose(),
