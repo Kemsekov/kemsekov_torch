@@ -151,6 +151,7 @@ class ResidualUnet(nn.Module):
         in_channels=3, 
         out_channels=3, 
         channels=[64, 128, 256, 256],
+        dilations=None,
         dimensions=2,
         dropout=0.1,
         kernel_size=4,
@@ -177,7 +178,8 @@ class ResidualUnet(nn.Module):
             assert len(kernel_size)==dimensions, f"length of kernel_size should match dimensions parameter, given len({kernel_size})!={dimensions}"
         if isinstance(stride,list) or isinstance(stride,tuple):
             assert len(stride)==dimensions, f"length of stride should match dimensions parameter, given len({stride})!={dimensions}"
-        
+        if isinstance(dilations,list) or isinstance(dilations,tuple):
+            assert len(channels)==len(dilations),'dilations length must match channels length'
         # Select convolution type based on dimensions
         conv = [nn.Conv1d, nn.Conv2d, nn.Conv3d][dimensions - 1]
 
@@ -194,9 +196,12 @@ class ResidualUnet(nn.Module):
             dropout=dropout,
             kernel_size=kernel_size,
             stride=stride,
-            dimensions=dimensions
+            dimensions=dimensions,
+            disable_residual=False
         )
-
+        def attention(ch):
+            # return nn.Identity()
+            return EfficientSpatialChannelAttention(ch,3)
         # Build downsampling path
         self.down_blocks = nn.ModuleList()
         for i in range(self.depth):
@@ -204,16 +209,19 @@ class ResidualUnet(nn.Module):
             out_ch = channels[i]
             self.down_blocks.append(nn.Sequential(
                 ResidualBlock(in_ch, out_ch, **common),
-                EfficientSpatialChannelAttention(out_ch)
+                attention(out_ch)
             ))
 
         # Build upsampling and combine paths
         self.up_blocks = nn.ModuleList()
         self.combine_blocks = nn.ModuleList()
         for i in reversed(range(1, self.depth)):
+            dilation=dilations[i]
+            if dilation is None: dilation=1
+            
             up_block = nn.Sequential(
-                ResidualBlock(channels[i], channels[i - 1], **common).transpose(),
-                EfficientSpatialChannelAttention(channels[i - 1])
+                ResidualBlock(channels[i], channels[i - 1],dilation=dilation, **common).transpose(),
+                attention(channels[i - 1])
             )
             combine_block = ListSequential(
                 ConcatTensors(1),
@@ -225,7 +233,7 @@ class ResidualUnet(nn.Module):
         # Final upsample to connect to expanded input
         self.final_up = nn.Sequential(
             ResidualBlock(channels[0], channels[0], **common).transpose(),
-            EfficientSpatialChannelAttention(channels[0])
+            attention(channels[0])
         )
         self.final_combine = ListSequential(
             ConcatTensors(1),
