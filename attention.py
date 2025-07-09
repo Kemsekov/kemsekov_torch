@@ -290,9 +290,8 @@ class EluKernel(nn.Module):
 class LogKernel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.c = torch.nn.Parameter(torch.tensor([1.0]*3))
     def forward(self,x):
-        return torch.log(1+torch.exp(self.c[0]*x+self.c[1]))*self.c[2].abs()
+        return torch.log(1+torch.exp(x))
 class XReLUKernel(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -420,9 +419,22 @@ class MultiHeadLinearAttention(nn.Module):
         
         self.g=nn.Sequential(
             nn.Linear(self.head_dim,self.head_dim),
-            XReLUKernel()
+            # EluKernel()
+            TanhKernel()
+            # XReLUKernel()
+            # nn.LeakyReLU(0.2),
+            # LogKernel()
         )
-    
+        
+        # self.kernel_Q=nn.Sequential(
+        #     nn.Linear(embed_dim,embed_dim),
+        #     TanhKernel()
+        # )
+        
+        # self.kernel_K=nn.Sequential(
+        #     nn.Linear(embed_dim,embed_dim),
+        #     TanhKernel()
+        # )
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
         B = x.shape[0]
@@ -461,6 +473,7 @@ class MultiHeadLinearAttention(nn.Module):
         
         Q = self.feature_dropout(Q)
         K = self.feature_dropout(K)
+        
 
         # phi_Q = self.kernel_Q(Q)   # → [B, L_K, n_heads, head_dim]
         # phi_K = self.kernel_K(K)   # → [B, L_K, n_heads, head_dim]
@@ -473,13 +486,15 @@ class MultiHeadLinearAttention(nn.Module):
         
         Vh = self.split_heads(V)   # → [B, L_K, n_heads, head_dim]
         
+        # phi_Qh = self.split_heads(phi_Q)
+        # phi_Kh = self.split_heads(phi_K)
         if self.add_zero_token:
-            ZK = self.zero_token_K.expand(Qh.shape[0], 1 , -1)  # (batch,1,dim)
+            shape = [Qh.shape[0]]+[1,-1]
+            ZK = self.zero_token_K.expand(shape)  # (batch,1,dim)
+            ZV = self.zero_token_V.expand(shape)  # (batch,1,dim)
+            
             ZK = self.split_heads(ZK)
-            
-            ZV = self.zero_token_V.expand(Qh.shape[0], 1 , -1)  # (batch,1,dim)
             ZV = self.split_heads(ZV)
-            
             Kh = torch.cat([ZK, Kh], dim=1)
             Vh = torch.cat([ZV, Vh], dim=1)
         
@@ -491,7 +506,6 @@ class MultiHeadLinearAttention(nn.Module):
         
         # we can try to use full scaled dot product attention
         # out_heads = compute_attention(Qh,Kh,Vh)
-     
         
         output = out_heads.reshape(list(Q.shape[:-1]) + [v_dim])
 
