@@ -70,7 +70,7 @@ class TransformerCrossAttentionBlock(nn.Module):
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
         return out
 class LinearSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=True):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -87,14 +87,16 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         device: where to locate module
         
         activation: what activation function to use
+        
+        add_zero_token: add learned zero token to input or not
         """
         super().__init__()
-        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,add_rotary_emb=add_rotary_emb)
+        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,add_rotary_emb=add_rotary_emb,add_zero_token=add_zero_token)
     def forward(self,x):
         return self.attn(x,x)
 from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
 class LinearCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=True):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -113,6 +115,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         device: where to locate module
         
         activation: what activation function to use
+        
+        add_zero_token: add learned zero token to input or not
         """
         super().__init__()
         self.Q = nn.Sequential(
@@ -146,7 +150,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             input_dim,
             heads,
             dropout=dropout,
-            add_zero_token=True,
+            add_zero_token=add_zero_token,
             device=device,
             add_rotary_emb=add_rotary_emb
         )
@@ -283,7 +287,17 @@ class EluKernel(nn.Module):
         super().__init__()
     def forward(self,x):
         return torch.nn.functional.elu(x)+1
-
+class LogKernel(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.c = torch.nn.Parameter(torch.tensor([1.0]*3))
+    def forward(self,x):
+        return torch.log(1+torch.exp(self.c[0]*x+self.c[1]))*self.c[2].abs()
+class XReLUKernel(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+    def forward(self,x):
+        return torch.relu(x)*x
 
 def compute_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     """
@@ -310,7 +324,7 @@ def compute_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torc
     return attn_output
 
 def g(x):
-    return torch.max(torch.zeros_like(x),x)*x
+    return torch.relu(x)*x
 
 # Fast linear attention with inputs of shape [B, S, H, D] using einsum
 def fast_linear_path_einsum(q, k, v):
@@ -362,14 +376,6 @@ def fast_linear_path_einsum(q, k, v):
     out_fast = (term1 + term2) / (den1 + den2+1e-6)
     return out_fast
 
-class LogKernel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.c1 = torch.nn.Parameter(torch.tensor(1.0))
-        self.c2 = torch.nn.Parameter(torch.tensor(1.0))
-        self.c3 = torch.nn.Parameter(torch.tensor(1.0))
-    def forward(self,x):
-        return torch.log(1+torch.exp(self.c1*x+self.c2))*self.c3.abs()
 
 class MultiHeadLinearAttention(nn.Module):
     """
@@ -405,11 +411,17 @@ class MultiHeadLinearAttention(nn.Module):
         self.feature_dropout = nn.Dropout(dropout, inplace=True)
         self.add_zero_token=add_zero_token
         if add_zero_token:
-            self.zero_token = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
+            self.zero_token_K = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
+            self.zero_token_V = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
         self.single_head_attn = LinearAttention(self.head_dim)
         
         self.add_rotary_emb=add_rotary_emb
         self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim)
+        
+        self.g=nn.Sequential(
+            nn.Linear(self.head_dim,self.head_dim),
+            XReLUKernel()
+        )
     
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
@@ -461,23 +473,25 @@ class MultiHeadLinearAttention(nn.Module):
         
         Vh = self.split_heads(V)   # → [B, L_K, n_heads, head_dim]
         
-        # todo add zero token support
-        # if self.add_zero_token:
-        #     Z = self.zero_token.expand(Q.shape[0], 1, -1)  # (batch,1,dim)
-        #     K = torch.cat([Z, K], dim=1)
-        #     V = torch.cat([Z, V], dim=1)
+        if self.add_zero_token:
+            ZK = self.zero_token_K.expand(Qh.shape[0], 1 , -1)  # (batch,1,dim)
+            ZK = self.split_heads(ZK)
+            
+            ZV = self.zero_token_V.expand(Qh.shape[0], 1 , -1)  # (batch,1,dim)
+            ZV = self.split_heads(ZV)
+            
+            Kh = torch.cat([ZK, Kh], dim=1)
+            Vh = torch.cat([ZV, Vh], dim=1)
         
         # 3. Run single‐head linear attention
         out_heads, attn = self.single_head_attn(
-            Qh, Kh, Vh,g(Qh),g(Kh), compute_attn_weight
+            Qh, Kh, Vh, self.g(Qh),self.g(Kh), compute_attn_weight
         )
         # out_heads = fast_linear_path_einsum(Qh,Kh,Vh)
         
         # we can try to use full scaled dot product attention
         # out_heads = compute_attention(Qh,Kh,Vh)
-        
-        # [B, L_Q,n_heads, head_dim]
-        # out_heads
+     
         
         output = out_heads.reshape(list(Q.shape[:-1]) + [v_dim])
 
