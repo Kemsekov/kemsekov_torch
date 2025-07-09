@@ -70,7 +70,7 @@ class TransformerCrossAttentionBlock(nn.Module):
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
         return out
 class LinearSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=True):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=False):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -96,7 +96,7 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         return self.attn(x,x)
 from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
 class LinearCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=True):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=False):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -409,9 +409,10 @@ class MultiHeadLinearAttention(nn.Module):
         self.head_dim = embed_dim // n_heads
         self.feature_dropout = nn.Dropout(dropout, inplace=True)
         self.add_zero_token=add_zero_token
-        if add_zero_token:
-            self.zero_token_K = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
-            self.zero_token_V = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
+        
+        self.zero_token_K = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
+        self.zero_token_V = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)
+        
         self.single_head_attn = LinearAttention(self.head_dim)
         
         self.add_rotary_emb=add_rotary_emb
@@ -419,6 +420,7 @@ class MultiHeadLinearAttention(nn.Module):
         
         self.g=nn.Sequential(
             nn.Linear(self.head_dim,self.head_dim),
+            nn.LayerNorm(self.head_dim),
             # EluKernel()
             TanhKernel()
             # XReLUKernel()
@@ -428,11 +430,13 @@ class MultiHeadLinearAttention(nn.Module):
         
         # self.kernel_Q=nn.Sequential(
         #     nn.Linear(embed_dim,embed_dim),
+        #     nn.LayerNorm(embed_dim),
         #     TanhKernel()
         # )
         
         # self.kernel_K=nn.Sequential(
         #     nn.Linear(embed_dim,embed_dim),
+        #     nn.LayerNorm(embed_dim),
         #     TanhKernel()
         # )
     def split_heads(self, x : torch.Tensor):
@@ -474,37 +478,31 @@ class MultiHeadLinearAttention(nn.Module):
         Q = self.feature_dropout(Q)
         K = self.feature_dropout(K)
         
-
-        # phi_Q = self.kernel_Q(Q)   # → [B, L_K, n_heads, head_dim]
-        # phi_K = self.kernel_K(K)   # → [B, L_K, n_heads, head_dim]
+        # K, V = self.add_zero_token_KV(K, V)
+        
         if self.add_rotary_emb:
             Qh = self.split_heads_with_rotary_emb(Q)
             Kh = self.split_heads_with_rotary_emb(K)
         else:
             Qh = self.split_heads(Q)   # → [B, L_Q, n_heads, head_dim]
             Kh = self.split_heads(K)   # → [B, L_K, n_heads, head_dim]
-        
         Vh = self.split_heads(V)   # → [B, L_K, n_heads, head_dim]
+ 
+        # phi_Qh = self.split_heads(self.kernel_Q(Q))   # → [B, L_K, n_heads, head_dim]
+        # phi_Kh = self.split_heads(self.kernel_K(K))   # → [B, L_K, n_heads, head_dim]
         
-        # phi_Qh = self.split_heads(phi_Q)
-        # phi_Kh = self.split_heads(phi_K)
-        if self.add_zero_token:
-            shape = [Qh.shape[0]]+[1,-1]
-            ZK = self.zero_token_K.expand(shape)  # (batch,1,dim)
-            ZV = self.zero_token_V.expand(shape)  # (batch,1,dim)
-            
-            ZK = self.split_heads(ZK)
-            ZV = self.split_heads(ZV)
-            Kh = torch.cat([ZK, Kh], dim=1)
-            Vh = torch.cat([ZV, Vh], dim=1)
+        Kh, Vh = self.add_zero_token_KhVh(Kh, Vh)
+        phi_Qh = self.g(Qh) 
+        phi_Kh = self.g(Kh) 
+        
         
         # 3. Run single‐head linear attention
         out_heads, attn = self.single_head_attn(
-            Qh, Kh, Vh, self.g(Qh),self.g(Kh), compute_attn_weight
+            Qh, Kh, Vh, phi_Qh,phi_Kh, compute_attn_weight
         )
         # out_heads = fast_linear_path_einsum(Qh,Kh,Vh)
         
-        # we can try to use full scaled dot product attention
+        # we can try to use full scaled dot product attention to compare results
         # out_heads = compute_attention(Qh,Kh,Vh)
         
         output = out_heads.reshape(list(Q.shape[:-1]) + [v_dim])
@@ -515,6 +513,28 @@ class MultiHeadLinearAttention(nn.Module):
             attn = None
 
         return output, attn
+
+    def add_zero_token_KhVh(self, Kh, Vh):
+        if self.add_zero_token:
+            shape = [Kh.shape[0]]+[1,-1]
+            ZK = self.zero_token_K.expand(shape)  # (batch,1,dim)
+            ZV = self.zero_token_V.expand(shape)  # (batch,1,dim)
+            
+            ZK = self.split_heads(ZK)
+            ZV = self.split_heads(ZV)
+            Kh = torch.cat([ZK, Kh], dim=1)
+            Vh = torch.cat([ZV, Vh], dim=1)
+        return Kh,Vh
+
+    def add_zero_token_KV(self, K, V):
+        if self.add_zero_token:
+            shape = [K.shape[0]]+[1]+list(K.shape[2:])
+            ZK = self.zero_token_K.expand(shape)  # (batch,1,dim)
+            ZV = self.zero_token_V.expand(shape)  # (batch,1,dim)
+            
+            K = torch.cat([ZK, K], dim=1)
+            V = torch.cat([ZV, V], dim=1)
+        return K,V
 class EfficientSpatialChannelAttention(nn.Module):
     """
     Efficient Spatial Channel Attention (ESCA) Module
