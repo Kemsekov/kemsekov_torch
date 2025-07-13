@@ -18,7 +18,7 @@ def train(
         compute_loss_and_metric,
         save_results_dir="runs/train",
         load_checkpoint_dir = None,
-        num_epochs = 10,
+        num_epochs = 100,
         checkpoints_count = 1,
         save_on_metric_improve = 'any',
         optimizer = None,
@@ -32,6 +32,7 @@ def train(
         on_epoch_end = None,
         on_train_batch_end = None,
         on_test_batch_end = None,
+        save_plots = False
     ):
     """
     Train and evaluate a model, saving checkpoints, plots, and metric history during the training process.
@@ -130,6 +131,8 @@ def train(
         Method that is called at the end of each test batch. The model, batch, loss, and metric are passed to
         this method. Default is None.
 
+    save_plots: create plots of metrics for saved checkpoints
+    
     Returns
     -------
     None
@@ -436,29 +439,30 @@ def train(
             # create history plots in plots folder
             # Update to save loss and metric plots in separate files and only for the last epoch
             if acc.is_main_process:
-                # Loss plot
-                plt.figure()
-                plt.plot(loss_history, label="Train Loss")
-                if is_testing:
-                    plt.plot(test_loss_history, label=f"Test Loss")
-                plt.title("Loss History")
-                plt.xlabel("Epoch")
-                plt.ylabel("Loss")
-                plt.legend()
-                plt.savefig(os.path.join(plot_dir, "loss_history.png"))
-                plt.close()
+                if save_plots:
+                    # Loss plot
+                    plt.figure()
+                    plt.plot(loss_history, label="Train Loss")
+                    if is_testing:
+                        plt.plot(test_loss_history, label=f"Test Loss")
+                    plt.title("Loss History")
+                    plt.xlabel("Epoch")
+                    plt.ylabel("Loss")
+                    plt.legend()
+                    plt.savefig(os.path.join(plot_dir, "loss_history.png"))
+                    plt.close()
 
-                # Metric plot
-                save_plot_metric_history(plot_dir, train_metric_history,test_metric_history if is_testing else None,'train')
-                
-                # time plot
-                plt.figure()
-                plt.plot(train_time_history)
-                plt.title(f"Epoch execution time")
-                plt.xlabel("Epoch")
-                plt.ylabel("Seconds")
-                plt.savefig(os.path.join(plot_dir, f"train_time_history.png"))
-                plt.close()
+                    # Metric plot
+                    save_plot_metric_history(plot_dir, train_metric_history,test_metric_history if is_testing else None,'train')
+                    
+                    # time plot
+                    plt.figure()
+                    plt.plot(train_time_history)
+                    plt.title(f"Epoch execution time")
+                    plt.xlabel("Epoch")
+                    plt.ylabel("Seconds")
+                    plt.savefig(os.path.join(plot_dir, f"train_time_history.png"))
+                    plt.close()
 
                 results = {
                     "loss_history"          : loss_history,
