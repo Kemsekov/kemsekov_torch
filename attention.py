@@ -218,7 +218,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # Q,K,V = self.flatten_qkv(Q,K,V)
         
         attn = self.attn(Q,K,V)[0]
-        attn = attn+self._local_attnetion(attn)
+        # attn = attn+self._local_attnetion(attn)
         attn=self.attn_norm(attn)
         
         #--------------------
@@ -290,8 +290,10 @@ class EluKernel(nn.Module):
 class LogKernel(nn.Module):
     def __init__(self):
         super().__init__()
+        self.c = torch.nn.Parameter(torch.tensor(1.0))
     def forward(self,x):
-        return torch.log(1+torch.exp(x))
+        c = self.c.abs()
+        return torch.log(1+torch.exp(-x*c))/(c+1e-6)+x
 class XReLUKernel(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -419,13 +421,13 @@ class MultiHeadLinearAttention(nn.Module):
         self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim)
         
         self.g=nn.Sequential(
-            nn.Linear(self.head_dim,self.head_dim),
-            nn.LayerNorm(self.head_dim),
+            # nn.Linear(self.head_dim,self.head_dim),
+            # nn.LayerNorm(self.head_dim),
             # EluKernel()
-            TanhKernel()
+            # TanhKernel()
             # XReLUKernel()
             # nn.LeakyReLU(0.2),
-            # LogKernel()
+            LogKernel()
         )
         
         # self.kernel_Q=nn.Sequential(

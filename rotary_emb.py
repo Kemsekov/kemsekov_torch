@@ -333,5 +333,5 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
         shape = x_t.shape[1:-1]
         freqs = self.pos_emb.get_axial_freqs(shape)
         
-        x_t_emb = [apply_rotary_emb(freqs, xt) for xt in tensors_list]
+        x_t_emb = [apply_rotary_emb(freqs, xt,scale=1.0) for xt in tensors_list]
         return x_t_emb
