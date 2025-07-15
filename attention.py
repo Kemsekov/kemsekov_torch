@@ -292,8 +292,8 @@ class LogKernel(nn.Module):
         super().__init__()
         self.c = torch.nn.Parameter(torch.tensor(1.0))
     def forward(self,x):
-        c = self.c.abs()
-        return torch.log(1+torch.exp(-x*c))/(c+1e-6)+x
+        c = self.c.abs()+1e-6
+        return torch.log(1+torch.exp(-x*c))/c+x
 class XReLUKernel(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -418,29 +418,14 @@ class MultiHeadLinearAttention(nn.Module):
         self.single_head_attn = LinearAttention(self.head_dim)
         
         self.add_rotary_emb=add_rotary_emb
-        self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim)
+        self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim,freqs_for='pixel')
         
         self.g=nn.Sequential(
             # nn.Linear(self.head_dim,self.head_dim),
-            # nn.LayerNorm(self.head_dim),
-            # EluKernel()
             # TanhKernel()
-            # XReLUKernel()
-            # nn.LeakyReLU(0.2),
             LogKernel()
         )
         
-        # self.kernel_Q=nn.Sequential(
-        #     nn.Linear(embed_dim,embed_dim),
-        #     nn.LayerNorm(embed_dim),
-        #     TanhKernel()
-        # )
-        
-        # self.kernel_K=nn.Sequential(
-        #     nn.Linear(embed_dim,embed_dim),
-        #     nn.LayerNorm(embed_dim),
-        #     TanhKernel()
-        # )
     def split_heads(self, x : torch.Tensor):
         # x: [B, seq_len, embed_dim]
         B = x.shape[0]

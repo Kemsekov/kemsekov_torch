@@ -99,9 +99,6 @@ class RotaryEmbedding(Module):
         max_freq = 10,
         num_freqs = 1,
         learned_freq = False,
-        use_xpos = False,
-        xpos_scale_base = 512,
-        interpolate_factor = 1.,
         theta_rescale_factor = 1.,
         seq_before_head_dim = False,
         cache_if_possible = True,
@@ -142,29 +139,6 @@ class RotaryEmbedding(Module):
 
         self.seq_before_head_dim = seq_before_head_dim
         self.default_seq_dim = -3 if seq_before_head_dim else -2
-
-        # interpolation factors
-
-        assert interpolate_factor >= 1.
-        self.interpolate_factor = interpolate_factor
-
-        # xpos
-
-        self.use_xpos = use_xpos
-
-        if not use_xpos:
-            return
-
-        scale = (torch.arange(0, dim, 2) + 0.4 * dim) / (1.4 * dim)
-        self.scale_base = xpos_scale_base
-
-        self.register_buffer('scale', scale, persistent = False)
-        self.register_buffer('cached_scales', torch.zeros(cache_max_seq_len, dim), persistent = False)
-        self.cached_scales_seq_len = 0
-
-        # add apply_rotary_emb as static method
-
-        self.apply_rotary_emb = staticmethod(apply_rotary_emb)
 
     @property
     def device(self):
@@ -296,7 +270,7 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
     Accepts inputs of shape `(BATCH, HEADS, (...), DIM)`
     where (...) is spatial dimensions
     """
-    def __init__(self, in_channels=16,freqs_for : Literal['lang','pixel','constant']='pixel',max_freq=256):
+    def __init__(self, in_channels=16,freqs_for : Literal['lang','pixel','constant']='pixel',max_freq=256,theta=10000):
         """
         Inplace module that accepts any-dim input x, applies rotary emb and returns it.
     
@@ -322,11 +296,14 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
                     dim = in_channels//div,
                     freqs_for = freqs_for,
                     max_freq = max_freq,
+                    theta=theta,
+                    learned_freq=True
                 )
             except: pass
         if pos_emb is None:
             raise "Cannot create a rotary embedding!"
         self.pos_emb=pos_emb
+        # self.scale = torch.nn.Parameter(torch.tensor(1.0))
     
     def forward(self,tensors_list : List[torch.Tensor]):
         x_t = tensors_list[0] # batch, heads, dim1,dim2, channels
