@@ -111,7 +111,6 @@ class RotaryEmbedding(Module):
         # proposed by reddit user bloc97, to rescale rotary embeddings to longer sequence length without fine-tuning
         # has some connection to NTK literature
         # https://www.reddit.com/r/LocalLLaMA/comments/14lz7j5/ntkaware_scaled_rope_allows_llama_models_to_have/
-        
         theta *= theta_rescale_factor ** (dim / (dim - 2))
 
         self.freqs_for = freqs_for
@@ -289,6 +288,7 @@ class RotaryEmbedding(Module):
             self.cached_freqs_seq_len = seq_len
 
         return freqs
+
 class RotaryEmbHeadsInplace(torch.nn.Module):
     """
     Inplace module that accepts any-dim input x, applies rotary emb and returns it.
@@ -315,16 +315,23 @@ class RotaryEmbHeadsInplace(torch.nn.Module):
         """
         
         super().__init__()
-        self.pos_emb = RotaryEmbedding(
-            dim = in_channels//4,
-            freqs_for = freqs_for,
-            max_freq = max_freq,
-            cache_max_seq_len=8192*2
-        )
+        pos_emb = None
+        for div in [1,2,4]:
+            try:
+                pos_emb = RotaryEmbedding(
+                    dim = in_channels//div,
+                    freqs_for = freqs_for,
+                    max_freq = max_freq,
+                )
+            except: pass
+        if pos_emb is None:
+            raise "Cannot create a rotary embedding!"
+        self.pos_emb=pos_emb
     
     def forward(self,tensors_list : List[torch.Tensor]):
         x_t = tensors_list[0] # batch, heads, dim1,dim2, channels
-        freqs = self.pos_emb.get_axial_freqs(x_t.shape[1:-1])
-        # rotate in frequencies
+        shape = x_t.shape[1:-1]
+        freqs = self.pos_emb.get_axial_freqs(shape)
+        
         x_t_emb = [apply_rotary_emb(freqs, xt) for xt in tensors_list]
         return x_t_emb

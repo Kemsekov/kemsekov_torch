@@ -376,3 +376,46 @@ def reinit_with_ema(module, decay=0.99):
     # Iterate over parameters and update using EMA
     for param, orig_param in zip(module.parameters(), orig_params):
         param.data = decay * orig_param.data + (1 - decay) * param.data
+    
+from torch.autograd import Function
+class _GradientReversalFunction(Function):
+    @staticmethod
+    def forward(ctx, x, lambda_):
+        ctx.lambda_ = lambda_
+        # Прямой проход оставляет тензор неизменным
+        return x.view_as(x)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        # В обратном проходе умножаем градиент на -lambda
+        return grad_output.neg() * ctx.lambda_, None
+
+class GradientReversal(nn.Module):
+    """
+    A Gradient Reversal Layer.
+
+    During the forward pass, acts as an identity function:
+        y = x
+
+    During the backward pass, reverses the gradient by multiplying it by -lambda:
+        dL/dx = -lambda * dL/dy
+
+    Args:
+        lambda_ (float): The scaling factor for reversed gradients. Default is 1.0.
+
+    Example:
+        >>> grl = GradientReversal(lambda_=0.5)
+        >>> x = torch.randn(16, 128, requires_grad=True)
+        >>> y = grl(x)
+        >>> # Pass y through a classifier head to obtain `logits`
+        >>> logits = classifier(y)
+        >>> loss = loss_fn(logits, targets)
+        >>> loss.backward()
+        >>> # Now x.grad will have been multiplied by -0.5
+    """
+    def __init__(self, lambda_=1.0):
+        super().__init__()
+        self.lambda_ = lambda_
+
+    def forward(self, x):
+        return _GradientReversalFunction.apply(x, self.lambda_)
