@@ -163,15 +163,15 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             nn.Linear(mlp_dim,input_dim,device=device),
         ])
         
-        self.local_attention_gamma = torch.nn.Parameter(torch.tensor(0.0))
-        self.local_attention = nn.Conv1d(
-            input_dim,
-            input_dim,
-            kernel_size=5,
-            padding=2,
-            device=device,
-            groups=heads
-        )
+        # self.local_attention_gamma = torch.nn.Parameter(torch.tensor(0.0))
+        # self.local_attention = nn.Conv1d(
+        #     input_dim,
+        #     input_dim,
+        #     kernel_size=5,
+        #     padding=2,
+        #     device=device,
+        #     groups=heads
+        # )
     
     def _local_attnetion(self,x):
         # x: [batch, ... ,channels]
@@ -421,9 +421,11 @@ class MultiHeadLinearAttention(nn.Module):
         self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim,freqs_for='pixel')
         
         self.g=nn.Sequential(
-            # nn.Linear(self.head_dim,self.head_dim),
+            nn.Linear(self.head_dim,self.head_dim),
+            nn.LayerNorm(self.head_dim),
             # TanhKernel()
             LogKernel()
+            # EluKernel()
         )
         
     def split_heads(self, x : torch.Tensor):
