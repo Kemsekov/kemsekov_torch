@@ -185,7 +185,7 @@ class ResidualUnet(nn.Module):
         self.expand_input = conv(in_channels, channels[0], kernel_size=1)
         
         # at the end mix features from inputs and outputs
-        self.collapse_output = conv(channels[0], out_channels, kernel_size=3,padding=1)
+        self.collapse_output = conv(channels[0], out_channels, kernel_size=1)
 
         common = dict(
             normalization=normalization,
