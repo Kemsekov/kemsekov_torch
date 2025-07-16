@@ -1,8 +1,6 @@
 import torch
 from torch import nn
 from kemsekov_torch.residual import Residual
-from kemsekov_torch.common_modules import AddConst
-from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
 import torch.nn.functional as F
 
 # these two modules are kinda legacy, they don't implement anything, just for convenience
@@ -94,7 +92,6 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,add_rotary_emb=add_rotary_emb,add_zero_token=add_zero_token)
     def forward(self,x):
         return self.attn(x,x)
-from kemsekov_torch.rotary_emb import RotaryEmbHeadsInplace
 class LinearCrossAttentionBlock(torch.nn.Module):
     def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=False):
         """
@@ -377,7 +374,7 @@ def fast_linear_path_einsum(q, k, v):
     out_fast = (term1 + term2) / (den1 + den2+1e-6)
     return out_fast
 
-
+from kemsekov_torch.rotary_emb import RotEmb
 class MultiHeadLinearAttention(nn.Module):
     """
     Multi‐head wrapper around single‐head LinearAttention, allowing different
@@ -418,7 +415,7 @@ class MultiHeadLinearAttention(nn.Module):
         self.single_head_attn = LinearAttention(self.head_dim)
         
         self.add_rotary_emb=add_rotary_emb
-        self.rotary_emb = RotaryEmbHeadsInplace(self.head_dim,freqs_for='pixel')
+        self.rotary_emb = RotEmb(256)
         
         self.g=nn.Sequential(
             nn.Linear(self.head_dim,self.head_dim),
@@ -434,26 +431,14 @@ class MultiHeadLinearAttention(nn.Module):
         D = x.shape[-1]
         return x.view(B, -1, self.n_heads, D//self.n_heads)
     
-    def permute_to_rotary_input(self,x):
-        # [B, ..., embed_dim] -> [B, ...,n_heads, embed_dim]
-        x = x.view(list(x.shape[:-1]) + [self.n_heads, -1])
-        # [B, ..., n_heads, embed_dim] -> [B, n_heads, ..., embed_dim]
-        dims = list(range(len(x.shape)))[1:-2]
-        x = x.permute([0,-2]+dims+[-1])
-        return x
-    
-    def unpermute_from_rotary_output(self,x):
-        # [B, n_heads, ..., embed_dim] -> [B, ..., n_heads, embed_dim]
-        dim = x.shape[-1]
-        dims = list(range(len(x.shape)))[2:-1]
-        x = x.permute([0]+dims+[1,-1])
-        return x.view(x.shape[0],-1,self.n_heads,dim)
-    
-    def split_heads_with_rotary_emb(self, x : torch.Tensor):
-        x = self.permute_to_rotary_input(x)
-        x = self.rotary_emb([x])[0]
-        x = self.unpermute_from_rotary_output(x)
-        return x
+    def split_heads_with_rot_emb(self, x : torch.Tensor):
+        # x: [B, seq_len, embed_dim]
+        B = x.shape[0]
+        D = x.shape[-1]
+        dims = list(x.shape[1:-1])
+        x = x.view([B] + dims + [self.n_heads, D//self.n_heads])
+        x = self.rotary_emb(x)
+        return x.view(B,-1,self.n_heads, D//self.n_heads)
     
     def forward(self, Q, K, V, compute_attn_weight : bool = False):
         """
@@ -468,10 +453,9 @@ class MultiHeadLinearAttention(nn.Module):
         K = self.feature_dropout(K)
         
         # K, V = self.add_zero_token_KV(K, V)
-        
         if self.add_rotary_emb:
-            Qh = self.split_heads_with_rotary_emb(Q)
-            Kh = self.split_heads_with_rotary_emb(K)
+            Qh = self.split_heads_with_rot_emb(Q)
+            Kh = self.split_heads_with_rot_emb(K)   # → [B, L_K, n_heads, head_dim]
         else:
             Qh = self.split_heads(Q)   # → [B, L_Q, n_heads, head_dim]
             Kh = self.split_heads(K)   # → [B, L_K, n_heads, head_dim]
@@ -484,15 +468,14 @@ class MultiHeadLinearAttention(nn.Module):
         phi_Qh = self.g(Qh) 
         phi_Kh = self.g(Kh) 
         
-        
         # 3. Run single‐head linear attention
-        out_heads, attn = self.single_head_attn(
-            Qh, Kh, Vh, phi_Qh,phi_Kh, compute_attn_weight
-        )
+        # out_heads, attn = self.single_head_attn(
+        #     Qh, Kh, Vh, phi_Qh,phi_Kh, compute_attn_weight
+        # )
         # out_heads = fast_linear_path_einsum(Qh,Kh,Vh)
         
         # we can try to use full scaled dot product attention to compare results
-        # out_heads = compute_attention(Qh,Kh,Vh)
+        out_heads = compute_attention(Qh,Kh,Vh)
         
         output = out_heads.reshape(list(Q.shape[:-1]) + [v_dim])
 
