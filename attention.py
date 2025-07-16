@@ -68,7 +68,7 @@ class TransformerCrossAttentionBlock(nn.Module):
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
         return out
 class LinearSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=False):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention=False,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -86,14 +86,20 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         
         activation: what activation function to use
         
+        add_local_attention: add local attention over output of linear attention or not
+        
         add_zero_token: add learned zero token to input or not
+        
+        add_rotary_emb: add rotary embedding to inputs or not
+        
+        rotary_emb_base: rotary emb base
         """
         super().__init__()
-        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,add_rotary_emb=add_rotary_emb,add_zero_token=add_zero_token)
+        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,add_local_attention=add_local_attention,add_rotary_emb=add_rotary_emb,add_zero_token=add_zero_token,rotary_emb_base=rotary_emb_base)
     def forward(self,x):
         return self.attn(x,x)
 class LinearCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_rotary_emb=False,add_zero_token=False):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention = False,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -113,7 +119,13 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         
         activation: what activation function to use
         
+        add_local_attention: add local attention over output of linear attention or not
+        
         add_zero_token: add learned zero token to input or not
+        
+        add_rotary_emb: add rotary embedding to inputs or not
+        
+        rotary_emb_base: rotary emb base
         """
         super().__init__()
         self.Q = nn.Sequential(
@@ -149,7 +161,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             dropout=dropout,
             add_zero_token=add_zero_token,
             device=device,
-            add_rotary_emb=add_rotary_emb
+            add_rotary_emb=add_rotary_emb,
+            rotary_emb_base=rotary_emb_base
         )
         self.attn_norm = nn.LayerNorm(input_dim,device=device)
         
@@ -159,16 +172,16 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             activation(),
             nn.Linear(mlp_dim,input_dim,device=device),
         ])
-        
-        # self.local_attention_gamma = torch.nn.Parameter(torch.tensor(0.0))
-        # self.local_attention = nn.Conv1d(
-        #     input_dim,
-        #     input_dim,
-        #     kernel_size=5,
-        #     padding=2,
-        #     device=device,
-        #     groups=heads
-        # )
+        self.add_local_attention=add_local_attention
+        self.local_attention_gamma = torch.nn.Parameter(torch.tensor(0.0))
+        self.local_attention = nn.Conv1d(
+            input_dim,
+            input_dim,
+            kernel_size=5,
+            padding=2,
+            device=device,
+            groups=heads
+        )
     
     def _local_attnetion(self,x):
         # x: [batch, ... ,channels]
@@ -215,7 +228,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # Q,K,V = self.flatten_qkv(Q,K,V)
         
         attn = self.attn(Q,K,V)[0]
-        # attn = attn+self._local_attnetion(attn)
+        if self.add_local_attention:
+            attn = attn+self._local_attnetion(attn)
         attn=self.attn_norm(attn)
         
         #--------------------
@@ -388,7 +402,7 @@ class MultiHeadLinearAttention(nn.Module):
       - output: [batch, L_Q,  embed_dim]
       - attn:   [batch, n_heads, L_Q, L_K]   (if compute_attn_weight=True)
     """
-    def __init__(self, embed_dim, n_heads,dropout = 0.0,add_zero_token = False,device = None,add_rotary_emb = False):
+    def __init__(self, embed_dim, n_heads,dropout = 0.0,add_zero_token = False,device = None,add_rotary_emb = False,rotary_emb_base=10000):
         """
         Multi‐head wrapper around single‐head LinearAttention, allowing different
         sequence lengths for Q vs. K/V (i.e. cross‐attention).
@@ -415,7 +429,7 @@ class MultiHeadLinearAttention(nn.Module):
         self.single_head_attn = LinearAttention(self.head_dim)
         
         self.add_rotary_emb=add_rotary_emb
-        self.rotary_emb = RotEmb()
+        self.rotary_emb = RotEmb(rotary_emb_base)
         
         self.g=nn.Sequential(
             nn.Linear(self.head_dim,self.head_dim),
