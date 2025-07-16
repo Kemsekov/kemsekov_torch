@@ -415,7 +415,7 @@ class MultiHeadLinearAttention(nn.Module):
         self.single_head_attn = LinearAttention(self.head_dim)
         
         self.add_rotary_emb=add_rotary_emb
-        self.rotary_emb = RotEmb(256)
+        self.rotary_emb = RotEmb()
         
         self.g=nn.Sequential(
             nn.Linear(self.head_dim,self.head_dim),
