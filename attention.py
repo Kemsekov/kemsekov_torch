@@ -460,22 +460,19 @@ class MultiHeadLinearAttention(nn.Module):
             Qh = self.split_heads(Q)   # → [B, L_Q, n_heads, head_dim]
             Kh = self.split_heads(K)   # → [B, L_K, n_heads, head_dim]
         Vh = self.split_heads(V)   # → [B, L_K, n_heads, head_dim]
- 
-        # phi_Qh = self.split_heads(self.kernel_Q(Q))   # → [B, L_K, n_heads, head_dim]
-        # phi_Kh = self.split_heads(self.kernel_K(K))   # → [B, L_K, n_heads, head_dim]
         
         Kh, Vh = self.add_zero_token_KhVh(Kh, Vh)
-        phi_Qh = self.g(Qh) 
+        phi_Qh = self.g(Qh)
         phi_Kh = self.g(Kh) 
         
         # 3. Run single‐head linear attention
-        # out_heads, attn = self.single_head_attn(
-        #     Qh, Kh, Vh, phi_Qh,phi_Kh, compute_attn_weight
-        # )
+        out_heads, attn = self.single_head_attn(
+            Qh, Kh, Vh, phi_Qh,phi_Kh, compute_attn_weight
+        )
         # out_heads = fast_linear_path_einsum(Qh,Kh,Vh)
         
         # we can try to use full scaled dot product attention to compare results
-        out_heads = compute_attention(Qh,Kh,Vh)
+        # out_heads = compute_attention(Qh,Kh,Vh)
         
         output = out_heads.reshape(list(Q.shape[:-1]) + [v_dim])
 
