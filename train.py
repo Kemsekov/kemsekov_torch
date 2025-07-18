@@ -626,9 +626,31 @@ def load_checkpoint(model,base_path,checkpoint_index,log=True):
 
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
-def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_factor=2,random_state=123,startify=None,shuffle=True):
+from kemsekov_torch.utils import BinBySizeDataset
+def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_factor=2,startify=None,bin_by_size = False,shuffle=True,random_state=123):
     """
-    returns train_dataset,test_dataset,train_loader, test_loader
+    Splits dataset into train and test parts
+    
+    dataset: dataset to split
+    
+    test_size: size of test dataset relative to train
+    
+    batch_size: batch size for train/test dataloaders
+    
+    num_workers: CPU's count to prepare batch
+    
+    prefetch_factor: how many batches to prepare in advance
+    
+    startify: If not None, data is split in a stratified fashion, using this as the class labels. 
+    
+    bin_by_size: Analyzes whole dataset and bins elements with sample shape into chunks of size `batch_size`, allowing dataloader to load data with different shapes
+    
+    shuffle: shuffle train/test dataset
+    
+    random_state: random state for dataset shuffle
+    
+    Returns:
+        train_dataset,test_dataset,train_loader, test_loader
     """
     # split dataset
     train_idx, test_idx = train_test_split(
@@ -641,6 +663,9 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
 
     train_data = Subset(dataset, train_idx)
     test_data = Subset(dataset, test_idx)
+    if bin_by_size:
+        train_data=BinBySizeDataset(train_data,batch_size,batch_size//8,max_workers=num_workers)
+        test_data=BinBySizeDataset(test_data,batch_size,batch_size//8,max_workers=num_workers)
 
     train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
     test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)

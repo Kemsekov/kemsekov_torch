@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import itertools
 from typing import Literal
 # i am sorry that this class is so ugly
 # it is possible to implement it better, but it won't compile in that case
@@ -38,15 +37,16 @@ class LearnedPosEmb(nn.Module):
         # an MLP that takes `dimensions` coords → `dim` output
         self.to_pos = nn.Sequential(
             nn.Linear(dimensions, hidden),
-            nn.ReLU(inplace=True),
+            nn.GELU(),
             nn.Linear(hidden, dim),
             nn.Tanh()
         )
         # add residual scaler
         # self.gamma = nn.Parameter(torch.tensor(0.1))
         
-        # rescale inputs by this factor, so we are working not with 512x512 space, but wil 512/16 x 512/16 space
-        self.scale_factor = 16
+        # rescale inputs by this factor, so we are working not with 512x512 space, but wil 512/32 x 512/32 space
+        self.scale_factor = 32
+        self.gamma = torch.nn.Parameter(torch.tensor(0.0))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -77,7 +77,7 @@ class LearnedPosEmb(nn.Module):
         perm = [self.dimensions] + list(range(self.dimensions))
         pos = pos.permute(perm).unsqueeze(0)
 
-        return x + pos
+        return x + self.gamma*pos
 
     def _get_coords(self, x: torch.Tensor) -> torch.Tensor:
         if self.dimensions == 1:
@@ -116,44 +116,3 @@ class LearnedPosEmb(nn.Module):
         g3 = torch.linspace(0, D3/self.scale_factor, D3, device=x.device, dtype=x.dtype).view(1, 1, D3, 1).expand(D1, D2, D3, D4)
         g4 = torch.linspace(0, D4/self.scale_factor, D4, device=x.device, dtype=x.dtype).view(1, 1, 1, D4).expand(D1, D2, D3, D4)
         return torch.stack([g1, g2, g3, g4], dim=-1).view(-1, 4)
-    # def forward(self, x: torch.Tensor) -> torch.Tensor:
-    #     """
-    #     Add continuous positional embeddings.
-
-    #     Parameters
-    #     ----------
-    #     x : torch.Tensor
-    #         Input of shape (B, C, D1, D2, ..., Dk) where k == self.dimensions.
-
-    #     Returns
-    #     -------
-    #     torch.Tensor
-    #         Same shape as `x`, with per-location embeddings added.
-    #     """
-    #     b, c, *spatial = x.shape
-    #     k = len(spatial)
-    #     if k != self.dimensions:
-    #         raise ValueError(
-    #             f"Expected {self.dimensions} spatial dims, got {k}"
-    #         )
-
-    #     # build a grid of normalized coordinates in [-1,1] for each axis
-    #     # list of tensors each of shape (Di,)
-    #     grids = [
-    #         torch.linspace(-1.0, 1.0, steps=Di, device=x.device, dtype=x.dtype)
-    #         for Di in spatial
-    #     ]
-
-    #     # meshgrid → each of shape spatial
-    #     mesh = torch.meshgrid(*grids, indexing='ij')
-    #     # stack → shape (k, *spatial), then flatten to (N, k) with N = prod(spatial)
-    #     coords = torch.stack(mesh, dim=-1).view(-1, k)  # (N, dimensions)
-
-    #     # map coords → embeddings (N, C)
-    #     pos = self.to_pos(coords)               # (N, dim)
-    #     pos = pos.view(*spatial, c)             # (D1, D2, ..., Dk, C)
-    #     pos = pos.permute(-1, *range(k))        # (C, D1, ..., Dk)
-    #     pos = pos.unsqueeze(0)                  # (1, C, D1, ..., Dk)
-
-    #     # broadcast-add over the batch
-    #     return x + pos
