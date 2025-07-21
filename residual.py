@@ -182,9 +182,11 @@ class ResidualBlock(torch.nn.Module):
             
             #optionally add normalization
             self.norms.append(norm_impl(out_channels[v]).to(device))
-            
+        self.norms[-1]=torch.nn.Identity()
+        
         self.convs = torch.nn.ModuleList(self.convs)
         self.norms = torch.nn.ModuleList(self.norms)
+        self.out_norm = norm_impl(out_channels[-1])
         
         def create_activation(activation_class):
             # Get the constructor signature
@@ -245,11 +247,7 @@ class ResidualBlock(torch.nn.Module):
         # to make sure we can add it with output
         if any([s>1 for s in stride]) or in_channels!=out_channels:
             # there is many ways to linearly downsample x, but max pool with conv2d works best of all
-            self.x_linear = \
-                torch.nn.Sequential(
-                    x_conv_impl(**x_corr_kwargs),
-                    norm_impl(out_channels).to(device)
-                )
+            self.x_linear = x_conv_impl(**x_corr_kwargs)
         else:
             self.x_linear = torch.nn.Identity()
         
@@ -276,7 +274,7 @@ class ResidualBlock(torch.nn.Module):
         
         out_linear = self.x_linear(x)
         # out_linear = resize_tensor(x,out.shape[1:])
-        return self.alpha*(out)+out_linear
+        return self.out_norm(self.alpha*(out)+out_linear)
     
     # to make current block work as transpose (which will upscale input tensor) just use different conv2d implementation
     def transpose(self):

@@ -574,7 +574,7 @@ class EfficientSpatialChannelAttention(nn.Module):
     >>> y2d = module(x2d)
     >>> y3d = module(x3d)
     """
-    def __init__(self, channels,ks=5):
+    def __init__(self, channels,ks=3):
         super().__init__()
         self.spatial_attn = nn.Sequential(
             nn.Conv1d(channels,channels,ks,padding=ks//2),
