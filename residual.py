@@ -43,9 +43,10 @@ class ResidualBlock(torch.nn.Module):
         
         self.__init_device = device
         
-        self.dropout = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1](dropout)
         if dropout==0:
-            dropout_impl=nn.Identity()
+            self.dropout=nn.Identity()
+        else:
+            self.dropout = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1](dropout)
         
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
@@ -182,11 +183,9 @@ class ResidualBlock(torch.nn.Module):
             
             #optionally add normalization
             self.norms.append(norm_impl(out_channels[v]).to(device))
-        self.norms[-1]=torch.nn.Identity()
-        
+            
         self.convs = torch.nn.ModuleList(self.convs)
         self.norms = torch.nn.ModuleList(self.norms)
-        self.out_norm = norm_impl(out_channels[-1])
         
         def create_activation(activation_class):
             # Get the constructor signature
@@ -205,7 +204,7 @@ class ResidualBlock(torch.nn.Module):
             self.alpha = torch.tensor(1.0,device=device)
         else:
             self.alpha = torch.nn.Parameter(torch.tensor(0.0,device=device))
-    
+        self.out_norm = norm_impl(out_channels[-1])
     @torch.jit.ignore
     def _conv_x_linear(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T,device):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
@@ -273,6 +272,7 @@ class ResidualBlock(torch.nn.Module):
             out = self.dropout(out)
         
         out_linear = self.x_linear(x)
+        
         # out_linear = resize_tensor(x,out.shape[1:])
         return self.out_norm(self.alpha*(out)+out_linear)
     
