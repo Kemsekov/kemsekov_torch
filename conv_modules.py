@@ -1,10 +1,9 @@
-from typing import Literal
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from residual import *
+from kemsekov_torch.common_modules import get_normalization_from_name
     
-class BSConvU(torch.nn.Module): 
+class BSConvU(torch.nn.Sequential): 
     """
     Blueprint Pointwise-Depthwise Convolution Block.
 
@@ -13,9 +12,9 @@ class BSConvU(torch.nn.Module):
     approach and may be more effective in certain use cases.
 
     Attributes:
-        pw (torch.nn.Conv2d): The pointwise convolution (1x1) layer.
-        bn (torch.nn.BatchNorm2d, optional): Optional BatchNorm applied after the pointwise convolution.
-        dw (torch.nn.Conv2d): The depthwise convolution layer.
+        pw (torch.nn.Conv[1,2,3]d): The pointwise convolution (1x1) layer.
+        gn (torch.nn.GroupNorm, optional): Optional GroupNorm applied after the pointwise convolution.
+        dw (torch.nn.Conv[1,2,3]d): The depthwise convolution layer.
 
     Args:
         in_channels (int): Number of input channels.
@@ -31,32 +30,13 @@ class BSConvU(torch.nn.Module):
         bn_kwargs (dict, optional): Additional keyword arguments for BatchNorm. Default is None.
     """
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, bias=True, padding_mode="zeros",dimensions=2, with_bn=False, bn_kwargs=None): 
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, bias=True, padding_mode="zeros",dimensions=2, with_gn=False, bn_kwargs=None,transpose=False): 
         super().__init__() 
-        assert dimensions in [1,2,3], f"{dimensions} must be in range [1,2,3]"
-        self.conv = [BSConvU1d,BSConvU2d,BSConvU3d][dimensions-1](
-            in_channels=in_channels, 
-            out_channels=out_channels, 
-            kernel_size=kernel_size, 
-            stride=stride, 
-            padding=padding, 
-            dilation=dilation, 
-            bias=bias, 
-            padding_mode=padding_mode,
-            with_bn=with_bn, 
-            bn_kwargs=bn_kwargs
-        )
-    def forward(self,x):
-        return self.conv(x)
-
-class BSConvU1d(torch.nn.Sequential):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, bias=True, padding_mode="zeros", with_bn=False, bn_kwargs=None):
-        super().__init__()
 
         if bn_kwargs is None:
             bn_kwargs = {}
-
-        self.add_module("pw", torch.nn.Conv1d(
+        conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
+        self.add_module("pw", conv(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=1,
@@ -67,10 +47,12 @@ class BSConvU1d(torch.nn.Sequential):
             bias=False,
         ))
 
-        if with_bn:
-            self.add_module("bn", torch.nn.BatchNorm1d(num_features=out_channels, **bn_kwargs))
+        if with_gn:
+            self.add_module("bn", get_normalization_from_name(dimensions,'group')(out_channels))
+        if transpose:
+            conv = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
 
-        self.add_module("dw", torch.nn.Conv1d(
+        self.add_module("dw", conv(
             in_channels=out_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
@@ -81,73 +63,4 @@ class BSConvU1d(torch.nn.Sequential):
             bias=bias,
             padding_mode=padding_mode,
         ))
-
-class BSConvU2d(torch.nn.Sequential): 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, bias=True, padding_mode="zeros", with_bn=False, bn_kwargs=None): 
-        super().__init__() 
-
-        # check arguments 
-        if bn_kwargs is None: 
-            bn_kwargs = {} 
-
-        # pointwise 
-        self.add_module("pw", torch.nn.Conv2d( 
-                in_channels=in_channels, 
-                out_channels=out_channels, 
-                kernel_size=(1, 1), 
-                stride=1, 
-                padding=0, 
-                dilation=1, 
-                groups=1, 
-                bias=False, 
-        )) 
-
-        # batchnorm 
-        if with_bn: 
-            self.add_module("bn", torch.nn.BatchNorm2d(num_features=out_channels, **bn_kwargs)) 
-
-        # depthwise 
-        self.add_module("dw", torch.nn.Conv2d( 
-                in_channels=out_channels, 
-                out_channels=out_channels, 
-                kernel_size=kernel_size, 
-                stride=stride, 
-                padding=padding, 
-                dilation=dilation, 
-                groups=out_channels, 
-                bias=bias, 
-                padding_mode=padding_mode, 
-        )) 
-
-class BSConvU3d(torch.nn.Sequential):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0, dilation=1, bias=True, padding_mode="zeros", with_bn=False, bn_kwargs=None):
-        super().__init__()
-
-        if bn_kwargs is None:
-            bn_kwargs = {}
-
-        self.add_module("pw", torch.nn.Conv3d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            kernel_size=1,
-            stride=1,
-            padding=0,
-            dilation=1,
-            groups=1,
-            bias=False,
-        ))
-
-        if with_bn:
-            self.add_module("bn", torch.nn.BatchNorm3d(num_features=out_channels, **bn_kwargs))
-
-        self.add_module("dw", torch.nn.Conv3d(
-            in_channels=out_channels,
-            out_channels=out_channels,
-            kernel_size=kernel_size,
-            stride=stride,
-            padding=padding,
-            dilation=dilation,
-            groups=out_channels,
-            bias=bias,
-            padding_mode=padding_mode,
-        ))
+        
