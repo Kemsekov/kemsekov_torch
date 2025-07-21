@@ -51,7 +51,11 @@ def profile_function(func, n=1):
             local_cpu_peak = max(local_cpu_peak, cpu)
             local_mem_peak = max(local_mem_peak, mem)
             time.sleep(0.05)
-
+    def sync():
+        try:
+            torch.cuda.synchronize()
+        except: pass
+        
     last_result = None
 
     for i in range(n):
@@ -68,13 +72,16 @@ def profile_function(func, n=1):
         except:
             pass
 
-        torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
+        sync()
+        try:
+            torch.cuda.reset_peak_memory_stats()
+        except: pass
+        
         start_time = time.time()
 
         result = func()
 
-        torch.cuda.synchronize()
+        sync()
         elapsed_time = time.time() - start_time
         total_time += elapsed_time
         last_result = result
@@ -82,8 +89,12 @@ def profile_function(func, n=1):
         stop_flag = True
         cpu_thread.join()
 
-        gpu_mem = torch.cuda.max_memory_allocated() / (1024 ** 2)
-        gpu_reserved = torch.cuda.max_memory_reserved() / (1024 ** 2)
+        gpu_mem = 0
+        gpu_reserved=0
+        try:
+            gpu_mem = torch.cuda.max_memory_allocated() / (1024 ** 2)
+            gpu_reserved = torch.cuda.max_memory_reserved() / (1024 ** 2)
+        except: pass
         gpu_util = get_gpu_utilization()
 
         cpu_peak_list.append(local_cpu_peak)
