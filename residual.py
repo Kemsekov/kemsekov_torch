@@ -14,11 +14,11 @@ class ResidualBlock(torch.nn.Module):
         stride = 1,
         dilation = 1,
         dropout = 0.0,
-        activation=torch.nn.SiLU,
+        activation=torch.nn.ReLU,
         normalization : Literal['batch','instance','group','spectral','layer',None] = None,
         dimensions : Literal[1,2,3] = 2,
         is_transpose = False,
-        padding_mode : Literal['constant', 'reflect', 'replicate', 'circular']="replicate",
+        padding_mode : Literal['zeros','constant', 'reflect', 'replicate', 'circular']="zeros",
         device = None,
         disable_residual = False
     ):
