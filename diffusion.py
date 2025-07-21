@@ -152,15 +152,15 @@ class DiffusionBlock(torch.nn.Module):
         if transformer_blocks>0:
             self.sa = Residual([
                 # ConcatPositionalEmbeddingPermute(out_channels,256,dimensions=dimensions),
-                AddPositionalEmbeddingPermute(out_channels,256,dimensions),
+                # AddPositionalEmbeddingPermute(out_channels,256,dimensions),
                 # LearnedPosEmb(out_channels,dimensions),
+                Transpose(1,-1),
                 *[
-                    FlattenSpatialDimensions([
-                        # TransformerSelfAttentionBlock(out_channels,attn_heads,mlp_dim),
-                        LinearSelfAttentionBlock(out_channels,mlp_dim,attn_heads)
-                    ])
+                    # TransformerSelfAttentionBlock(out_channels,attn_heads,mlp_dim),
+                    LinearSelfAttentionBlock(out_channels,mlp_dim,attn_heads,add_rotary_emb=True)
                     for i in range(transformer_blocks)
-                ]
+                ],
+                Transpose(1,-1),
             ])
         else:
             self.sa = nn.Identity()
@@ -180,7 +180,7 @@ class Diffusion(torch.nn.Module):
         
         common_diff_block = dict(
             normalization='group',
-            attn_heads = 16,
+            attn_heads = 8,
             dimensions = 2,
             max_timesteps=max_timesteps
         )
@@ -204,16 +204,16 @@ class Diffusion(torch.nn.Module):
         self.down4 = DiffusionBlock(256,512,**common_diff_block)
         
         self.up1 = DiffusionBlock(512,256,**common_diff_block).transpose()
-        self.merge_up1_down3 = ResidualBlock(512,[256]*2,kernel_size=1,**commin_res_block)
+        self.merge_up1_down3 = ResidualBlock(512,[256],kernel_size=1,**commin_res_block)
         
         self.up2 = DiffusionBlock(256,128,**common_diff_block).transpose()
-        self.merge_up2_down2 = ResidualBlock(256,[128]*2,kernel_size=1,**commin_res_block)
+        self.merge_up2_down2 = ResidualBlock(256,[128],kernel_size=1,**commin_res_block)
         
         self.up3 = DiffusionBlock(128,128,**common_diff_block).transpose()
-        self.merge_up3_down1 = ResidualBlock(256,[128]*2,kernel_size=1,**commin_res_block)
+        self.merge_up3_down1 = ResidualBlock(256,[128],kernel_size=1,**commin_res_block)
 
         self.up4 = DiffusionBlock(128,64,transformer_blocks=0,**common_diff_block).transpose()
-        self.merge_up4_x = ResidualBlock(128,[64]*2,kernel_size=1,**commin_res_block)
+        self.merge_up4_x = ResidualBlock(128,[64],kernel_size=1,**commin_res_block)
         
         # to produce proper logits, combine model output that input
         self.final = [torch.nn.Conv1d,torch.nn.Conv2d,torch.nn.Conv3d][self.dimensions-1](64,in_channels,kernel_size=1)
