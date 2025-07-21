@@ -3,9 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.common_modules import get_normalization_from_name
 
-
-
-
 class BSConvU(torch.nn.Sequential): 
     """
     Blueprint Pointwise-Depthwise Convolution Block.
