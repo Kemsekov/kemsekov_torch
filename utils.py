@@ -2,6 +2,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
 import numpy as np
 import torch
+import tqdm
 
 class BinBySizeDataset(torch.utils.data.Dataset):
     """
@@ -80,11 +81,13 @@ class BinBySizeDataset(torch.utils.data.Dataset):
             return str(shapes), i
         
         bins = {}
+        completed = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(get_shape, i) for i in range(len(dataset))]
-            for future in as_completed(futures):
+            for future in tqdm.tqdm(as_completed(futures),desc="Bin by tensor size",total=len(dataset)):
                 shape_str, idx = future.result()
                 bins.setdefault(shape_str, []).append(idx)
+                completed+=1
 
 
         for b in list(bins.keys()):
