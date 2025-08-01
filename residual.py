@@ -205,6 +205,7 @@ class ResidualBlock(torch.nn.Module):
         else:
             self.alpha = torch.nn.Parameter(torch.tensor(0.0,device=device))
         self.out_norm = norm_impl(out_channels[-1])
+        self.input_act = activation()
     @torch.jit.ignore
     def _conv_x_linear(self, in_channels, out_channels, stride, norm_impl, x_corr_conv_impl,x_corr_conv_impl_T,device):
         # compute x_size correction convolution arguments so we could do residual addition when we have changed
@@ -264,7 +265,7 @@ class ResidualBlock(torch.nn.Module):
         Returns:
             torch.Tensor: Output tensor of shape (batch_size, out_channels, new_height, new_width).
         """
-        out = x
+        out = self.input_act(x)
         for convs,norm,act in zip(self.convs,self.norms,self.activation):
             results = [conv(out) for conv in convs]
             out = torch.cat(results, dim=1)
