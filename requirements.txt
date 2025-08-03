@@ -3,3 +3,4 @@ accelerate
 tqdm
 matplotlib
 einops
+scikit-learn
