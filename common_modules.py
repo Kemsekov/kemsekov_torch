@@ -377,6 +377,11 @@ def reinit_with_ema(module, decay=0.99):
     for param, orig_param in zip(module.parameters(), orig_params):
         param.data = decay * orig_param.data + (1 - decay) * param.data
 
+
+def smooth_abs(x: torch.Tensor) -> torch.Tensor:
+    abs_x = torch.abs(x)
+    return torch.where(abs_x > 1, abs_x, 0.5 * x**2 + 0.5)
+
 def kl_divergence(mu, log_sigma,latent_dimension=1):
     """
     Compute KL divergence between N(mu, sigma^2) and N(0, 1).
