@@ -515,6 +515,10 @@ def train(
             on_epoch_end(epoch,model)
     except KeyboardInterrupt:
         print("Interrupt training")
+    gc.collect()
+    try:
+        torch.cuda.empty_cache()
+    except: pass
     return model
 
 def save_plot_metric_history(plot_dir, train_metric_history,test_metric_history,source):

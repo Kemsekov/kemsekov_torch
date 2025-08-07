@@ -7,7 +7,7 @@ class ConcatPositionalEmbeddingPermute(torch.nn.Module):
     """
     Concat input with shape (batch_size, ch, ...N dimensions...) to positional embedding
     """
-    def __init__(self,channels,freq=1000,dimensions=2):
+    def __init__(self,channels,freq=10000,dimensions=2):
         """
         channels: input channels
         freq: embedding frequency, must equal to around input size
@@ -25,7 +25,7 @@ class AddPositionalEmbeddingPermute(torch.nn.Module):
     """
     Adds input with shape (batch_size, ch, ...N dimensions...) to positional embedding
     """
-    def __init__(self,channels,freq=1000,dimensions=2):
+    def __init__(self,channels,freq=10000):
         """
         channels: input channels
         freq: embedding frequency, must equal to around input size
