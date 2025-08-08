@@ -382,13 +382,13 @@ def smooth_abs(x: torch.Tensor) -> torch.Tensor:
     abs_x = torch.abs(x)
     return torch.where(abs_x > 1, abs_x, 0.5 * x**2 + 0.5)
 
-def kl_divergence(mu, log_sigma,latent_dimension=1):
+def kl_divergence(mu, logvar,latent_dimension=1):
     """
     Compute KL divergence between N(mu, sigma^2) and N(0, 1).
     
     Args:
         mu (torch.Tensor): Mean of the learned distribution
-        log_sigma (torch.Tensor): Log standard deviation of the learned distribution
+        logvar (torch.Tensor): Log standard deviation of the learned distribution
         latent_dimension int: index of dimension along which to compute sum
     
     Returns:
@@ -398,7 +398,7 @@ def kl_divergence(mu, log_sigma,latent_dimension=1):
     # mu = mu.mean(-2)
     # log_sigma = log_sigma.mean(-2)
     # Compute KL divergence for each dimension and sum over latent dimensions
-    kl = 0.5 * torch.sum(-1 - 2 * log_sigma + torch.exp(2 * log_sigma) + mu**2, dim=latent_dimension)
+    kl = 0.5 * torch.mean(-1 - 2 * logvar + torch.exp(2 * logvar) + mu**2, dim=latent_dimension)
     return kl.mean()
  
 from torch.autograd import Function
