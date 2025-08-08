@@ -193,3 +193,61 @@ class ResizeToMultiple:
     def __repr__(self):
         return f"{self.__class__.__name__}(multiple_of={self.multiple_of}, interpolation='{self.interpolation}')"
 
+
+import math
+import torch
+import PIL.Image
+import torch.nn.functional as torch_F
+import numpy as np
+
+class PadToMultiple:
+    """
+    Pads the input image/tensor with zeros so that width and height 
+    are multiples of `multiple_of`.
+    """
+    def __init__(self, multiple_of: int,filler = 0):
+        if multiple_of <= 0:
+            raise ValueError("multiple_of must be a positive integer.")
+        self.multiple_of = multiple_of
+        self.filler=filler
+
+    def __call__(self, image):
+        """
+        Args:
+            image (PIL.Image.Image or torch.Tensor): Image to be padded.
+
+        Returns:
+            Padded image such that width and height are multiples of `multiple_of`.
+        """
+        if isinstance(image, PIL.Image.Image):
+            width, height = image.size
+            new_width = math.ceil(width / self.multiple_of) * self.multiple_of
+            new_height = math.ceil(height / self.multiple_of) * self.multiple_of
+
+            pad_w = new_width - width
+            pad_h = new_height - height
+
+            # Create new image with black background
+            new_img = PIL.Image.new(image.mode, (new_width, new_height), color=0)
+            new_img.paste(image, (0, 0))
+            return new_img
+
+        elif isinstance(image, torch.Tensor):
+            if image.ndim != 3:
+                raise ValueError("Expected a 3D tensor with shape [C, H, W].")
+            c, h, w = image.shape
+            new_w = math.ceil(w / self.multiple_of) * self.multiple_of
+            new_h = math.ceil(h / self.multiple_of) * self.multiple_of
+
+            pad_w = new_w - w
+            pad_h = new_h - h
+
+            # Pad format: (left, right, top, bottom)
+            padding = (0, pad_w, 0, pad_h)
+            return torch_F.pad(image, padding, mode="constant", value=self.filler)
+
+        else:
+            raise TypeError("Input must be a PIL.Image.Image or a 3D torch.Tensor [C, H, W]")
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}(multiple_of={self.multiple_of})"

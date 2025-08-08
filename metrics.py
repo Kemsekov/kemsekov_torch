@@ -20,7 +20,8 @@ def r2_score(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     # Calculate the R² score
     r2 = 1 - (residual_variance / total_variance)
     
-    return r2.item()
+    res = r2.item()
+    return res
 
 
 def iou_metric(pred, target, threshold=0.5):
