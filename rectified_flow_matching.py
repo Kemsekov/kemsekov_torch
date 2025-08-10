@@ -50,10 +50,11 @@ def flow_matching_pair(model,input_domain,target_domain):
     """
     # generate time in range [0;1]
     time = torch.rand(input_domain.shape[0],device=input_domain.device)
-    target = target_domain-input_domain
     
     time_expand = time[:,*([None]*len(target_domain.shape[1:]))]
     xt = (1-time_expand)*input_domain+time_expand*target_domain
+    
+    target = target_domain-xt
     
     pred_direction = model(xt,time)
     
@@ -91,7 +92,8 @@ def sample_with_euler_integrator(model, x0, steps, churn_scale=0.005, inverse=Fa
             xt = churn_scale * noise + (1 - churn_scale) * xt
 
             pred = model(xt, t[None])  # ensure shape (1,) or (batch,)
+            
             # forward or reverse Euler update
-            xt = xt + dt * pred
+            xt = xt + dt * (xt - x0 + pred)
 
     return xt
