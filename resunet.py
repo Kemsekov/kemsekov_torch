@@ -165,6 +165,7 @@ class ResidualUnet(nn.Module):
         kernel_size=4,
         stride=2,
         normalization: Literal['batch', 'instance', 'group', 'layer', None] = 'group',
+        attention=EfficientSpatialChannelAttention
     ):
 
         super().__init__()
@@ -196,9 +197,6 @@ class ResidualUnet(nn.Module):
             dimensions=dimensions,
             disable_residual=False
         )
-        def attention(ch):
-            # return nn.Identity()
-            return EfficientSpatialChannelAttention(ch,3)
         # Build downsampling path
         self.down_blocks = nn.ModuleList()
         for i in range(self.depth):

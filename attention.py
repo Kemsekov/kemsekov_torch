@@ -336,6 +336,7 @@ def compute_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torc
     return attn_output
 
 def g(x):
+    return torch.nn.functional.softplus(x,5)**2
     return torch.relu(x)*x
 
 # Fast linear attention with inputs of shape [B, S, H, D] using einsum
@@ -431,12 +432,11 @@ class MultiHeadLinearAttention(nn.Module):
         self.add_rotary_emb=add_rotary_emb
         self.rotary_emb = RotEmb(rotary_emb_base)
         
-        self.g=nn.Sequential(
-            # nn.Linear(self.head_dim,self.head_dim),
-            nn.LayerNorm(self.head_dim),
-            TanhKernel()
-            # LogKernel()
-        )
+        # self.g=nn.Sequential(
+        #     # nn.Linear(self.head_dim,self.head_dim),
+        #     nn.LayerNorm(self.head_dim),
+        #     TanhKernel()
+        # )
         # self.phi = nn.Sequential(
         #     nn.Linear(embed_dim,embed_dim),
         #     nn.LayerNorm(embed_dim),
@@ -485,8 +485,9 @@ class MultiHeadLinearAttention(nn.Module):
         
         Vh = self.split_heads(V)   # → [B, L_K, n_heads, head_dim]
         Kh, Vh = self.add_zero_token_KhVh(Kh, Vh)
-        phi_Qh = self.g(Qh)
-        phi_Kh = self.g(Kh)
+        
+        # phi_Qh = g(Qh)
+        # phi_Kh = g(Kh)
         
         # phi_Qh = torch.nn.functional.normalize(phi_Qh,2.0,-1)
         # phi_Kh = torch.nn.functional.normalize(phi_Kh,2.0,-1)
@@ -499,10 +500,10 @@ class MultiHeadLinearAttention(nn.Module):
         #     phi_Kh = self.split_heads(self.phi(K))
         
         # 3. Run single‐head linear attention
-        out_heads, attn = self.single_head_attn(
-            Qh, Kh, Vh, phi_Qh, phi_Kh, compute_attn_weight
-        )
-        # out_heads = fast_linear_path_einsum(Qh,Kh,Vh)
+        # out_heads, attn = self.single_head_attn(
+        #     Qh, Kh, Vh, phi_Qh, phi_Kh, compute_attn_weight
+        # )
+        out_heads = fast_linear_path_einsum(Qh,Kh,Vh)
         
         # we can try to use full scaled dot product attention to compare results
         # out_heads = compute_attention(Qh,Kh,Vh)
