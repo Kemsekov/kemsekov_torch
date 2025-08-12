@@ -166,7 +166,7 @@ class ResidualUnet(nn.Module):
         stride=2,
         normalization: Literal['batch', 'instance', 'group', 'layer', None] = 'group',
         attention=EfficientSpatialChannelAttention,
-        bottom_layer = nn.Identity
+        bottom_layer = nn.Identity()
     ):
 
         super().__init__()
@@ -241,18 +241,17 @@ class ResidualUnet(nn.Module):
 
     def forward(self, x):
         # Store initial expansion for final skip connection
-        e = self.expand_input(x)
-        x = e
+        encodings = self.encode(x)
         
-        # Down path
-        encodings = []
-        for down in self.down_blocks:
-            # print(x.shape)
-            x = down(x)
-            encodings.append(x)
-        
-        encodings[-1]=self.bottom_layer(encodings[-1])
         # Bottom latent
+        res = self.decode(encodings)
+        
+        return res
+    @torch.jit.export
+    def decode(self, encodings):
+        e = encodings[0]
+        encodings = encodings[1:]
+        
         x = encodings[-1]
         # Prepare reverse skips excluding bottom
         skips = encodings[:-1][::-1]
@@ -270,4 +269,20 @@ class ResidualUnet(nn.Module):
         # print(x.shape)
 
         # Collapse to output channels
-        return self.collapse_output(x)
+        res = self.collapse_output(x)
+        return res
+
+    @torch.jit.export
+    def encode(self, x):
+        e = self.expand_input(x)
+        x = e
+        
+        # Down path
+        encodings = [e]
+        for down in self.down_blocks:
+            # print(x.shape)
+            x = down(x)
+            encodings.append(x)
+        
+        encodings[-1]=self.bottom_layer(encodings[-1])
+        return encodings
