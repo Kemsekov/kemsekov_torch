@@ -216,6 +216,7 @@ def train(
     
     if accelerate_args is None: accelerate_args = {}
     acc = accelerator if accelerator is not None else Accelerator(**accelerate_args)
+    print("Using device",acc.device)
     
     if load_checkpoint_dir is not None and os.path.exists(load_checkpoint_dir):
         try:
