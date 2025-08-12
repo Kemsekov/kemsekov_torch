@@ -165,7 +165,8 @@ class ResidualUnet(nn.Module):
         kernel_size=4,
         stride=2,
         normalization: Literal['batch', 'instance', 'group', 'layer', None] = 'group',
-        attention=EfficientSpatialChannelAttention
+        attention=EfficientSpatialChannelAttention,
+        bottom_layer = nn.Identity
     ):
 
         super().__init__()
@@ -236,6 +237,7 @@ class ResidualUnet(nn.Module):
             ConcatTensors(1),
             conv(channels[0] * 2, channels[0], kernel_size=1)
         )
+        self.bottom_layer=bottom_layer
 
     def forward(self, x):
         # Store initial expansion for final skip connection
@@ -248,7 +250,8 @@ class ResidualUnet(nn.Module):
             # print(x.shape)
             x = down(x)
             encodings.append(x)
-
+        
+        encodings[-1]=self.bottom_layer(encodings[-1])
         # Bottom latent
         x = encodings[-1]
         # Prepare reverse skips excluding bottom
