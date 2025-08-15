@@ -68,7 +68,7 @@ class TransformerCrossAttentionBlock(nn.Module):
         out = self.m(tgt,memory,tgt_mask,memory_mask,tgt_key_padding_mask,memory_key_padding_mask,tgt_is_causal,memory_is_causal)
         return out
 class LinearSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention=False,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention=True,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -99,7 +99,7 @@ class LinearSelfAttentionBlock(torch.nn.Module):
     def forward(self,x):
         return self.attn(x,x)
 class LinearCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention = False,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention = True,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -174,12 +174,12 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             nn.Linear(mlp_dim,input_dim,device=device),
         ])
         self.add_local_attention=add_local_attention
-        self.local_attention_gamma = torch.nn.Parameter(torch.tensor(0.0))
+        # self.local_attention_gamma = torch.nn.Parameter(torch.tensor(0.0))
         self.local_attention = nn.Conv1d(
             input_dim,
             input_dim,
-            kernel_size=5,
-            padding=2,
+            kernel_size=3,
+            padding=1,
             device=device,
             groups=heads
         )
@@ -197,7 +197,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         xt = xt.transpose(-2,-1)
         
         # out: [batch,channels,(...)]
-        out = self.local_attention_gamma*self.local_attention(xt)
+        out = torch.tanh(self.local_attention(xt))+1
         
         # out: [batch,(...),channels]
         out = out.transpose(-2,-1)
@@ -206,7 +206,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             # out: [batch, ... ,channels]
             out = out.view(x.shape)
         
-        return out
+        return out*x
     
     
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
@@ -230,7 +230,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         
         attn = self.attn(Q,K,V)[0]
         if self.add_local_attention:
-            attn = attn+self._local_attnetion(attn)
+            attn = self._local_attnetion(attn)
         attn=self.attn_norm(attn)
         
         #--------------------
@@ -489,28 +489,14 @@ class MultiHeadLinearAttention(nn.Module):
         
         Vh = self.split_heads(V)   # → [B, L_K, n_heads, head_dim]
         Kh, Vh = self.add_zero_token_KhVh(Kh, Vh)
-        
-        # phi_Qh = g(Qh)
-        # phi_Kh = g(Kh)
-        
-        # phi_Qh = torch.nn.functional.normalize(phi_Qh,2.0,-1)
-        # phi_Kh = torch.nn.functional.normalize(phi_Kh,2.0,-1)
-        
-        # if self.add_rotary_emb:
-        #     phi_Qh = self.split_heads_with_rot_emb(self.phi(Q))
-        #     phi_Kh = self.split_heads_with_rot_emb(self.phi(K))
-        # else:
-        #     phi_Qh = self.split_heads(self.phi(Q))
-        #     phi_Kh = self.split_heads(self.phi(K))
-        
-        # 3. Run single‐head linear attention
-        # out_heads, attn = self.single_head_attn(
-        #     Qh, Kh, Vh, phi_Qh, phi_Kh, compute_attn_weight
-        # )
-        
+
         if self.use_classic_attention:
             out_heads = compute_attention(Qh,Kh,Vh)
         else:
+            # 3. Run single‐head linear attention
+            # out_heads, _ = self.single_head_attn(
+            #     Qh, Kh, Vh, self.g(Qh), self.g(Kh), compute_attn_weight
+            # )
             out_heads = fast_linear_path_einsum(Qh,Kh,Vh)
         
         # we can try to use full scaled dot product attention to compare results

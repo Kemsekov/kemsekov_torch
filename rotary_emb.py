@@ -4,6 +4,10 @@ import torch
 from torch import nn
 
 class RotEmb(nn.Module):
+    """
+    (B, (...dims...), Heads, D)
+    
+    """
     def __init__(self,base : int=10000):
         super().__init__()
         dummy_tensor = torch.zeros(1)
@@ -113,7 +117,7 @@ class RotEmb(nn.Module):
     def _apply_2d_rotary_pos_emb(self,x):
         B, H, W, nH, D = x.shape
         assert D % 4 == 0
-
+        
         D_half = D // 2
         D_quarter = D // 4
 

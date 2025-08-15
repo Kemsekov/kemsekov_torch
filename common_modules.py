@@ -91,13 +91,18 @@ class FlattenSpatialDimensions(nn.Module):
         out = self.m(x_flat)
         x_shape[1] = out.shape[-1] # update channels
         return _restore_shape_of_transformer_output(out,torch.Size(x_shape))
-class Unsqeeze(nn.Module):
+class Unsqueeze(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.dim = dim
     def forward(self,x):
         return x.unsqueeze(self.dim)
-
+class Squeeze(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.dim = dim
+    def forward(self,x):
+        return x.squeeze(self.dim)
 class Take(nn.Module):
     def __init__(self, slice):
         super().__init__()
