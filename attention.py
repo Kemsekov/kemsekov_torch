@@ -173,6 +173,10 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             activation(),
             nn.Linear(mlp_dim,input_dim,device=device),
         ])
+        self.scale = nn.Sequential(
+            nn.Linear(input_dim,input_dim),
+            TanhKernel()
+        )
         self.add_local_attention=add_local_attention
         # self.local_attention_gamma = torch.nn.Parameter(torch.tensor(0.0))
         self.local_attention = nn.Conv1d(
@@ -237,8 +241,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # print("total attn",time.time()-start)
         # start = time.time()
         
-        result = self.mlp(attn)#.view(query_source.shape)
-        result+=query_source
+        result = self.mlp(attn)
+        result = query_source + result*self.scale(result)
         #--------------------
         # print("mlp + reshape",time.time()-start)
         
