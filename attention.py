@@ -175,6 +175,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         ])
         self.scale = nn.Sequential(
             nn.Linear(input_dim,input_dim),
+            nn.LayerNorm(input_dim),
             TanhKernel()
         )
         self.add_local_attention=add_local_attention
@@ -210,7 +211,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             # out: [batch, ... ,channels]
             out = out.view(x.shape)
         
-        return out*x
+        return out
     
     
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
@@ -234,7 +235,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         
         attn = self.attn(Q,K,V)[0]
         if self.add_local_attention:
-            attn = self._local_attnetion(attn)
+            attn = attn*self._local_attnetion(attn)
         attn=self.attn_norm(attn)
         
         #--------------------
@@ -242,7 +243,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # start = time.time()
         
         result = self.mlp(attn)
-        result = query_source + result*self.scale(result)
+        result = query_source + result*self.scale(query_source)
         #--------------------
         # print("mlp + reshape",time.time()-start)
         
