@@ -540,54 +540,23 @@ class EfficientSpatialChannelAttention(nn.Module):
     """
     Efficient Spatial Channel Attention (ESCA) Module
 
-    Applies efficient spatial attention across channels using a 1D convolution
-    over the flattened spatial dimensions. This module computes attention weights
+    Applies efficient spatial attention across channels using a grouped [1,2,3]D convolution
+    over the spatial dimensions. This module computes attention weights
     that modulate channel responses based on spatial structure, improving
     feature representation with minimal overhead.
-
-    Parameters
-    ----------
-    channels : int
-        Number of input channels (C).
-    ks : int, optional
-        Kernel size for the 1D convolution used in spatial attention,
-        by default 5. Must be an odd number for symmetric padding.
-
-    Input Shape
-    -----------
-    x : torch.Tensor
-        Input tensor of shape [N, C, *spatial_dims], where spatial_dims can be 1D, 2D, or 3D.
-
-    Output Shape
-    ------------
-    out : torch.Tensor
-        Tensor of same shape as input, with spatially modulated channel responses.
-
-    Example
-    -------
-    >>> module = EfficientSpatialChannelAttention(channels=64, ks=5)
-    >>> x1d = torch.randn(8, 64, 128)
-    >>> x2d = torch.randn(8, 64, 32, 32)
-    >>> x3d = torch.randn(8, 64, 8, 16, 16)
-    >>> y1d = module(x1d)
-    >>> y2d = module(x2d)
-    >>> y3d = module(x3d)
     """
-    def __init__(self, channels,ks=3):
+    def __init__(self, channels,groups='auto',dimensions=2):
         super().__init__()
+        assert dimensions in [1,2,3],f"dimensions must be one of [1,2,3], but got {dimensions}"
+        conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
+        
+        groups = max(1,channels//32)
+        
         self.spatial_attn = nn.Sequential(
-            nn.Conv1d(channels,channels,ks,padding=ks//2),
+            conv(channels,channels,3,padding=1,groups=groups),
             nn.Tanh()
         )
 
     def forward(self, x):
-        # x: [N, C, ...]
-        N, C = x.shape[:2]
-
-        # Global Average Pooling over spatial dims to [N, C, 1]
-        flat = x.view(N,C,-1)
-        spatian_attn = 1+self.spatial_attn(flat)
-        
-        # out = torch.max(flat*ch_attn,flat*spatian_attn)
-        out = flat*spatian_attn
-        return out.view(x.shape)
+        spatian_attn = 1+self.spatial_attn(x)
+        return x*spatian_attn

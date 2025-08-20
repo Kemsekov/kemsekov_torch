@@ -248,7 +248,7 @@ class ResidualUnet(nn.Module):
         
         return res
     @torch.jit.export
-    def decode(self, encodings):
+    def decode(self, encodings : List[torch.Tensor]):
         e = encodings[0]
         encodings = encodings[1:]
         
@@ -273,7 +273,7 @@ class ResidualUnet(nn.Module):
         return res
 
     @torch.jit.export
-    def encode(self, x):
+    def encode(self, x) -> List[torch.Tensor]:
         e = self.expand_input(x)
         x = e
         
