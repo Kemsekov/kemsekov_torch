@@ -1,26 +1,26 @@
+from typing import Union
 import torch
 import torch.nn as nn
 
-class InvertableLeakyReLU(torch.nn.Module):
+class InvertableLeakyReLU(nn.Module):
     def __init__(self, negative_slope=0.2):
         super().__init__()
-        self.leaky_relu = nn.LeakyReLU(negative_slope)
-        self.negative_slope = negative_slope  # Store negative_slope for consistency
+        self.negative_slope = negative_slope
 
     def forward(self, x):
-        # Compute Leaky ReLU output
-        output = self.leaky_relu(x)
-        # Compute derivative: 1 if x >= 0, negative_slope if x < 0
-        derivative = torch.where(x >= 0, torch.ones_like(x), torch.full_like(x, self.negative_slope))
-        return output, derivative
+        # y = x if x >= 0 else negative_slope * x
+        return torch.where(x >= 0, x, self.negative_slope * x)
 
-    def inverse(self, x):
-        # Compute inverse: y if y >= 0, y/negative_slope if y < 0
-        output = torch.where(x >= 0, x, x / self.negative_slope)
-        return output
+    def inverse(self, y):
+        # x = y if y >= 0 else y / negative_slope
+        return torch.where(y >= 0, y, y / self.negative_slope)
+
+    def derivative(self, x):
+        # d/dx = 1 if x >= 0 else negative_slope
+        return torch.where(x >= 0, torch.ones_like(x), torch.full_like(x, self.negative_slope))
 
 class InvertableTanh(torch.nn.Module):
-    def __init__(self,scale=1):
+    def __init__(self,scale=2):
         super().__init__()
         self.scale=scale
     
@@ -145,16 +145,13 @@ class InvertableScaleAndTranslate(nn.Module):
     Args:
         model (nn.Module): Neural network to compute scaling and translation factors. It takes half input dimensions as input and returns twice of it.
         dimension_split (int, optional): Dimension to split the input. Defaults to -1 (last dimension).
-        seed (int, optional): Seed for reproducible shuffling. If None, a random integer is generated.
+        non_linearity (torch.nn.Module): invertible non-linearity function that is used to improve model expressiveness
     """
-    def __init__(self, model,dimension_split = -1,seed = None):
+    def __init__(self, model,dimension_split = -1,non_linearity : Union[InvertableTanh,SymetricSqrt,SymetricLog,InvertableLeakyReLU] = InvertableTanh(2)):
         super().__init__()
         self.model=model
-        if seed is None:
-            seed = torch.randint(0, 1000, [1])[0].item()  # Generate random integer
-        self.seed = seed
         self.dimension_split = dimension_split  # Ensure integer type
-        self.non_linearity = InvertableTanh(2)
+        self.non_linearity=non_linearity
     
     def get_scale_and_translate(self,x):
         scale,translate = self.model(x).chunk(2,self.dimension_split)
