@@ -91,13 +91,59 @@ class SymetricSqrt(nn.Module):
         # for x<=0: d/dx [1 - sqrt(1-x)] = 1/(2*sqrt(1-x))
         out[~mask] = 1.0 / (2 * (1 - x[~mask]).sqrt()+1e-6)
         return out
-    
+def flip_even_odd(x: torch.Tensor, dim: int = -1):
+    """
+    Split tensor into even- and odd-indexed slices along a given dimension.
+
+    Args:
+        x: input tensor
+        dim: dimension along which to split
+
+    Returns:
+        even, odd (two tensors with the same shape except along dim)
+    """
+    # build index slices
+    even_idx = torch.arange(0, x.size(dim), 2, device=x.device)
+    odd_idx = torch.arange(1, x.size(dim), 2, device=x.device)
+
+    even = torch.index_select(x, dim, even_idx)
+    odd = torch.index_select(x, dim, odd_idx)
+
+    return torch.concat([even, odd],dim)
+
+def unflip_even_odd(x: torch.Tensor, dim: int = -1):
+    """
+    Undo flip_even_odd: interleave even and odd parts back along a given dim.
+
+    Args:
+        x: tensor produced by flip_even_odd
+        dim: dimension along which to invert
+
+    Returns:
+        Tensor with original ordering restored
+    """
+    n = x.size(dim)
+    half = n // 2 + n % 2  # number of evens (handle odd length safely)
+
+    # split back into even and odd chunks
+    even, odd = torch.split(x, [half, n - half], dim=dim)
+
+    # create empty tensor to hold result
+    out = torch.empty_like(x)
+
+    # scatter even indices
+    out.index_copy_(dim, torch.arange(0, n, 2, device=x.device), even)
+    # scatter odd indices
+    out.index_copy_(dim, torch.arange(1, n, 2, device=x.device), odd)
+
+    return out
+
 class InvertableScaleAndTranslate(nn.Module):
     """
     Invertible neural network for normalizing flows, applying scaling, translation, and shuffling with nonlinear function, which provides infinitely differentiable invertable neural network.
     
     Args:
-        model (nn.Module): Neural network to compute scaling and translation factors. It must returns twise dimensions as it takes as input.
+        model (nn.Module): Neural network to compute scaling and translation factors. It takes half input dimensions as input and returns twice of it.
         dimension_split (int, optional): Dimension to split the input. Defaults to -1 (last dimension).
         seed (int, optional): Seed for reproducible shuffling. If None, a random integer is generated.
     """
@@ -131,6 +177,7 @@ class InvertableScaleAndTranslate(nn.Module):
         
         z2 = x2*scale+translate
         concat = torch.concat([self.non_linearity(z2),x1],self.dimension_split)
+        concat = flip_even_odd(concat,self.dimension_split)
         
         jacob_det = self.non_linearity.derivative(z2)*scale
         
@@ -146,6 +193,8 @@ class InvertableScaleAndTranslate(nn.Module):
         Returns:
             torch.Tensor: Reconstructed input tensor.
         """
+        output = unflip_even_odd(output,self.dimension_split)
+        
         f_z2,x1 = output.chunk(2,self.dimension_split)
         z2 = self.non_linearity.inverse(f_z2)
         
