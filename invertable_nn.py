@@ -143,7 +143,7 @@ class InvertableScaleAndTranslate(nn.Module):
     Invertible neural network for normalizing flows, applying scaling, translation, and shuffling with nonlinear function, which provides infinitely differentiable invertable neural network.
     
     Args:
-        model (nn.Module): Neural network to compute scaling and translation factors. It takes half input dimensions as input and returns twice of it.
+        model (nn.Module): Neural network to compute scaling and translation factors. It takes input with half dimensions along specified dim and returns twice of it.
         dimension_split (int, optional): Dimension to split the input. Defaults to -1 (last dimension).
         non_linearity (torch.nn.Module): invertible non-linearity function that is used to improve model expressiveness
     """
