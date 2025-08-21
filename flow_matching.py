@@ -65,7 +65,10 @@ class FlowMatching:
             1. xt - Final sample tensor.
             2. intermediates - Intermediate xt values if return_intermediates is True
         """
-        device = next(model.parameters()).device
+        try:
+            device = next(model.parameters()).device
+        except:
+            device = 'cpu'
         if inverse: 
             ts = torch.linspace(1, 0, steps+1, device=device)
         else:
