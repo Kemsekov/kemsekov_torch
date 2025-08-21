@@ -166,7 +166,8 @@ class ResidualUnet(nn.Module):
         stride=2,
         normalization: Literal['batch', 'instance', 'group', 'layer', None] = 'group',
         attention=EfficientSpatialChannelAttention,
-        bottom_layer = nn.Identity()
+        bottom_layer = nn.Identity(),
+        repeats = 1
     ):
 
         super().__init__()
@@ -204,7 +205,7 @@ class ResidualUnet(nn.Module):
             in_ch = channels[i - 1] if i > 0 else channels[0]
             out_ch = channels[i]
             self.down_blocks.append(nn.Sequential(
-                ResidualBlock(in_ch, out_ch, **common),
+                ResidualBlock(in_ch, [out_ch]*repeats, **common),
                 attention(out_ch)
             ))
 
@@ -218,7 +219,7 @@ class ResidualUnet(nn.Module):
                 dilation=dilations[i]
             
             up_block = nn.Sequential(
-                ResidualBlock(channels[i], channels[i - 1],dilation=dilation, **common).transpose(),
+                ResidualBlock(channels[i], [channels[i - 1]]*repeats,dilation=dilation, **common).transpose(),
                 attention(channels[i - 1])
             )
             combine_block = ListSequential(
@@ -249,6 +250,7 @@ class ResidualUnet(nn.Module):
         return res
     @torch.jit.export
     def decode(self, encodings : List[torch.Tensor]):
+        encodings[-1]=self.bottom_layer(encodings[-1])
         e = encodings[0]
         encodings = encodings[1:]
         
@@ -284,5 +286,22 @@ class ResidualUnet(nn.Module):
             x = down(x)
             encodings.append(x)
         
-        encodings[-1]=self.bottom_layer(encodings[-1])
+        return encodings
+
+    @torch.jit.export
+    def encode_with_context(self, x, context : List[torch.Tensor]) -> List[torch.Tensor]:
+        """
+        context: tensors that will be added at each step of down path to intermediate tensor
+        """
+        
+        e = self.expand_input(x)
+        x = e
+        
+        # Down path
+        encodings = [e]
+        for i,down in enumerate(self.down_blocks):
+            # print(x.shape)
+            x = down(x)+context[i]
+            encodings.append(x)
+        
         return encodings
