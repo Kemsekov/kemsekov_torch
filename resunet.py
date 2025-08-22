@@ -164,6 +164,7 @@ class ResidualUnet(nn.Module):
         dropout=0.1,
         kernel_size=4,
         stride=2,
+        activation=nn.ReLU,
         normalization: Literal['batch', 'instance', 'group', 'layer', None] = 'group',
         attention=EfficientSpatialChannelAttention,
         bottom_layer = nn.Identity(),
@@ -192,7 +193,7 @@ class ResidualUnet(nn.Module):
 
         common = dict(
             normalization=normalization,
-            activation=nn.ReLU,
+            activation=activation,
             dropout=dropout,
             kernel_size=kernel_size,
             stride=stride,

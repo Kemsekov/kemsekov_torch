@@ -673,8 +673,8 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
             train_data=BinBySizeDataset(train_data,batch_size,batch_size//8,max_workers=num_workers)
             test_data=BinBySizeDataset(test_data,batch_size,batch_size//8,max_workers=num_workers)
 
-        train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
-        test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
+        train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor,pin_memory=True)
+        test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor,pin_memory=True)
         print("Train items",len(train_data))
         print("Test items",len(test_data))
         return train_data,test_data,train_loader, test_loader
@@ -686,7 +686,7 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
             dataset = Subset(dataset, train_idx)
         if bin_by_size:
             dataset=BinBySizeDataset(dataset,batch_size,batch_size//8,max_workers=num_workers)
-        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
+        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor,pin_memory=True)
         print("Train items",len(dataset))
         return dataset,[],train_loader,[]
         
