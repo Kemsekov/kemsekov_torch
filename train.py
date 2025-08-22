@@ -679,6 +679,11 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
         print("Test items",len(test_data))
         return train_data,test_data,train_loader, test_loader
     else:
+        if shuffle:
+            g = torch.Generator()
+            g.manual_seed(random_state)
+            train_idx = torch.randperm(len(dataset),generator=g)
+            dataset = Subset(dataset, train_idx)
         if bin_by_size:
             dataset=BinBySizeDataset(dataset,batch_size,batch_size//8,max_workers=num_workers)
         train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
