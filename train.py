@@ -658,25 +658,33 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
         train_dataset,test_dataset,train_loader, test_loader
     """
     # split dataset
-    train_idx, test_idx = train_test_split(
-        list(range(len(dataset))),
-        test_size=test_size,
-        stratify=startify,
-        shuffle=shuffle,
-        random_state=random_state
-    )
+    if test_size>0:
+        train_idx, test_idx = train_test_split(
+            list(range(len(dataset))),
+            test_size=test_size,
+            stratify=startify,
+            shuffle=shuffle,
+            random_state=random_state
+        )
 
-    train_data = Subset(dataset, train_idx)
-    test_data = Subset(dataset, test_idx)
-    if bin_by_size:
-        train_data=BinBySizeDataset(train_data,batch_size,batch_size//8,max_workers=num_workers)
-        test_data=BinBySizeDataset(test_data,batch_size,batch_size//8,max_workers=num_workers)
+        train_data = Subset(dataset, train_idx)
+        test_data = Subset(dataset, test_idx)
+        if bin_by_size:
+            train_data=BinBySizeDataset(train_data,batch_size,batch_size//8,max_workers=num_workers)
+            test_data=BinBySizeDataset(test_data,batch_size,batch_size//8,max_workers=num_workers)
 
-    train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
-    test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
-    print("Train items",len(train_data))
-    print("Test items",len(test_data))
-    return train_data,test_data,train_loader, test_loader
+        train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
+        test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
+        print("Train items",len(train_data))
+        print("Test items",len(test_data))
+        return train_data,test_data,train_loader, test_loader
+    else:
+        if bin_by_size:
+            dataset=BinBySizeDataset(dataset,batch_size,batch_size//8,max_workers=num_workers)
+        train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor)
+        print("Train items",len(dataset))
+        return dataset,[],train_loader,[]
+        
 
 class EpochSplittedDataloader:
     def __init__(self, dataset, batch_size, num_parts, shuffle=False, **dataloader_kwargs):
