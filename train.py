@@ -496,7 +496,7 @@ def train(
                 # Print the table
                 print(tabulate.tabulate(table_data, headers=headers, tablefmt='pretty'))
 
-                
+            # print('save')
             acc.save_state(state_dir)
             
             # create history plots in plots folder

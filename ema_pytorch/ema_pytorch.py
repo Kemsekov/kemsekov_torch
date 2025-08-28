@@ -251,6 +251,7 @@ class EMA(Module):
             copy(current_buffers.data, ma_buffers.data)
 
     def update_model_with_ema(self, decay = None):
+        # print("update")
         if not exists(decay):
             decay = self.update_model_with_ema_beta
 
