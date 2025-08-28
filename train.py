@@ -112,6 +112,7 @@ def train(
         `deepspeed_plugins`: DeepSpeedPlugin | dict[str, DeepSpeedPlugin] | None = None\n
     ema_args: dict
         contains arguments passed to the EMA wrapper. If set to `None`, EMA is not used.\n
+        **USE EMA WHEN YOU HAVE UNSTABLE TRAINING SETUP (GAN,VAE,DIFFUSION, FLOW).**\n
         `beta`: float = 0.9999\n
             Target EMA decay factor. Larger values make updates smoother but slower to adapt.\n
         `update_after_step`: int = 100\n
