@@ -46,6 +46,32 @@ class Residual(torch.nn.Module):
         out = self.m(x)
         x_resize = resize_tensor(x,out.shape[1:])
         return self.alpha*out+x_resize
+
+class Repeat(torch.nn.Module):
+    """
+    Recursively repeats module output on itself
+    """
+    def __init__(self, m,repeats,grad_last_only = False):
+        """
+        m: module that must accept and return tensor of same shape
+        repeats: how many time repeat the cycle
+        grad_last_only: track gradients only on last iteration
+        """
+        super().__init__()
+        assert repeats>0,f"repeats must be positive, got repeats={repeats}"
+        self.repeats = repeats
+        self.m=m
+        self.grad_last_only=grad_last_only
+    def forward(self,x):
+        if self.grad_last_only:
+            with torch.no_grad():
+                for i in range(self.repeats-1):
+                    x=self.m(x)
+        else:
+            for i in range(self.repeats-1):
+                x=self.m(x)
+        return self.m(x)
+
 class AddConst(nn.Module):
     """Adds constant `c` to tensor"""
     def __init__(self,c):
