@@ -10,6 +10,7 @@ import math
 import shutil
 import time
 import tabulate
+from ema_pytorch.ema_pytorch import EMA
 
 def train(
         model,
@@ -26,6 +27,7 @@ def train(
         model_wrapper = None,
         accelerator : Accelerator = None,
         accelerate_args : dict = None,
+        ema_args : dict = None,
         gradient_clipping_max_norm = None,
         tie_weights=False, 
         cast_batch_to_mixed_precision_dtype = False,
@@ -108,7 +110,57 @@ def train(
         `kwargs_handlers`: list[KwargsHandler] | None = None,\n
         `dynamo_backend`: DynamoBackend | str | None = None,\n
         `deepspeed_plugins`: DeepSpeedPlugin | dict[str, DeepSpeedPlugin] | None = None\n
-
+    ema_args: dict
+        contains arguments passed to the EMA wrapper. If set to `None`, EMA is not used.\n
+        `beta`: float = 0.9999\n
+            Target EMA decay factor. Larger values make updates smoother but slower to adapt.\n
+        `update_after_step`: int = 100\n
+            Number of optimizer steps to wait before starting EMA updates.\n
+            Helps avoid averaging unstable early weights.\n
+        `update_every`: int = 10\n
+            Frequency (in steps) to update EMA weights. A value > 1 reduces compute cost.\n
+        `update_model_with_ema_every`: int | None = None\n
+            Every N steps, blend EMA weights back into the online model. Defaults to epoch size.\n
+            (used for continual learning or "hare-to-tortoise" training).\n
+        `inv_gamma`: float = 1.0\n
+            Inverse gamma factor for EMA warmup schedule. Controls how quickly decay ramps up.\n
+        `power`: float = 2/3\n
+            Exponent for EMA warmup schedule. Common values:\n
+            - 1.0 = simple average\n
+            - 2/3 (default) = for very long runs (~1M steps)\n
+            - 3/4 = for shorter runs (~100k steps)\n
+        `min_value`: float = 0.0\n
+            Minimum allowed EMA decay rate (clamps the schedule).\n
+        `param_or_buffer_names_no_ema`: set[str] = set()\n
+            Names of parameters or buffers that should not be EMA-smoothed \n
+            (they will be copied directly instead). Example: BN statistics.\n
+        `ignore_names`: set[str] = set()\n
+            Exact parameter/buffer names to exclude from EMA.\n
+        `ignore_startswith_names`: set[str] = set()\n
+            Exclude parameters/buffers whose names start with any prefix in this set.\n
+        `include_online_model`: bool = True\n
+            If True, the online model is included inside the EMA module and saved in state_dict.\n
+            If False, the online model must be managed externally.\n
+        `allow_different_devices`: bool = False\n
+            If True, EMA and online models can be on different devices \n
+            (weights will be moved automatically during updates).\n
+        `use_foreach`: bool = False\n
+            If True and supported by PyTorch, uses fused foreach ops (`_foreach_lerp_`, `_foreach_copy_`)\n
+            for faster EMA updates.\n
+        `update_model_with_ema_beta`: float = 0.0\n
+            Interpolation factor when updating online model with EMA:\n
+            - 0.0 = full replacement with EMA weights\n
+            - (0,1) = partial blend\n
+        `forward_method_names`: tuple[str, ...] = ()\n
+            Names of forward methods from the EMA model to expose directly on this wrapper.\n
+        `move_ema_to_online_device`: bool = False\n
+            If True, EMA model will be moved to the same device as the online model during updates.\n
+        `coerce_dtype`: bool = False\n
+            If True, casts EMA tensors to the same dtype as online model tensors during updates.\n
+        `lazy_init_ema`: bool = False\n
+            If True, defers EMA model initialization until the first update \n
+            (useful if the model contains lazy modules like LazyLinear).\n
+    
     gradient_clipping_max_norm: when not set to None will perform gradient clipping by limiting gradient norm to specified value
 
     tie_weights : bool, optional
@@ -296,7 +348,14 @@ def train(
             
     if model_wrapper is not None:
         model = model_wrapper(model)
-        
+    
+    update_ema = lambda : 0
+    if ema_args is not None:
+        if 'update_model_with_ema_every' not in ema_args:
+            ema_args['update_model_with_ema_every']=len(train_loader)
+        ema = EMA(model,**ema_args)
+        update_ema = lambda: ema.update()
+    
     mixed_precision = dtype_map[acc.mixed_precision]
 
     is_testing = test_loader is not None and len(test_loader)
@@ -370,6 +429,8 @@ def train(
                     if NANS_COUNT>0:
                         metrics_render['nan_count'] = NANS_COUNT
                     pbar.set_postfix(loss=f"{batch_loss:.4f}"[:6], **metrics_render)
+                    
+                    update_ema()
                     
                     on_train_batch_end(model,batch,loss,batch_metric)
             
