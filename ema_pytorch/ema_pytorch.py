@@ -78,7 +78,7 @@ class EMA(Module):
         ignore_names: set[str] = set(),
         ignore_startswith_names: set[str] = set(),
         include_online_model = True,                  # set this to False if you do not wish for the online model to be saved along with the ema model (managed externally)
-        allow_different_devices = False,              # if the EMA model is on a different device (say CPU), automatically move the tensor
+        ema_model_device=None,
         use_foreach = False,
         update_model_with_ema_every = None,           # update the model with EMA model weights every number of steps, for better continual learning https://arxiv.org/abs/2406.02596
         update_model_with_ema_beta = 0.,              # amount of model weight to keep when updating to EMA (hare to tortoise)
@@ -110,16 +110,17 @@ class EMA(Module):
 
         self.ema_model = None
         self.forward_method_names = forward_method_names
+        self.allow_different_devices = ema_model_device is not None
 
         if not lazy_init_ema:
-            self.init_ema(ema_model)
+            self.init_ema(ema_model,ema_model_device)
         else:
             assert not exists(ema_model)
 
         # tensor update functions
 
-        self.inplace_copy = partial(inplace_copy, auto_move_device = allow_different_devices, coerce_dtype = coerce_dtype)
-        self.inplace_lerp = partial(inplace_lerp, auto_move_device = allow_different_devices, coerce_dtype = coerce_dtype)
+        self.inplace_copy = partial(inplace_copy, auto_move_device = self.allow_different_devices, coerce_dtype = coerce_dtype)
+        self.inplace_lerp = partial(inplace_lerp, auto_move_device = self.allow_different_devices, coerce_dtype = coerce_dtype)
 
         # updating hyperparameters
 
@@ -143,8 +144,6 @@ class EMA(Module):
 
         # whether to manage if EMA model is kept on a different device
 
-        self.allow_different_devices = allow_different_devices
-
         # whether to coerce dtype when copy or lerp from online to EMA model
 
         self.coerce_dtype = coerce_dtype
@@ -167,7 +166,8 @@ class EMA(Module):
 
     def init_ema(
         self,
-        ema_model: Module | None = None
+        ema_model: Module | None = None,
+        device=None
     ):
         self.ema_model = ema_model
 
@@ -192,7 +192,10 @@ class EMA(Module):
 
         self.parameter_names = {name for name, param in self.ema_model.named_parameters() if torch.is_floating_point(param) or torch.is_complex(param)}
         self.buffer_names = {name for name, buffer in self.ema_model.named_buffers() if torch.is_floating_point(buffer) or torch.is_complex(buffer)}
-
+        
+        if device is not None and self.allow_different_devices:
+            self.ema_model.to(device)
+            
     def add_to_optimizer_post_step_hook(self, optimizer):
         assert hasattr(optimizer, 'register_step_post_hook')
 

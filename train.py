@@ -113,23 +113,27 @@ def train(
     ema_args: dict
         contains arguments passed to the EMA wrapper. If set to `None`, EMA is not used.\n
         **USE EMA WHEN YOU HAVE UNSTABLE TRAINING SETUP (GAN,VAE,DIFFUSION, FLOW).**\n
+        `update_model_with_ema_every`: int | None = None\n
+            Every N batches, blend EMA weights back into the online model. If `None` EMA will be merged to model after each epoch.\n
+            (used for continual learning or "hare-to-tortoise" training).\n
+        `update_every`: int = 10\n
+            Frequency (in steps) to update EMA weights. A value > 1 reduces compute cost.\n
         `beta`: float = 0.9999\n
             Target EMA decay factor. Larger values make updates smoother but slower to adapt.\n
         `update_after_step`: int = 100\n
             Number of optimizer steps to wait before starting EMA updates.\n
             Helps avoid averaging unstable early weights.\n
-        `update_every`: int = 10\n
-            Frequency (in steps) to update EMA weights. A value > 1 reduces compute cost.\n
-        `update_model_with_ema_every`: int | None = None\n
-            Every N steps, blend EMA weights back into the online model. Defaults to epoch size.\n
-            (used for continual learning or "hare-to-tortoise" training).\n
-        `inv_gamma`: float = 1.0\n
-            Inverse gamma factor for EMA warmup schedule. Controls how quickly decay ramps up.\n
         `power`: float = 2/3\n
             Exponent for EMA warmup schedule. Common values:\n
             - 1.0 = simple average\n
             - 2/3 (default) = for very long runs (~1M steps)\n
             - 3/4 = for shorter runs (~100k steps)\n
+        `ema_model_device`: str = None\n
+            Where to store EMA model. If `None` same device as online model is used.\n
+            It can be for example `'cpu'` to decrease memory usage\n
+            (weights will be moved automatically during updates).\n
+        `inv_gamma`: float = 1.0\n
+            Inverse gamma factor for EMA warmup schedule. Controls how quickly decay ramps up.\n
         `min_value`: float = 0.0\n
             Minimum allowed EMA decay rate (clamps the schedule).\n
         `param_or_buffer_names_no_ema`: set[str] = set()\n
@@ -142,9 +146,7 @@ def train(
         `include_online_model`: bool = True\n
             If True, the online model is included inside the EMA module and saved in state_dict.\n
             If False, the online model must be managed externally.\n
-        `allow_different_devices`: bool = False\n
-            If True, EMA and online models can be on different devices \n
-            (weights will be moved automatically during updates).\n
+        
         `use_foreach`: bool = False\n
             If True and supported by PyTorch, uses fused foreach ops (`_foreach_lerp_`, `_foreach_copy_`)\n
             for faster EMA updates.\n
@@ -351,11 +353,12 @@ def train(
         model = model_wrapper(model)
     
     update_ema = lambda : 0
+    update_model_with_ema = lambda : 0
     if ema_args is not None:
-        if 'update_model_with_ema_every' not in ema_args:
-            ema_args['update_model_with_ema_every']=len(train_loader)
         ema = EMA(model,**ema_args)
         update_ema = lambda: ema.update()
+        if 'update_model_with_ema_every' not in ema_args:
+            update_model_with_ema = lambda : ema.update_model_with_ema()
     
     mixed_precision = dtype_map[acc.mixed_precision]
 
@@ -435,6 +438,7 @@ def train(
                     
                     on_train_batch_end(model,batch,loss,batch_metric)
             
+            update_model_with_ema()
             running_time = time.time()-start
             train_time_history.append(running_time)
             running_loss /= len(train_loader)
