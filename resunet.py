@@ -5,6 +5,8 @@ from kemsekov_torch.residual import ResidualBlock
 from kemsekov_torch.common_modules import ConcatTensors
 from kemsekov_torch.attention import EfficientSpatialChannelAttention
 import torch.nn as nn
+from kemsekov_torch.common_modules import resize_tensor
+
 class ListSequential(nn.Module):
     """
     A Sequential container like nn.Sequential, but whose forward
@@ -263,7 +265,10 @@ class ResidualUnet(nn.Module):
         for i,(up, combine) in enumerate(zip(self.up_blocks, self.combine_blocks)):
             # print(x.shape)
             x = up(x)
-            x = combine([x, skips[i]])
+            sk=skips[i]
+            if x.shape!=sk.shape:
+                x=resize_tensor(x,sk.shape[1:])
+            x = combine([x, sk])
         # print(x.shape)
 
         # Final combine with expanded input
