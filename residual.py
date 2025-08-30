@@ -18,6 +18,7 @@ class ResidualBlock(torch.nn.Module):
         normalization : Literal['batch','instance','group','spectral','layer',None] = None,
         dimensions : Literal[1,2,3] = 2,
         is_transpose = False,
+        use_interpolation = True,
         padding_mode : Literal['zeros','constant', 'reflect', 'replicate', 'circular']="zeros",
         device = None,
         disable_residual = False
@@ -167,15 +168,23 @@ class ResidualBlock(torch.nn.Module):
                     device=device
                 )
 
+                
                 conv__ = x_corr_conv_impl
                 # for downsampling use convolutions to extract features
-                if self._is_transpose_conv:
-                    conv_kwargs['output_padding'] = torch.zeros_like(stride_)
-                    for d in range(dimensions):
-                        if stride_[d]!=1:
-                            conv_kwargs['output_padding'][d]=stride_[d] - 1 + compensation[d]
-                    conv_kwargs['output_padding'] = conv_kwargs['output_padding'].tolist()
-                    conv__ = x_corr_conv_impl_T
+                if any([s!=1 for s in stride_]):
+                    if self._is_transpose_conv:
+                        if use_interpolation:
+                            ups = nn.Upsample(scale_factor=tuple(stride_.tolist()))
+                            conv_kwargs['stride']=1
+                            conv__ = lambda **x: nn.Sequential(ups,x_corr_conv_impl(**x))
+                        else:
+                            conv_kwargs['output_padding'] = torch.zeros_like(stride_)
+                            for d in range(dimensions):
+                                if stride_[d]!=1:
+                                    conv_kwargs['output_padding'][d]=stride_[d] - 1 + compensation[d]
+                            conv_kwargs['output_padding'] = conv_kwargs['output_padding'].tolist()
+                            conv__ = x_corr_conv_impl_T
+                
                 convs_.append(conv__(**conv_kwargs))
                 
             conv = torch.nn.ModuleList(convs_)
@@ -266,13 +275,12 @@ class ResidualBlock(torch.nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, out_channels, new_height, new_width).
         """
         out = self.input_act(x)
+        out_linear = self.x_linear(x)
         for convs,norm,act in zip(self.convs,self.norms,self.activation):
             results = [conv(out) for conv in convs]
             out = torch.cat(results, dim=1)
             out = act(norm(out))
             out = self.dropout(out)
-        
-        out_linear = self.x_linear(x)
         
         # out_linear = resize_tensor(x,out.shape[1:])
         return self.out_norm(self.alpha*(out)+out_linear)
@@ -288,15 +296,20 @@ class ResidualBlock(torch.nn.Module):
         Returns:
             ResidualBlock: A new `ResidualBlock` instance configured for transposed convolutions.
         """
+        ks = list(self.kernel_size)
+        for i in range(len(ks)):
+            if ks[i]%2==0:
+                ks[i]-=1
         return ResidualBlock(
             in_channels=self.in_channels,
             out_channels=self.out_channels,
-            kernel_size = self.kernel_size,
+            kernel_size = ks,
             stride = self.stride,
             dilation = self.dilation,
             dropout=self._dropout_p,
             activation = self._activation_func,
             normalization=self.normalization,
+            use_interpolation=True,
             is_transpose=True,
             dimensions=self.dimensions,
             padding_mode="zeros",
