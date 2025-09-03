@@ -116,7 +116,7 @@ def train(
         `update_model_with_ema_every`: int | None = None\n
             Every N batches, blend EMA weights back into the online model. If `None` EMA will be merged to model after each epoch.\n
             (used for continual learning or "hare-to-tortoise" training).\n
-        `update_every`: int = 10\n
+        `update_every`: int = 1\n
             Frequency (in steps) to update EMA weights. A value > 1 reduces compute cost.\n
         `beta`: float = 0.9999\n
             Target EMA decay factor. Larger values make updates smoother but slower to adapt.\n

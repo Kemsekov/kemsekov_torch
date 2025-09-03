@@ -301,13 +301,13 @@ class ResidualUnet(nn.Module):
         """
         
         e = self.expand_input(x)
-        x = e
+        x = e+context[0]
         
         # Down path
         encodings = [e]
         for i,down in enumerate(self.down_blocks):
             # print(x.shape)
-            x = down(x)+context[i]
+            x = down(x)+context[i+1]
             encodings.append(x)
         
         return encodings

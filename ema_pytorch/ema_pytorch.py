@@ -70,7 +70,7 @@ class EMA(Module):
         ema_model: Module | Callable[[], Module] | None = None,             # if your model has lazylinears or other types of non-deepcopyable modules, you can pass in your own ema model
         beta = 0.9999, # exponential moving average factor
         update_after_step = 100, # only after this number of .update() calls will it start updating
-        update_every = 10, # how often to actually update, to save on compute (updates every 10th .update() call)
+        update_every = 1, # how often to actually update, to save on compute (updates every 10th .update() call)
         inv_gamma = 1.0,
         power = 2 / 3,
         min_value = 0.0,
