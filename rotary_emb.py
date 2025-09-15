@@ -21,6 +21,9 @@ class RotEmb(nn.Module):
             "_dummy": (dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor)
         })
         self.base = base
+        self.max_seq_len1d = 1
+        self.max_2d_shape = (1,1)
+        self.max_3d_shape = (1,1,1)
         
     def forward(self,x):
         dims = len(list(x.shape[1:-2]))
@@ -72,6 +75,13 @@ class RotEmb(nn.Module):
             
             # Create position indices
             t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
+            
+            if self.training:
+                self.max_seq_len1d = max(self.max_seq_len1d,seqlen)
+            else:
+                scale=max(1,seqlen/self.max_seq_len1d)
+                t/=scale
+                
             freqs = torch.einsum("i,j->ij", t, inv_freq)  # (seq_len, half_dim)
             
             # Create sinusoidal embeddings
@@ -148,7 +158,15 @@ class RotEmb(nn.Module):
 
             h_pos = torch.arange(H, device=x.device).float()
             w_pos = torch.arange(W, device=x.device).float()
-
+            
+            if self.training:
+                self.max_2d_shape=(max(self.max_2d_shape[0],H),max(self.max_2d_shape[1],W))
+            else:
+                scale_h = max(1,H/self.max_2d_shape[0])
+                scale_w = max(1,W/self.max_2d_shape[1])
+                h_pos/=scale_h
+                w_pos/=scale_w
+            
             sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq))  # (H, D/4)
             cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq))
             sin_w = torch.sin(torch.einsum("i,j->ij", w_pos, inv_freq))  # (W, D/4)
@@ -213,7 +231,16 @@ class RotEmb(nn.Module):
             h_pos = torch.arange(H, device=x.device, dtype=torch.float32)
             w_pos = torch.arange(W, device=x.device, dtype=torch.float32)
             d_pos = torch.arange(D, device=x.device, dtype=torch.float32)
-
+            
+            if self.training:
+                self.max_3d_shape=(max(self.max_3d_shape[0],H),max(self.max_3d_shape[1],W),max(self.max_3d_shape[2],D))
+            else:
+                scale_h = max(1,H/self.max_3d_shape[0])
+                scale_w = max(1,W/self.max_3d_shape[1])
+                scale_d = max(1,D/self.max_3d_shape[2])
+                h_pos/=scale_h
+                w_pos/=scale_w
+                d_pos/=scale_d
             # RoPE sin/cos for each axis
             # *** Note the leading None on sin_h/cos_h so dim0==1 (batch) ***
             sin_h = torch.sin(torch.einsum('i,j->ij', h_pos, inv_freq))[None, :, None, None, None, :]
