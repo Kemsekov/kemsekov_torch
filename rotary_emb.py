@@ -79,7 +79,7 @@ class RotEmb(nn.Module):
     def get_1d_freq(self, x, base : int, seqlen : int, half_dim : int):
         key = str((seqlen,half_dim))
         
-        if key in self.eval_freq_cache_1d:
+        if not self.training and key in self.eval_freq_cache_1d:
             sin,cos = [v.to(x.device) for v in self.eval_freq_cache_1d[key]]
             return sin,cos
         
