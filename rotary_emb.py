@@ -20,6 +20,17 @@ class RotEmb(nn.Module):
         self.freq_cache_3d = torch.jit.annotate(Dict[str, Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]], {
             "_dummy": (dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor)
         })
+        
+        self.eval_freq_cache_1d = torch.jit.annotate(Dict[str, Tuple[torch.Tensor,torch.Tensor]], {
+            "_dummy": (dummy_tensor, dummy_tensor)
+        })
+        self.eval_freq_cache_2d = torch.jit.annotate(Dict[str, Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]], {
+            "_dummy": (dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor)
+        })
+        self.eval_freq_cache_3d = torch.jit.annotate(Dict[str, Tuple[torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor,torch.Tensor]], {
+            "_dummy": (dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor, dummy_tensor)
+        })
+        
         self.base = base
         self.max_seq_len1d = 1
         self.max_2d_shape = (1,1)
@@ -67,27 +78,36 @@ class RotEmb(nn.Module):
 
     def get_1d_freq(self, x, base : int, seqlen : int, half_dim : int):
         key = str((seqlen,half_dim))
+        
+        if key in self.eval_freq_cache_1d:
+            sin,cos = [v.to(x.device) for v in self.eval_freq_cache_1d[key]]
+            return sin,cos
+        
         if key in self.freq_cache_1d:
             sin,cos = [v.to(x.device) for v in self.freq_cache_1d[key]]
+            return sin,cos
+        
+        freq_seq = torch.arange(0, half_dim, dtype=torch.float32, device=x.device)
+        inv_freq = 1.0 / (base ** (freq_seq / half_dim))  # shape: (half_dim,)
+        
+        # Create position indices
+        t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
+        
+        scale = 1
+        if self.training:
+            self.max_seq_len1d = max(self.max_seq_len1d,seqlen)
         else:
-            freq_seq = torch.arange(0, half_dim, dtype=torch.float32, device=x.device)
-            inv_freq = 1.0 / (base ** (freq_seq / half_dim))  # shape: (half_dim,)
+            scale=max(1,seqlen/self.max_seq_len1d)
             
-            # Create position indices
-            t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
-            
-            if self.training:
-                self.max_seq_len1d = max(self.max_seq_len1d,seqlen)
-            else:
-                scale=max(1,seqlen/self.max_seq_len1d)
-                t/=scale
-                
-            freqs = torch.einsum("i,j->ij", t, inv_freq)  # (seq_len, half_dim)
-            
-            # Create sinusoidal embeddings
-            sin = torch.sin(freqs)[None, :, None, :]  # (1, seq_len, 1, half_dim)
-            cos = torch.cos(freqs)[None, :, None, :]
+        freqs = torch.einsum("i,j->ij", t, inv_freq/scale)  # (seq_len, half_dim)
+        
+        # Create sinusoidal embeddings
+        sin = torch.sin(freqs)[None, :, None, :]  # (1, seq_len, 1, half_dim)
+        cos = torch.cos(freqs)[None, :, None, :]
+        if self.training:
             self.freq_cache_1d[key] = sin,cos
+        else:
+            self.eval_freq_cache_1d[key] = sin,cos
         return sin,cos
 
     def apply_2d_rotary_pos_emb(self,x):
@@ -150,34 +170,41 @@ class RotEmb(nn.Module):
 
     def get_2d_freqs(self, x, base : int, H : int, W : int, D_quarter : int):
         key = str((D_quarter,H,W))
+        if not self.training and key in self.freq_cache_2d:
+            sin_h,cos_h,sin_w,cos_w = [v.to(x.device) for v in self.eval_freq_cache_2d[key]]
+            return sin_h,cos_h,sin_w,cos_w
+        
         if key in self.freq_cache_2d:
             sin_h,cos_h,sin_w,cos_w = [v.to(x.device) for v in self.freq_cache_2d[key]]
+            return sin_h,cos_h,sin_w,cos_w
+        freq_seq = torch.arange(0, D_quarter, device=x.device).float()
+        inv_freq = 1.0 / (base ** (freq_seq / D_quarter))
+
+        h_pos = torch.arange(H, device=x.device).float()
+        w_pos = torch.arange(W, device=x.device).float()
+        
+        scale_h=1
+        scale_w=1
+        if self.training:
+            self.max_2d_shape=(max(self.max_2d_shape[0],H),max(self.max_2d_shape[1],W))
         else:
-            freq_seq = torch.arange(0, D_quarter, device=x.device).float()
-            inv_freq = 1.0 / (base ** (freq_seq / D_quarter))
+            scale_h = max(1,H/self.max_2d_shape[0])
+            scale_w = max(1,W/self.max_2d_shape[1])
+        
+        sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq/scale_h))  # (H, D/4)
+        cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq/scale_h))
+        sin_w = torch.sin(torch.einsum("i,j->ij", w_pos, inv_freq/scale_w))  # (W, D/4)
+        cos_w = torch.cos(torch.einsum("i,j->ij", w_pos, inv_freq/scale_w))
 
-            h_pos = torch.arange(H, device=x.device).float()
-            w_pos = torch.arange(W, device=x.device).float()
-            
-            if self.training:
-                self.max_2d_shape=(max(self.max_2d_shape[0],H),max(self.max_2d_shape[1],W))
-            else:
-                scale_h = max(1,H/self.max_2d_shape[0])
-                scale_w = max(1,W/self.max_2d_shape[1])
-                h_pos/=scale_h
-                w_pos/=scale_w
-            
-            sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq))  # (H, D/4)
-            cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq))
-            sin_w = torch.sin(torch.einsum("i,j->ij", w_pos, inv_freq))  # (W, D/4)
-            cos_w = torch.cos(torch.einsum("i,j->ij", w_pos, inv_freq))
-
-            # Correct shapes for broadcasting: (1, H, 1, 1, D/4) and (1, 1, W, 1, D/4)
-            sin_h = sin_h[None, :, None, None, :]  # (1, H, 1, 1, D/4)
-            cos_h = cos_h[None, :, None, None, :]
-            sin_w = sin_w[None, None, :, None, :]  # (1, 1, W, 1, D/4)
-            cos_w = cos_w[None, None, :, None, :]
+        # Correct shapes for broadcasting: (1, H, 1, 1, D/4) and (1, 1, W, 1, D/4)
+        sin_h = sin_h[None, :, None, None, :]  # (1, H, 1, 1, D/4)
+        cos_h = cos_h[None, :, None, None, :]
+        sin_w = sin_w[None, None, :, None, :]  # (1, 1, W, 1, D/4)
+        cos_w = cos_w[None, None, :, None, :]
+        if self.training:
             self.freq_cache_2d[key] = sin_h,cos_h,sin_w,cos_w
+        else:
+            self.eval_freq_cache_2d[key] = sin_h,cos_h,sin_w,cos_w
         return sin_h,cos_h,sin_w,cos_w
 
     def apply_3d_rotary_pos_emb(self,x):
@@ -221,42 +248,52 @@ class RotEmb(nn.Module):
 
     def get_3d_freqs(self, x, base : int, B : int, H : int, W : int, D : int, d_quarter : int):
         key = str((B, H, W, D, d_quarter))
+        if not self.training and key in self.eval_freq_cache_3d:
+            sin_h,cos_h,sin_w,cos_w,sin_d,cos_d = [v.to(x.device) for v in self.eval_freq_cache_3d[key]]
+            return sin_h,cos_h,sin_w,cos_w,sin_d,cos_d
+        
         if key in self.freq_cache_3d:
             sin_h,cos_h,sin_w,cos_w,sin_d,cos_d = [v.to(x.device) for v in self.freq_cache_3d[key]]
+            return sin_h,cos_h,sin_w,cos_w,sin_d,cos_d
+        
+        freq_seq = torch.arange(d_quarter, device=x.device, dtype=torch.float32)
+        inv_freq = 1.0 / (base ** (freq_seq / d_quarter))
+
+        # Position indices
+        h_pos = torch.arange(H, device=x.device, dtype=torch.float32)
+        w_pos = torch.arange(W, device=x.device, dtype=torch.float32)
+        d_pos = torch.arange(D, device=x.device, dtype=torch.float32)
+        
+        
+        scale_h=1
+        scale_w=1
+        scale_d=1
+        if self.training:
+            self.max_3d_shape=(max(self.max_3d_shape[0],H),max(self.max_3d_shape[1],W),max(self.max_3d_shape[2],D))
         else:
-            freq_seq = torch.arange(d_quarter, device=x.device, dtype=torch.float32)
-            inv_freq = 1.0 / (base ** (freq_seq / d_quarter))
-
-            # Position indices
-            h_pos = torch.arange(H, device=x.device, dtype=torch.float32)
-            w_pos = torch.arange(W, device=x.device, dtype=torch.float32)
-            d_pos = torch.arange(D, device=x.device, dtype=torch.float32)
+            scale_h = max(1,H/self.max_3d_shape[0])
+            scale_w = max(1,W/self.max_3d_shape[1])
+            scale_d = max(1,D/self.max_3d_shape[2])
             
-            if self.training:
-                self.max_3d_shape=(max(self.max_3d_shape[0],H),max(self.max_3d_shape[1],W),max(self.max_3d_shape[2],D))
-            else:
-                scale_h = max(1,H/self.max_3d_shape[0])
-                scale_w = max(1,W/self.max_3d_shape[1])
-                scale_d = max(1,D/self.max_3d_shape[2])
-                h_pos/=scale_h
-                w_pos/=scale_w
-                d_pos/=scale_d
-            # RoPE sin/cos for each axis
-            # *** Note the leading None on sin_h/cos_h so dim0==1 (batch) ***
-            sin_h = torch.sin(torch.einsum('i,j->ij', h_pos, inv_freq))[None, :, None, None, None, :]
-            cos_h = torch.cos(torch.einsum('i,j->ij', h_pos, inv_freq))[None, :, None, None, None, :]
-            sin_w = torch.sin(torch.einsum('i,j->ij', w_pos, inv_freq))[None, None, :, None, None, :]
-            cos_w = torch.cos(torch.einsum('i,j->ij', w_pos, inv_freq))[None, None, :, None, None, :]
-            sin_d = torch.sin(torch.einsum('i,j->ij', d_pos, inv_freq))[None, None, None, :, None, :]
-            cos_d = torch.cos(torch.einsum('i,j->ij', d_pos, inv_freq))[None, None, None, :, None, :]
+        # RoPE sin/cos for each axis
+        # *** Note the leading None on sin_h/cos_h so dim0==1 (batch) ***
+        sin_h = torch.sin(torch.einsum('i,j->ij', h_pos, inv_freq/scale_h))[None, :, None, None, None, :]
+        cos_h = torch.cos(torch.einsum('i,j->ij', h_pos, inv_freq/scale_h))[None, :, None, None, None, :]
+        sin_w = torch.sin(torch.einsum('i,j->ij', w_pos, inv_freq/scale_w))[None, None, :, None, None, :]
+        cos_w = torch.cos(torch.einsum('i,j->ij', w_pos, inv_freq/scale_w))[None, None, :, None, None, :]
+        sin_d = torch.sin(torch.einsum('i,j->ij', d_pos, inv_freq/scale_d))[None, None, None, :, None, :]
+        cos_d = torch.cos(torch.einsum('i,j->ij', d_pos, inv_freq/scale_d))[None, None, None, :, None, :]
 
-            # Expand to match batch dimension
-            sin_h = sin_h.expand(B, -1, -1, -1, -1, -1)
-            cos_h = cos_h.expand(B, -1, -1, -1, -1, -1)
-            sin_w = sin_w.expand(B, -1, -1, -1, -1, -1)
-            cos_w = cos_w.expand(B, -1, -1, -1, -1, -1)
-            sin_d = sin_d.expand(B, -1, -1, -1, -1, -1)
-            cos_d = cos_d.expand(B, -1, -1, -1, -1, -1)
+        # Expand to match batch dimension
+        sin_h = sin_h.expand(B, -1, -1, -1, -1, -1)
+        cos_h = cos_h.expand(B, -1, -1, -1, -1, -1)
+        sin_w = sin_w.expand(B, -1, -1, -1, -1, -1)
+        cos_w = cos_w.expand(B, -1, -1, -1, -1, -1)
+        sin_d = sin_d.expand(B, -1, -1, -1, -1, -1)
+        cos_d = cos_d.expand(B, -1, -1, -1, -1, -1)
+        if self.training:
             self.freq_cache_3d[key] = sin_h,cos_h,sin_w,cos_w,sin_d,cos_d
-            
+        else:
+            self.eval_freq_cache_3d[key] = sin_h,cos_h,sin_w,cos_w,sin_d,cos_d
+                
         return sin_h,cos_h,sin_w,cos_w,sin_d,cos_d
