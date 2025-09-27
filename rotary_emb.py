@@ -93,11 +93,11 @@ class RotEmb(nn.Module):
         # Create position indices
         t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
         
-        scale = 1
+        scale = 1.0
         if self.training:
             self.max_seq_len1d = max(self.max_seq_len1d,seqlen)
         else:
-            scale=max(1,seqlen/self.max_seq_len1d)
+            scale=max(1.0,seqlen/self.max_seq_len1d)
             
         freqs = torch.einsum("i,j->ij", t, inv_freq/scale)  # (seq_len, half_dim)
         
@@ -183,13 +183,13 @@ class RotEmb(nn.Module):
         h_pos = torch.arange(H, device=x.device).float()
         w_pos = torch.arange(W, device=x.device).float()
         
-        scale_h=1
-        scale_w=1
+        scale_h=1.0
+        scale_w=1.0
         if self.training:
             self.max_2d_shape=(max(self.max_2d_shape[0],H),max(self.max_2d_shape[1],W))
         else:
-            scale_h = max(1,H/self.max_2d_shape[0])
-            scale_w = max(1,W/self.max_2d_shape[1])
+            scale_h = max(1.0,H/self.max_2d_shape[0])
+            scale_w = max(1.0,W/self.max_2d_shape[1])
         
         sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq/scale_h))  # (H, D/4)
         cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq/scale_h))
@@ -265,15 +265,15 @@ class RotEmb(nn.Module):
         d_pos = torch.arange(D, device=x.device, dtype=torch.float32)
         
         
-        scale_h=1
-        scale_w=1
-        scale_d=1
+        scale_h=1.0
+        scale_w=1.0
+        scale_d=1.0
         if self.training:
             self.max_3d_shape=(max(self.max_3d_shape[0],H),max(self.max_3d_shape[1],W),max(self.max_3d_shape[2],D))
         else:
-            scale_h = max(1,H/self.max_3d_shape[0])
-            scale_w = max(1,W/self.max_3d_shape[1])
-            scale_d = max(1,D/self.max_3d_shape[2])
+            scale_h = max(1.0,H/self.max_3d_shape[0])
+            scale_w = max(1.0,W/self.max_3d_shape[1])
+            scale_d = max(1.0,D/self.max_3d_shape[2])
             
         # RoPE sin/cos for each axis
         # *** Note the leading None on sin_h/cos_h so dim0==1 (batch) ***

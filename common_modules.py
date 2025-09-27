@@ -477,3 +477,106 @@ class GradientReversal(nn.Module):
 
     def forward(self, x):
         return _GradientReversalFunction.apply(x, self.lambda_)
+
+
+import torch.utils.checkpoint as checkpoint
+class OffloadWrapper(nn.Module):
+    def __init__(
+        self, 
+        base_module,        
+        offload_device='cpu', 
+        compute_device='cuda',
+    ) -> None:
+        super().__init__()
+        self.base_module=base_module
+        self.offload_device=offload_device
+        self.compute_device=compute_device
+        
+    def forward(self,x):
+        self.base_module.to(self.compute_device, non_blocking=True)
+        x = self.base_module(x)
+        self.base_module.to(self.offload_device, non_blocking=True)
+        return x
+
+class CheapSequential(nn.Module):
+    """
+    A memory-efficient sequential container that allows for automatic checkpointing 
+    and offloading of intermediate modules to reduce GPU memory usage.
+
+    This module is similar to `torch.nn.Sequential` but designed for very large
+    models where holding all modules in GPU memory simultaneously may be impractical. 
+    Each submodule is wrapped in an `OffloadWrapper` that temporarily moves the 
+    module to the GPU for computation and offloads it back to CPU after the forward 
+    pass. Optionally, gradient checkpointing is applied to save memory during backpropagation.
+
+    Parameters
+    ----------
+    modules : list[nn.Module]
+        A list of PyTorch modules that form the sequential model. Each module 
+        will be individually wrapped for offloading.
+
+    offload_device : str or torch.device, default='cpu'
+        The device to offload modules to after computation. Typically 'cpu'.
+
+    compute_device : str or torch.device, default='cuda'
+        The device to perform computation on (forward pass). Typically 'cuda'.
+
+    Attributes
+    ----------
+    m : nn.ModuleList
+        List of `OffloadWrapper` modules, each handling its own offloading.
+        
+    compute_device : torch.device
+        The device used to perform forward computation.
+
+    Methods
+    -------
+    forward(input)
+        Performs a forward pass through the sequence of modules. Each module is
+        temporarily moved to the `compute_device` for computation, and offloaded
+        to `offload_device` after use. If gradients are enabled, checkpointing is 
+        applied for memory efficiency.
+
+    Example
+    -------
+    >>> import torch
+    >>> import torch.nn as nn
+    >>> from my_module import CheapSequential
+    >>> 
+    >>> layers = [nn.Linear(1024, 1024) for _ in range(5)]
+    >>> model = CheapSequential(layers, offload_device='cpu', compute_device='cuda')
+    >>> x = torch.randn(2, 1024, device='cuda')
+    >>> y = model(x)
+    >>> y.shape
+    torch.Size([2, 1024])
+    
+    Notes
+    -----
+    - The `forward` method must not change the device of any tensor that requires 
+      gradients in the middle of backpropagation. Checkpointing moves inputs through 
+      submodules without retaining the module on GPU.
+    - Moving submodules inside `forward` may break autograd if parameters are moved 
+      before backward finishes. The current implementation works with checkpointing.
+    - This class is mainly useful for very large models where GPU memory is limited.
+    """
+    def __init__(
+        self,
+        modules,
+        offload_device='cpu', 
+        compute_device='cuda',
+    ):
+        super().__init__()
+        self.m=nn.ModuleList([
+            OffloadWrapper(m,offload_device,compute_device) 
+            for m in modules
+        ]).to(offload_device, non_blocking=True)
+        self.compute_device=compute_device
+        
+    def forward(self, input):
+        x = input.to(self.compute_device)
+        for m in self.m:
+            if torch.is_grad_enabled():
+                x = checkpoint.checkpoint(m,x,use_reentrant=False)
+            else:
+                x=m(x)
+        return x

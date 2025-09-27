@@ -118,5 +118,9 @@ def profile_function(func, n=1):
     print("Mean performance stats along runs")
     for p in stats:
         print(p, '\t', stats[p])
-
+    try:
+        gc.collect()
+        torch.cuda.empty_cache()
+    except:
+        pass
     return last_result, stats
