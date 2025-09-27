@@ -573,10 +573,11 @@ class CheapSequential(nn.Module):
         self.compute_device=compute_device
         
     def forward(self, input):
+        input_device = input.device
         x = input.to(self.compute_device)
         for m in self.m:
             if torch.is_grad_enabled():
                 x = checkpoint.checkpoint(m,x,use_reentrant=False)
             else:
                 x=m(x)
-        return x
+        return x.to(input_device)
