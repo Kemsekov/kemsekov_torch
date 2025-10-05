@@ -369,7 +369,7 @@ class MultiHeadLinearAttention(nn.Module):
         self.embed_dim = embed_dim
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
-        self.feature_dropout = nn.Dropout(dropout, inplace=True)
+        self.feature_dropout = nn.Dropout(float(dropout), inplace=True)
         self.add_zero_token=add_zero_token
         
         self.zero_token_K = nn.Parameter(torch.zeros(1, 1, embed_dim,device=device), requires_grad=False)

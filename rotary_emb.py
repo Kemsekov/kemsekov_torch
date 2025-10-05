@@ -8,7 +8,11 @@ class RotEmb(nn.Module):
     (B, (...dims...), Heads, D)
     
     """
-    def __init__(self,base : int=10000):
+    def __init__(self,base : int=10000,scale_interpolation_power:float=1.0):
+        """
+        base: base frequency used for ROPE
+        scale_interpolation_power: powers scale on inference. Common values are 1 or 0.5
+        """
         super().__init__()
         dummy_tensor = torch.zeros(1)
         self.freq_cache_1d = torch.jit.annotate(Dict[str, Tuple[torch.Tensor,torch.Tensor]], {
@@ -35,6 +39,7 @@ class RotEmb(nn.Module):
         self.max_seq_len1d = 1
         self.max_2d_shape = (1,1)
         self.max_3d_shape = (1,1,1)
+        self.scale_interpolation_power=float(scale_interpolation_power)
         
     def forward(self,x):
         dims = len(list(x.shape[1:-2]))
@@ -100,7 +105,7 @@ class RotEmb(nn.Module):
             self.max_seq_len1d = max(self.max_seq_len1d,seqlen)
         else:
             scale=max(1.0,seqlen/self.max_seq_len1d)
-            
+            scale=scale**self.scale_interpolation_power
         freqs = torch.einsum("i,j->ij", t, inv_freq/scale)  # (seq_len, half_dim)
         
         # Create sinusoidal embeddings
@@ -192,6 +197,8 @@ class RotEmb(nn.Module):
         else:
             scale_h = max(1.0,H/self.max_2d_shape[0])
             scale_w = max(1.0,W/self.max_2d_shape[1])
+            scale_w=scale_w**self.scale_interpolation_power
+            scale_h=scale_h**self.scale_interpolation_power
         
         sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq/scale_h))  # (H, D/4)
         cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq/scale_h))
@@ -266,7 +273,6 @@ class RotEmb(nn.Module):
         w_pos = torch.arange(W, device=x.device, dtype=torch.float32)
         d_pos = torch.arange(D, device=x.device, dtype=torch.float32)
         
-        
         scale_h=1.0
         scale_w=1.0
         scale_d=1.0
@@ -276,6 +282,9 @@ class RotEmb(nn.Module):
             scale_h = max(1.0,H/self.max_3d_shape[0])
             scale_w = max(1.0,W/self.max_3d_shape[1])
             scale_d = max(1.0,D/self.max_3d_shape[2])
+            scale_h=scale_h**self.scale_interpolation_power
+            scale_w=scale_w**self.scale_interpolation_power
+            scale_d=scale_d**self.scale_interpolation_power
             
         # RoPE sin/cos for each axis
         # *** Note the leading None on sin_h/cos_h so dim0==1 (batch) ***
@@ -286,13 +295,7 @@ class RotEmb(nn.Module):
         sin_d = torch.sin(torch.einsum('i,j->ij', d_pos, inv_freq/scale_d))[None, None, None, :, None, :]
         cos_d = torch.cos(torch.einsum('i,j->ij', d_pos, inv_freq/scale_d))[None, None, None, :, None, :]
 
-        # Expand to match batch dimension
-        sin_h = sin_h.expand(B, -1, -1, -1, -1, -1)
-        cos_h = cos_h.expand(B, -1, -1, -1, -1, -1)
-        sin_w = sin_w.expand(B, -1, -1, -1, -1, -1)
-        cos_w = cos_w.expand(B, -1, -1, -1, -1, -1)
-        sin_d = sin_d.expand(B, -1, -1, -1, -1, -1)
-        cos_d = cos_d.expand(B, -1, -1, -1, -1, -1)
+
         if self.training:
             self.freq_cache_3d[key] = sin_h,cos_h,sin_w,cos_w,sin_d,cos_d
         else:

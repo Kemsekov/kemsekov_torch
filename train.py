@@ -675,24 +675,24 @@ dtype_map = {
     'int16': torch.int16,
 }
 
-def load_best_checkpoint(model,base_path,log = True):
-    return load_checkpoint(model,base_path,-1,log)
+def load_best_checkpoint(model,base_path,log = True,device_map=None):
+    return load_checkpoint(model,base_path,-1,log,device_map=device_map)
 
-def load_last_checkpoint(model,base_path,log=True):
+def load_last_checkpoint(model,base_path,log=True,device_map=None):
     checkpoint = os.path.join(base_path,'last','state')
     if log:
         print("loading",checkpoint)
-    model = load_checkpoint_and_dispatch(model,checkpoint)
+    model = load_checkpoint_and_dispatch(model,checkpoint,device_map=device_map)
     return model
 
-def load_checkpoint(model,base_path,checkpoint_index,log=True):
+def load_checkpoint(model,base_path,checkpoint_index,log=True,device_map=None):
     checkpoints = os.path.join(base_path,'checkpoints')
     c = os.listdir(checkpoints)
     best = sorted(c,key=lambda x: int(x.split('-')[-1]))[checkpoint_index]
     checkpoint = os.path.join(checkpoints,best,'state')
     if log:
         print("loading",checkpoint)
-    model = load_checkpoint_and_dispatch(model,checkpoint)
+    model = load_checkpoint_and_dispatch(model,checkpoint,device_map=device_map)
     return model
 
 from sklearn.model_selection import train_test_split
