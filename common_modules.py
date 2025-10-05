@@ -381,7 +381,7 @@ def wrap_submodules(module,module_type,wrapper):
         if not hasattr(module,d): continue
         el = getattr(module,d)
         if isinstance(el,module_type):
-            setattr(module,d,wrap_submodules(el,wrapper))
+            setattr(module,d,wrapper(el))
             continue
         if isinstance(el,torch.nn.Module):
             wrap_submodules(el,module_type,wrapper)
@@ -493,9 +493,12 @@ class OffloadWrapper(nn.Module):
         self.compute_device=compute_device
         
     def forward(self,x):
-        self.base_module.to(self.compute_device, non_blocking=True)
+        not_same = not self.compute_device==self.offload_device
+        if not_same:
+            self.base_module.to(self.compute_device, non_blocking=True)
         x = self.base_module(x)
-        self.base_module.to(self.offload_device, non_blocking=True)
+        if not_same:
+            self.base_module.to(self.offload_device, non_blocking=True)
         return x
 
 class CheapSequential(nn.Module):
@@ -577,7 +580,11 @@ class CheapSequential(nn.Module):
         x = input.to(self.compute_device)
         for m in self.m:
             if torch.is_grad_enabled():
-                x = checkpoint.checkpoint(m,x,use_reentrant=False)
+                def _run(input_tensor, module=m):
+                    # clone to protect against in-place ops inside module
+                    return module(input_tensor.clone())
+
+                x = checkpoint.checkpoint(_run,x,use_reentrant=False)
             else:
-                x=m(x)
+                x = m(x)
         return x.to(input_device)

@@ -38,6 +38,8 @@ class RotEmb(nn.Module):
         
     def forward(self,x):
         dims = len(list(x.shape[1:-2]))
+        if dims==0: return x
+        
         if dims==1:
             x = self.apply_1d_rotary_pos_emb(x)
         elif dims==2:
@@ -170,7 +172,7 @@ class RotEmb(nn.Module):
 
     def get_2d_freqs(self, x, base : int, H : int, W : int, D_quarter : int):
         key = str((D_quarter,H,W))
-        if not self.training and key in self.freq_cache_2d:
+        if not self.training and key in self.eval_freq_cache_2d:
             sin_h,cos_h,sin_w,cos_w = [v.to(x.device) for v in self.eval_freq_cache_2d[key]]
             return sin_h,cos_h,sin_w,cos_w
         
