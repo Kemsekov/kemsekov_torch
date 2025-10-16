@@ -1,5 +1,6 @@
 import gc
 import os
+from typing import List, Dict
 import accelerate
 from matplotlib import pyplot as plt
 import torch
@@ -12,6 +13,7 @@ import time
 import tabulate
 from ema_pytorch.ema_pytorch import EMA
 
+
 def train(
         model,
         train_loader,
@@ -21,13 +23,13 @@ def train(
         load_checkpoint_dir = None,
         num_epochs = 100,
         checkpoints_count = 1,
-        save_on_metric_improve = 'any',
+        save_on_metric_improve : str | List[str] = 'any',
         optimizer = None,
         scheduler = None,
         model_wrapper = None,
         accelerator : Accelerator = None,
-        accelerate_args : dict = None,
-        ema_args : dict = None,
+        accelerate_args : None | Dict = None,
+        ema_args :  None | Dict = None,
         gradient_clipping_max_norm = None,
         tie_weights=False, 
         cast_batch_to_mixed_precision_dtype = False,

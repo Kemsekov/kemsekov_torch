@@ -1,18 +1,30 @@
+from typing import Iterator
 import torch
 import torch.distributed as dist
 
-def muon_optimizer(
-    model_head : torch.nn.Module, 
-    model_body : torch.nn.Module, 
-    model_embed : torch.nn.Module,
-    lr=3e-4, betas=(0.90, 0.95), weight_decay=0.01
+def muon_optimizer_dist(
+    muon_parameters : Iterator[torch.nn.Parameter], 
+    adamw_parameters : Iterator[torch.nn.Parameter], 
+    lr=3e-4, weight_decay=0.01, betas=(0.90, 0.95)
 ):
     """
-    Analog of AdamW optimizer
+    Simplified instantiation of distributed MUON optimizer.
+    
+    Parameters:
+        muon_parameters: 
+            Weights that are suitable for muon. \n
+            Aka body of LLM (except embedding and classification layers). \n
+            Convolution layers, etc.
+        awamw_parameters:
+            Weights, that are not suitable for muon, 
+            like first/last layers of model, classification/embedding layers, etc
     """
-    hidden_weights = [p for p in model_body.parameters() if p.ndim >= 2]
-    hidden_gains_biases = [p for p in model_body.parameters() if p.ndim < 2]
-    nonhidden_params = [*model_head.parameters(), *model_embed.parameters()]
+    muon_parameters=iter(muon_parameters)
+    adamw_parameters=iter(adamw_parameters)
+    
+    hidden_weights = [p for p in muon_parameters if p.ndim >= 2]
+    hidden_gains_biases = [p for p in muon_parameters if p.ndim < 2]
+    nonhidden_params = [p for p in adamw_parameters]
     param_groups = [
         dict(params=hidden_weights, use_muon=True,
             lr=0.02, weight_decay=0.01),
@@ -21,6 +33,40 @@ def muon_optimizer(
     ]
     optimizer = MuonWithAuxAdam(param_groups)
     return optimizer
+
+
+def muon_optimizer(
+    muon_parameters : Iterator[torch.nn.Parameter], 
+    adamw_parameters : Iterator[torch.nn.Parameter], 
+    lr=3e-4, weight_decay=0.01, betas=(0.90, 0.95)
+):
+    """
+    Simplified instantiation of MUON optimizer.
+    
+    Parameters:
+        muon_parameters: 
+            Weights that are suitable for muon. \n
+            Aka body of LLM (except embedding and classification layers). \n
+            Convolution layers, etc.
+        awamw_parameters:
+            Weights, that are not suitable for muon, 
+            like first/last layers of model, classification/embedding layers, etc
+    """
+    muon_parameters=iter(muon_parameters)
+    adamw_parameters=iter(adamw_parameters)
+    
+    hidden_weights = [p for p in muon_parameters if p.ndim >= 2]
+    hidden_gains_biases = [p for p in muon_parameters if p.ndim < 2]
+    nonhidden_params = [p for p in adamw_parameters]
+    param_groups = [
+        dict(params=hidden_weights, use_muon=True,
+            lr=0.02, weight_decay=0.01),
+        dict(params=hidden_gains_biases+nonhidden_params, use_muon=False,
+            lr=lr, betas=betas, weight_decay=weight_decay),
+    ]
+    optimizer = SingleDeviceMuonWithAuxAdam(param_groups)
+    return optimizer
+
 
 def zeropower_via_newtonschulz5(G, steps: int):
     """
