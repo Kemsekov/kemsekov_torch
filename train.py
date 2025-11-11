@@ -503,7 +503,6 @@ def train(
                 print(tabulate.tabulate(table_data, headers=headers, tablefmt='pretty'))
 
             # print('save')
-            acc.save_state(state_dir)
             
             # create history plots in plots folder
             # Update to save loss and metric plots in separate files and only for the last epoch
@@ -561,6 +560,7 @@ def train(
             )
             
             if test_improvements or (not is_testing and train_improvements):
+                acc.save_state(state_dir)
                 best_test_metric = test_metric
                 if acc.is_main_process:
                     # keep total count of saved checkpoints constant
