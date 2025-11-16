@@ -21,7 +21,8 @@ class ResidualBlock(torch.nn.Module):
         use_interpolation = True,
         padding_mode : Literal['zeros','constant', 'reflect', 'replicate', 'circular']="zeros",
         device = None,
-        disable_residual = False
+        disable_residual = False,
+        init_at_zero=True
     ):
         """
         Creates general-use residual block.
@@ -39,9 +40,9 @@ class ResidualBlock(torch.nn.Module):
         * padding_mode: what padding to use in convolutions, by default will use `'replicate'` when possible
         * device: where to put weights of intialized module
         * disable_residual: converts given block to non-resiual
+        * init_at_zero: makes residual connection initialize with zero-values learnable alpha parameter, so at init given block is identity function
         """
         super().__init__()
-        
         self.__init_device = device
         
         if dropout==0:
@@ -49,6 +50,7 @@ class ResidualBlock(torch.nn.Module):
         else:
             self.dropout = [nn.Dropout1d,nn.Dropout2d,nn.Dropout3d][dimensions-1](dropout)
         
+        self.init_at_zero=init_at_zero
         x_corr_conv_impl = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         x_corr_conv_impl_T = [nn.ConvTranspose1d,nn.ConvTranspose2d,nn.ConvTranspose3d][dimensions-1]
             
@@ -212,7 +214,8 @@ class ResidualBlock(torch.nn.Module):
             self.x_linear = ConstModule()
             self.alpha = torch.tensor(1.0,device=device)
         else:
-            self.alpha = torch.nn.Parameter(torch.tensor(0.0,device=device))
+            alpha = 0.0 if init_at_zero else 1.0
+            self.alpha = torch.nn.Parameter(torch.tensor(alpha,device=device))
         self.out_norm = norm_impl(out_channels[-1])
         self.input_act = activation()
     @torch.jit.ignore
@@ -321,5 +324,6 @@ class ResidualBlock(torch.nn.Module):
             dimensions=self.dimensions,
             padding_mode="zeros",
             device=self.__init_device,
-            disable_residual=self.disable_residual
+            disable_residual=self.disable_residual,
+            init_at_zero=self.init_at_zero
         )

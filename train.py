@@ -347,7 +347,8 @@ def train(
             else:
                 acc.backward(loss)
         return not is_nan
-    
+    if checkpoints_count==0:
+        print("WARINING!!! (checkpoints_count==0) No checkpoints will be saved!")
     if tie_weights:
         model.tie_weights()
             
@@ -559,7 +560,7 @@ def train(
                 (isinstance(save_on_metric_improve, list) and all(train_metric.get(m, -1e10) >= best_train_metric.get(m, -1e10) for m in save_on_metric_improve))
             )
             
-            if test_improvements or (not is_testing and train_improvements):
+            if checkpoints_count>0 and (test_improvements or (not is_testing and train_improvements)):
                 acc.save_state(state_dir)
                 best_test_metric = test_metric
                 if acc.is_main_process:
