@@ -576,7 +576,7 @@ def train(
             if checkpoints_count>0 and (test_improvements or (not is_testing and train_improvements)):
                 acc.save_state(state_dir)
                 best_test_metric = test_metric
-                if acc.is_main_process:
+                if acc.is_main_process and checkpoints_count>1:
                     # keep total count of saved checkpoints constant
                     checkpoints = os.listdir(checkpoints_dir)
                     checkpoints=sorted(checkpoints,key=lambda x: int(x.split('-')[-1]))
