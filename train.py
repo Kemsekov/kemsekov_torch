@@ -334,7 +334,7 @@ def train(
 
     if acc.is_main_process:
       try:
-          _print_blue("trying to capture model architecture...")
+          _print_blue("Trying to capture model architecture...")
           model_script = torch.jit.script(model)
           model_save_path=os.path.join(save_results_dir,"model.pt")
           model_script.save(model_save_path)
