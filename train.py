@@ -13,6 +13,17 @@ import time
 import tabulate
 from ema_pytorch.ema_pytorch import EMA
 
+def _print_red(text: str) -> None:
+    """Print bold red text."""
+    print(f"\033[1;31m{text}\033[0m")
+
+def _print_green(text: str) -> None:
+    """Print bold green text."""
+    print(f"\033[1;32m{text}\033[0m")
+
+def _print_blue(text: str) -> None:
+    """Print bold blue text."""
+    print(f"\033[1;34m{text}\033[0m")
 
 def train(
         model,
@@ -234,7 +245,8 @@ def train(
     5. **Checkpointing and Plotting:** Saves the model checkpoint if the test metric improves. At the end of training,
        generates and saves loss and metric plots in the `plots` folder.
     """
-    
+    if checkpoints_count==0:
+        _print_red("WARNING!!! (checkpoints_count==0) No checkpoints will be saved!")
     # only if we use deepspeed
     if  accelerate_args is not None and 'deepspeed_plugins' in accelerate_args.keys():
         optimizer = accelerate.utils.DummyOptim(model.parameters())
@@ -243,7 +255,7 @@ def train(
     if optimizer is None:
         optimizer = torch.optim.AdamW(model.parameters())
     total_parameters = sum([v.numel() for v in model.parameters()])/1000/1000
-    print(f"Total model parameters {total_parameters:0.2f} M")
+    _print_blue(f"Total model parameters {total_parameters:0.2f} M")
     save_last_dir = os.path.join(save_results_dir,"last")
     plot_dir = os.path.join(save_last_dir, "plots")
     report_path = os.path.join(save_last_dir,"report.json")
@@ -273,7 +285,7 @@ def train(
     
     if accelerate_args is None: accelerate_args = {}
     acc = accelerator if accelerator is not None else Accelerator(**accelerate_args)
-    print("Using device",acc.device)
+    _print_blue("Using device "+str(acc.device))
     
     if load_checkpoint_dir is not None and os.path.exists(load_checkpoint_dir):
         try:
@@ -295,9 +307,10 @@ def train(
                     # from each metric history metric get best metrics
                     load_best_metric_from_history(best_train_metric, train_metric_history)
                     load_best_metric_from_history(best_test_metric, test_metric_history)
+            _print_green("Loaded training history")
         except Exception as e:
-            print("Failed to training history",e)
-            print("Ignoring training history loading...")
+            _print_red("Failed to load training history\n"+str(e))
+            _print_blue("Ignoring training history loading...")
         if start_epoch>=num_epochs:
             return model
     
@@ -314,20 +327,20 @@ def train(
         try:
             load_state_dir = os.path.join(load_checkpoint_dir,"state")
             acc.load_state(load_state_dir)
-            print(f"loaded training state from {load_state_dir}")
+            _print_green(f"Loaded training state from {load_state_dir}")
         except Exception as e:
-            print("Failed to load state with error",e)
-            print("Ignoring state loading...")
+            _print_red("Failed to load state with error\n"+str(e))
+            _print_blue("Ignoring state loading...")
 
     if acc.is_main_process:
       try:
-          print("trying to capture model architecture...")
+          _print_blue("trying to capture model architecture...")
           model_script = torch.jit.script(model)
           model_save_path=os.path.join(save_results_dir,"model.pt")
           model_script.save(model_save_path)
-          print(f"Saved model architecture at {model_save_path}. You can torch.load it and update it's weights with checkpoint")
+          _print_green(f"Saved model architecture at {model_save_path}. You can torch.load it and update it's weights with checkpoint")
       except Exception as e:
-          print(f"failed to compile model: {e}")
+          print(f"Failed to compile model:\n{e}")
           model_script = None
     model=model_acc
 
@@ -347,8 +360,7 @@ def train(
             else:
                 acc.backward(loss)
         return not is_nan
-    if checkpoints_count==0:
-        print("WARINING!!! (checkpoints_count==0) No checkpoints will be saved!")
+    
     if tie_weights:
         model.tie_weights()
             
@@ -358,6 +370,7 @@ def train(
     update_ema = lambda : 0
     update_model_with_ema = lambda : 0
     if ema_args is not None:
+        _print_green("Using EMA for training")
         ema = EMA(model,**ema_args)
         update_ema = lambda: ema.update()
         if 'update_model_with_ema_every' not in ema_args:
@@ -579,15 +592,16 @@ def train(
                     checkpoints_dir_with_epoch=os.path.join(checkpoints_dir,f"epoch-{epoch+1}")
                     # for each improvement save training state and model
                     # copy current saved state from last to checkpoint
-                    print(f"saved epoch-{epoch+1}")
+                    _print_green(f"saved epoch-{epoch+1}")
                     shutil.copytree(save_last_dir, checkpoints_dir_with_epoch,dirs_exist_ok=True)
 
             on_epoch_end(epoch,model)
     except KeyboardInterrupt:
-        print("Interrupt training")
+        _print_red("Interrupt training")
     gc.collect()
     try:
         torch.cuda.empty_cache()
+        _print_green("Empty cuda cache complete")
     except: pass
     return model
 
