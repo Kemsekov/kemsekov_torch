@@ -346,7 +346,7 @@ def train(
       except Exception as e:
           print(f"Failed to compile model:\n{e}")
           model_script = None
-    if skip_n_epochs_before_checkpoint>0:
+    if skip_n_epochs_before_checkpoint>start_epoch:
         _print_green(f"Will skip checkpoint saving at first {skip_n_epochs_before_checkpoint} epochs")
     model=model_acc
 
