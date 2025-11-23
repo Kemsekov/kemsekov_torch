@@ -4,6 +4,58 @@ import torch.nn.functional as F
 
 class FlowMatching:
     def __init__(self,time_scaler : Callable[[torch.Tensor],torch.Tensor] = None,eps=1e-2):
+        """
+        Initializes a Flow Matching trainer and sampler.
+
+        Parameters
+        ----------
+        time_scaler : Callable[[torch.Tensor], torch.Tensor], optional
+            A function that modulates the ground-truth flow direction as a function of time `t`.
+            It takes a time tensor `t` (shape `[B]` or broadcastable) and returns a scaling factor
+            of the same shape. This scaling is applied to the raw direction vector
+            `(target_domain - input_domain)` during training.
+
+            By default (`time_scaler=None`), the identity scaling is used: `time_scaler(t) = 1`,
+            which corresponds to standard **straight-path flow matching** (i.e., linear interpolation
+            with constant velocity).
+
+            Common alternatives include:
+              - `lambda t: t`: induces time-dependent velocity scaling (e.g., mimicking ODEs from diffusion).
+              - `lambda t: torch.sqrt(t)` or other smooth functions to align with specific generative priors.
+
+            The choice of `time_scaler` defines the **vector field** that the model learns to approximate.
+            It must be consistent between training and sampling: during sampling, the model output is
+            divided by `time_scaler(t) + eps` to invert this scaling and recover the true trajectory.
+
+        eps : float, optional (default: 1e-2)
+            Small positive constant added to the time scaler output during sampling to avoid division
+            by zero when `time_scaler(t)` approaches zero (e.g., at `t=0` if `time_scaler(t) = t`).
+            This ensures numerical stability in the Euler integration step.
+
+        Notes
+        -----
+        - During **training** (`flow_matching_pair` or `contrastive_flow_matching_pair`):
+            The target direction is computed as:
+                `target = (target_domain - input_domain) * time_scaler(t)`
+
+        - During **sampling** (`sample` method):
+            The model's raw output (which approximates the scaled vector field) is corrected by:
+                `pred = model(xt, t) / (time_scaler(t) + eps)`
+            This recovers the unscaled velocity for integration, assuming the model learned
+            `v(x_t, t) ≈ (target - input) * time_scaler(t)`.
+
+        - **Consistency is crucial**: The same `time_scaler` must be used in both training and inference.
+          Mismatched scalers will lead to incorrect trajectories and poor sample quality.
+
+        Example
+        -------
+        To replicate standard straight-path flow matching (constant velocity):
+            fm = FlowMatching()  # uses time_scaler = lambda t: 1
+
+        To use a diffusion-like scaling (velocity vanishes at t=0):
+            fm = FlowMatching(time_scaler=lambda t: t)
+        """
+        
         self.eps = eps
         if time_scaler is None:
             time_scaler=lambda x:1

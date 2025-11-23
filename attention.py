@@ -475,6 +475,101 @@ class MultiHeadLinearAttention(nn.Module):
             K = torch.cat([ZK, K], dim=1)
             V = torch.cat([ZV, V], dim=1)
         return K,V
+
+
+class CrossSelfAttention(nn.Module):
+    """
+    Module for cross and self attention with time embeddings.
+    """
+    def __init__(self,in_channels,context_channels,internal_dim=128,use_linear_attention=False):
+        """
+        in_channels: dim of input channels
+        context_channels: dimension of context inputs
+        internal_dim: internal dim expansion
+        """
+        super().__init__()
+        def norm(ch):
+            # return nn.Identity()
+            return nn.RMSNorm(ch)
+            # return nn.LayerNorm(ch)
+        
+        self.input_2_internal = nn.Sequential(
+            nn.Linear(in_channels,internal_dim),
+            # norm(internal_dim)
+        )
+        
+        self.context_2_internal = nn.Linear(context_channels,internal_dim)
+        self.time = nn.Sequential(
+            nn.Linear(1,internal_dim),
+            nn.ReLU(),
+            nn.Linear(internal_dim,internal_dim),
+        )
+        self.context_norm = norm(internal_dim)
+
+        self.sa_QKV =nn.Sequential(
+            nn.Linear(
+                internal_dim,
+                internal_dim*3,
+            )
+        )
+        self.sa_norm = norm(internal_dim)
+        self.lsa = MultiHeadLinearAttention(
+            internal_dim,
+            n_heads=max(4,internal_dim//16),
+            dropout=0,
+            use_classic_attention = not use_linear_attention,
+            add_rotary_emb=True
+        )
+        self.cross_norm = norm(internal_dim)
+        self.lca = MultiHeadLinearAttention(
+            internal_dim,
+            n_heads=max(4,internal_dim//16),
+            dropout=0,
+            use_classic_attention = not use_linear_attention
+        )
+        
+        self.cross_Q = nn.Sequential(
+            nn.Linear(
+                internal_dim,
+                internal_dim,
+            )
+        )
+        
+        self.cross_KV = nn.Sequential(
+            nn.Linear(
+                internal_dim,
+                internal_dim*2,
+            )
+        )
+        self.mlp_norm = norm(internal_dim)
+        self.mlp = Residual([
+            nn.Linear(internal_dim,4*internal_dim),
+            nn.GELU(),
+            nn.Linear(4*internal_dim,in_channels),
+        ],init_at_zero=True)
+        
+    def forward(self,x,context,time):
+        """
+        x: of shape [BATCH,...dims...,in_channels]
+        context: of shape [BATCH,...dims...,context_channels]
+        time: of shape [BATCH] with values in range [0;1]
+        """
+        x_input = x
+        x,context = x,context
+        x = self.input_2_internal(x)
+        context = self.context_2_internal(context)
+        context=context+self.time(time)
+        
+        
+        q,k,v = self.sa_QKV(self.sa_norm(x)).chunk(3,-1)
+        x = self.lsa(q,k,v)[0]+x
+         
+        q = self.cross_Q(self.cross_norm(x))
+        k,v = self.cross_KV(self.context_norm(context)).chunk(2,-1)
+        x = self.lca(q,k,v)[0]+x
+        
+        return self.mlp(self.mlp_norm(x))+x_input
+
 class EfficientSpatialChannelAttention(nn.Module):
     """
     Efficient Spatial Channel Attention (ESCA) Module

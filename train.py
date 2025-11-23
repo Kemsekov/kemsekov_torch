@@ -516,48 +516,6 @@ def train(
                 # Print the table
                 print(tabulate.tabulate(table_data, headers=headers, tablefmt='pretty'))
 
-            # print('save')
-            
-            # create history plots in plots folder
-            # Update to save loss and metric plots in separate files and only for the last epoch
-            if acc.is_main_process:
-                if save_plots:
-                    # Loss plot
-                    plt.figure()
-                    plt.plot(loss_history, label="Train Loss")
-                    if is_testing:
-                        plt.plot(test_loss_history, label=f"Test Loss")
-                    plt.title("Loss History")
-                    plt.xlabel("Epoch")
-                    plt.ylabel("Loss")
-                    plt.legend()
-                    plt.savefig(os.path.join(plot_dir, "loss_history.png"))
-                    plt.close()
-
-                    # Metric plot
-                    save_plot_metric_history(plot_dir, train_metric_history,test_metric_history if is_testing else None,'train')
-                    
-                    # time plot
-                    plt.figure()
-                    plt.plot(train_time_history)
-                    plt.title(f"Epoch execution time")
-                    plt.xlabel("Epoch")
-                    plt.ylabel("Seconds")
-                    plt.savefig(os.path.join(plot_dir, f"train_time_history.png"))
-                    plt.close()
-
-                results = {
-                    "loss_history"          : loss_history,
-                    "test_loss_history"     : test_loss_history,
-                    "train_metric_history"  : train_metric_history,
-                    "test_metric_history"   : test_metric_history,
-                    "train_time_history"    : [round(v,3) for v in train_time_history],
-                    "epochs"                : epoch+1
-                }
-
-                results = json.dumps(results)
-                with open(report_path,'w') as f:
-                    f.write(results) 
 
             # Check if the test metric improves based on the specified condition
             test_improvements = (test_metric is not None) and (
@@ -575,6 +533,10 @@ def train(
             
             if checkpoints_count>0 and (test_improvements or (not is_testing and train_improvements)):
                 acc.save_state(state_dir)
+                # create history plots in plots folder
+                # Update to save loss and metric plots in separate files and only for the last epoch
+                plots_and_stats(save_plots, plot_dir, report_path, train_metric_history, test_metric_history, train_time_history, loss_history, test_loss_history, acc, is_testing, epoch) 
+
                 best_test_metric = test_metric
                 if acc.is_main_process and checkpoints_count>1:
                     # keep total count of saved checkpoints constant
@@ -604,6 +566,46 @@ def train(
         _print_green("Empty cuda cache complete")
     except: pass
     return model
+
+def plots_and_stats(save_plots, plot_dir, report_path, train_metric_history, test_metric_history, train_time_history, loss_history, test_loss_history, acc, is_testing, epoch):
+    if acc.is_main_process:
+        if save_plots:
+                    # Loss plot
+            plt.figure()
+            plt.plot(loss_history, label="Train Loss")
+            if is_testing:
+                plt.plot(test_loss_history, label=f"Test Loss")
+            plt.title("Loss History")
+            plt.xlabel("Epoch")
+            plt.ylabel("Loss")
+            plt.legend()
+            plt.savefig(os.path.join(plot_dir, "loss_history.png"))
+            plt.close()
+
+                    # Metric plot
+            save_plot_metric_history(plot_dir, train_metric_history,test_metric_history if is_testing else None,'train')
+                    
+                    # time plot
+            plt.figure()
+            plt.plot(train_time_history)
+            plt.title(f"Epoch execution time")
+            plt.xlabel("Epoch")
+            plt.ylabel("Seconds")
+            plt.savefig(os.path.join(plot_dir, f"train_time_history.png"))
+            plt.close()
+
+        results = {
+                    "loss_history"          : loss_history,
+                    "test_loss_history"     : test_loss_history,
+                    "train_metric_history"  : train_metric_history,
+                    "test_metric_history"   : test_metric_history,
+                    "train_time_history"    : [round(v,3) for v in train_time_history],
+                    "epochs"                : epoch+1
+                }
+
+        results = json.dumps(results)
+        with open(report_path,'w') as f:
+            f.write(results)
 
 def save_plot_metric_history(plot_dir, train_metric_history,test_metric_history,source):
     metrics_count = len(train_metric_history.keys())
