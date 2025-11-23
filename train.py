@@ -34,6 +34,7 @@ def train(
         load_checkpoint_dir = None,
         num_epochs = 100,
         checkpoints_count = 1,
+        skip_n_epochs_before_checkpoint=0,
         save_on_metric_improve : str | List[str] = 'any',
         optimizer = None,
         scheduler = None,
@@ -81,6 +82,9 @@ def train(
 
     checkpoints_count : int, optional
         Number of last best checkpoints to save. Default is 1.
+    
+    skip_n_epochs_before_checkpoint: int, optional
+        Number of epochs to run before doing any checkpoint. Useful if your checkpoints are heavy to do, and model improves rapidly in several first epochs.
 
     save_on_metric_improve: 'any', 'all', list[metric_name]
         When `'any'` a checkpoint will be saved when any of the metrics improve. If one or more metrics show improvement, a new checkpoint will be saved.
@@ -342,6 +346,8 @@ def train(
       except Exception as e:
           print(f"Failed to compile model:\n{e}")
           model_script = None
+    if skip_n_epochs_before_checkpoint>0:
+        _print_green(f"Will skip checkpoint saving at first {skip_n_epochs_before_checkpoint} epochs")
     model=model_acc
 
     def backward_loss(acc,loss):
@@ -531,7 +537,11 @@ def train(
                 (isinstance(save_on_metric_improve, list) and all(train_metric.get(m, -1e10) >= best_train_metric.get(m, -1e10) for m in save_on_metric_improve))
             )
             
-            if checkpoints_count>0 and (test_improvements or (not is_testing and train_improvements)):
+            
+            while checkpoints_count>0 and (test_improvements or (not is_testing and train_improvements)):
+                if epoch<skip_n_epochs_before_checkpoint:
+                    _print_green("SKIP CHECKPOINT SAVE")
+                    break
                 acc.save_state(state_dir)
                 # create history plots in plots folder
                 # Update to save loss and metric plots in separate files and only for the last epoch
@@ -556,7 +566,8 @@ def train(
                     # copy current saved state from last to checkpoint
                     shutil.copytree(save_last_dir, checkpoints_dir_with_epoch,dirs_exist_ok=True)
                 _print_green(f"saved epoch-{epoch+1}")
-
+                break
+            
             on_epoch_end(epoch,model)
     except KeyboardInterrupt:
         _print_red("Interrupt training")
