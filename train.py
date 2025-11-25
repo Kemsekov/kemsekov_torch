@@ -709,9 +709,12 @@ def load_best_checkpoint(model,base_path,log = True,device_map=None):
     return load_checkpoint(model,base_path,-1,log,device_map=device_map)
 
 def load_last_checkpoint(model,base_path,log=True,device_map=None):
+    report = os.path.join(base_path,'last','report.json')
+    if log and os.path.isfile(report):
+        report = json.loads(open(report).read())
+        print(f"Loading last checkpoint at epoch {report['epochs']}")
+    
     checkpoint = os.path.join(base_path,'last','state')
-    if log:
-        print("loading",checkpoint)
     model = load_checkpoint_and_dispatch(model,checkpoint,device_map=device_map)
     return model
 
