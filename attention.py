@@ -4,7 +4,7 @@ from kemsekov_torch.residual import Residual
 import torch.nn.functional as F
 
 class LinearSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention=True,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False,add_gating = False):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention=False,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False,add_gating = True):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -35,7 +35,7 @@ class LinearSelfAttentionBlock(torch.nn.Module):
     def forward(self,x):
         return self.attn(x,x)
 class LinearCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention = True,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False,add_gating = False):
+    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention = False,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False,add_gating = True):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -64,6 +64,13 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         rotary_emb_base: rotary emb base
         """
         super().__init__()
+        
+        # these two don't really like each other, only one of them should work at the same time
+        if add_local_attention:
+            add_gating=False
+        if add_gating:
+            add_local_attention=False
+        
         self.Q = nn.Sequential(
             nn.Linear(
                 input_dim,
