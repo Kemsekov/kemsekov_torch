@@ -474,8 +474,8 @@ def train(
             # Evaluation on test set
             test_loss = 0.0
             test_metric = None
+            model.eval()
             if is_testing:
-                model.eval()
                 with torch.no_grad():
                     metric = {}
                     for batch in test_loader:
