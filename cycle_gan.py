@@ -188,6 +188,20 @@ class CycleGan(torch.nn.Module):
         get_generator : Callable[[],nn.Module],
         get_critic : Callable[[],nn.Module]
     ):
+        """
+        Parameters
+        ----------
+        get_generator: 
+            Method to create generator. 
+            Generator must accept and returns same-shaped tensors.
+            Generator is a module that accepts batch samples of one domain, and return batch of another domain
+        get_critic:
+            Method to create critics.\n
+            Critics must accepts batch of samples of shape [B,...] and for each batch return logits of any shape [B,...].\n
+            The returned values of critic will be averaged.\n
+            If sample is fake, `critic(fake) -> inf`\n
+            If sample is real, `critic(real) -> -inf`
+        """
         super().__init__()
         
         # simple generators
