@@ -252,6 +252,7 @@ def train(
     5. **Checkpointing and Plotting:** Saves the model checkpoint if the test metric improves. At the end of training,
        generates and saves loss and metric plots in the `plots` folder.
     """
+    _print_green(f"Using dir {save_results_dir}")
     if checkpoints_count==0:
         _print_red("WARNING!!! (checkpoints_count==0) No checkpoints will be saved!")
     # only if we use deepspeed
