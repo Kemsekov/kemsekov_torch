@@ -48,7 +48,8 @@ def train(
         on_epoch_end = None,
         on_train_batch_end = None,
         on_test_batch_end = None,
-        save_plots = False
+        save_plots = False,
+        compile_torchscript=False
     ):
     """
     Train and evaluate a model, saving checkpoints, plots, and metric history during the training process.
@@ -205,6 +206,8 @@ def train(
 
     save_plots: create plots of metrics for saved checkpoints
     
+    compile_torchscript: try to compile and save torchscript model
+    
     Returns
     -------
     None
@@ -336,7 +339,7 @@ def train(
             _print_red("Failed to load state with error\n"+str(e))
             _print_blue("Ignoring state loading...")
 
-    if acc.is_main_process:
+    if acc.is_main_process and compile_torchscript:
       try:
           _print_blue("Trying to capture model architecture...")
           model_script = torch.jit.script(model)
