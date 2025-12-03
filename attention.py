@@ -65,19 +65,12 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         """
         super().__init__()
         
-        # these two don't really like each other, only one of them should work at the same time
-        if add_local_attention:
-            add_gating=False
-        if add_gating:
-            add_local_attention=False
-        
         self.Q = nn.Sequential(
             nn.Linear(
                 input_dim,
                 input_dim,
                 device=device,
             ),
-            nn.LayerNorm(input_dim,device=device)
         )
         
         self.K = nn.Sequential(
@@ -86,7 +79,6 @@ class LinearCrossAttentionBlock(torch.nn.Module):
                 input_dim,
                 device=device,
             ),
-            nn.LayerNorm(input_dim,device=device)
         )
         
         self.V = nn.Sequential(
@@ -95,7 +87,6 @@ class LinearCrossAttentionBlock(torch.nn.Module):
                 input_dim,
                 device=device,
             ),
-            nn.LayerNorm(input_dim,device=device)
         )
 
         self.attn = MultiHeadLinearAttention(
@@ -112,6 +103,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         
         self.mlp=Residual([
             nn.Linear(input_dim,mlp_dim,device=device),
+            nn.LayerNorm(mlp_dim),
             nn.Dropout(dropout,inplace=True),
             activation(),
             nn.Linear(mlp_dim,input_dim,device=device),
@@ -132,6 +124,11 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             device=device,
             groups=heads
         )
+        
+        # self.attn_combine = nn.Sequential(
+        #     nn.Linear(2*input_dim,input_dim),
+        #     nn.LayerNorm(input_dim)
+        # )
     
     def _local_attnetion(self,x):
         # x: [batch, ... ,channels]
@@ -173,14 +170,18 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         """
         #--------------------
         # start = time.time()
-        Q, K, V = self.Q(query_source),self.K(context),self.V(context)
+        Q = self.Q(query_source)
+        K = self.K(context)
+        V = self.V(context)
         # Q,K = self.add_rotary_emb(Q,K)
         # Q,K,V = self.flatten_qkv(Q,K,V)
         
         attn = self.attn(Q,K,V)[0]
+        attn=self.attn_norm(attn)
+        # attn=self.attn_combine(torch.concat([attn,query_source],-1))
+        attn = attn + query_source
         if self.add_local_attention:
             attn = attn*self._local_attnetion(attn)
-        attn=self.attn_norm(attn)
         
         #--------------------
         # print("total attn",time.time()-start)
