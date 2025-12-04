@@ -264,3 +264,22 @@ class CycleGan(torch.nn.Module):
             real_scores_a=real_scores_a,
             real_scores_b=real_scores_b,
         )
+
+from torch.utils.data import Dataset
+class UnpairedDataset(Dataset):
+    def __init__(self, domain1_data,domain2_data):
+        super().__init__()
+        # Collect all image files recursively from folder1 and folder2
+        self.domain1_data = domain1_data
+        self.domain2_data = domain2_data
+        
+    def __len__(self):
+        """Return the minimum number of images between the two folders."""
+        return max(len(self.domain1_data), len(self.domain2_data))
+    
+    def __getitem__(self, index):
+        """Return a pair of images from folder1 and folder2."""
+        i1 = self.domain1_data[index % len(self.domain1_data)]
+        i2 = self.domain2_data[index % len(self.domain2_data)]
+        
+        return i1,i2

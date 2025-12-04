@@ -131,6 +131,9 @@ def train(
     ema_args: dict
         contains arguments passed to the EMA wrapper. If set to `None`, EMA is not used.\n
         **USE EMA WHEN YOU HAVE UNSTABLE TRAINING SETUP (GAN,VAE,DIFFUSION, FLOW).**\n
+        
+        `modules`: List[str] | None = None\n
+            Name of modules that EMA should be applied to. By default all weights of passed model is used.\n
         `update_model_with_ema_every`: int | None = None\n
             Every N batches, blend EMA weights back into the online model. If `None` EMA will be merged to model after each epoch.\n
             (used for continual learning or "hare-to-tortoise" training).\n
@@ -381,7 +384,19 @@ def train(
     update_model_with_ema = lambda : 0
     if ema_args is not None:
         _print_green("Using EMA for training")
-        ema = EMA(model,**ema_args)
+        if "modules" in ema_args and isinstance(ema_args["modules"],list):
+            ema_modules=ema_args["modules"]
+            assert len(ema_modules)>0,"'modules' argument in ema_args cannot be empty! Remove it, or pass proper module names."
+            to_ema = [(name,m) for name,m in model.named_modules() if name in ema_modules]
+            assert len(to_ema)>0, "No modules matched passed 'modules' argument in ema_args"
+            
+            _print_green(f"Applying EMA to following modules {[a[0] for a in to_ema]}")
+            to_ema = torch.nn.ModuleList([a[1] for a in to_ema])
+            ema_args.pop("modules")
+            ema = EMA(to_ema,**ema_args)
+        else:
+            ema = EMA(model,**ema_args)
+            
         update_ema = lambda: ema.update()
         if 'update_model_with_ema_every' not in ema_args:
             update_model_with_ema = lambda : ema.update_model_with_ema()
