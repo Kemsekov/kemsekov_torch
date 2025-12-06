@@ -4,7 +4,21 @@ from kemsekov_torch.residual import Residual
 import torch.nn.functional as F
 
 class LinearSelfAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention=False,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False,add_gating = True):
+    def __init__(
+        self,
+        input_dim,
+        mlp_dim,
+        heads=8,
+        dropout=0.1,
+        device=None,
+        activation=torch.nn.GELU,
+        local_attention_dimensions=-1,
+        add_zero_token=False,
+        add_rotary_emb=False,
+        rotary_emb_base=10000,
+        use_classic_attention=False,
+        add_gating = True
+    ):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -22,7 +36,7 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         
         activation: what activation function to use
         
-        add_local_attention: add local attention over output of linear attention or not
+        local_attention_dimensions: number of dimensions added when using local attention. If -1 passed, no local attention is added.
         
         add_zero_token: add learned zero token to input or not
         
@@ -31,11 +45,58 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         rotary_emb_base: rotary emb base
         """
         super().__init__()
-        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,add_local_attention=add_local_attention,add_rotary_emb=add_rotary_emb,add_zero_token=add_zero_token,rotary_emb_base=rotary_emb_base,use_classic_attention=use_classic_attention,add_gating=add_gating)
+        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,local_attention_dimensions=local_attention_dimensions,add_rotary_emb=add_rotary_emb,add_zero_token=add_zero_token,rotary_emb_base=rotary_emb_base,use_classic_attention=use_classic_attention,add_gating=add_gating)
     def forward(self,x):
         return self.attn(x,x)
+
+class _LocalAttention(torch.nn.Module):
+    def __init__(self,input_dim,groups,dimensions=1,device=None) -> None:
+        super().__init__()
+        assert dimensions in [1,2,3]
+        self._local_attention_dimensions=dimensions
+        self.local_attention = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1](
+            input_dim,
+            input_dim,
+            kernel_size=3,
+            padding=1,
+            device=device,
+            groups=groups
+        )
+    def forward(self,x):
+        # x: [batch, ... ,channels]
+        xt = x
+        # xt: [batch,channels,(...)]
+        xt = xt.transpose(1,-1)
+        
+        while xt.ndim-2<self._local_attention_dimensions:
+            xt=xt.unsqueeze(-1)
+        
+        # out: [batch,channels,(...)]
+        out = torch.tanh(self.local_attention(xt))+1
+        
+        # out: [batch,(...),channels]
+        out = out.transpose(1,-1)
+        
+        # out: [batch, ... ,channels]
+        out = out.view(x.shape)
+        
+        return out
+
 class LinearCrossAttentionBlock(torch.nn.Module):
-    def __init__(self,input_dim,mlp_dim,heads=8,dropout=0.1,device=None,activation=torch.nn.GELU,add_local_attention = False,add_zero_token=False,add_rotary_emb=False,rotary_emb_base=10000,use_classic_attention=False,add_gating = True):
+    def __init__(
+        self,
+        input_dim,
+        mlp_dim,heads=8,
+        dropout=0.1,
+        device=None,
+        activation=torch.nn.GELU,
+        local_attention_dimensions=-1,
+        add_zero_token=False,
+        add_rotary_emb=False,
+        rotary_emb_base=10000,
+        use_classic_attention=False,
+        add_gating = True
+    ):
         """
         Accepts inputs of size [batch, ... ,  embed_dim] where (...) is spatial dimensions up to 3
         
@@ -56,6 +117,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         activation: what activation function to use
         
         add_local_attention: add local attention over output of linear attention or not
+        
+        local_attention_dimensions: number of dimensions added when using local attention. If -1 passed, no local attention is added. Adds local attention to raw attention outputs via 3x3 convolutions. If your input data is multidimensional, pass proper number of dimensions
         
         add_zero_token: add learned zero token to input or not
         
@@ -113,46 +176,13 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             nn.LayerNorm(input_dim),
             TanhKernel()
         )
-        self.add_local_attention=add_local_attention
+        self._add_local_attention=local_attention_dimensions>0
         self.add_gating=add_gating
-        # self.local_attention_gamma = torch.nn.Parameter(torch.tensor(0.0))
-        self.local_attention = nn.Conv1d(
-            input_dim,
-            input_dim,
-            kernel_size=3,
-            padding=1,
-            device=device,
-            groups=heads
-        )
         
-        # self.attn_combine = nn.Sequential(
-        #     nn.Linear(2*input_dim,input_dim),
-        #     nn.LayerNorm(input_dim)
-        # )
-    
-    def _local_attnetion(self,x):
-        # x: [batch, ... ,channels]
-        xt = x
-        if len(x.shape)>3:
-            batch = xt.shape[0]
-            ch = xt.shape[-1]
-            # xt: [batch,(...),channels]
-            xt = xt.view(batch,-1,ch)
-        
-        # xt: [batch,channels,(...)]
-        xt = xt.transpose(-2,-1)
-        
-        # out: [batch,channels,(...)]
-        out = torch.tanh(self.local_attention(xt))+1
-        
-        # out: [batch,(...),channels]
-        out = out.transpose(-2,-1)
-        
-        if len(x.shape)>3:
-            # out: [batch, ... ,channels]
-            out = out.view(x.shape)
-        
-        return out
+        if self._add_local_attention:
+            self.local_attention = _LocalAttention(input_dim,heads,local_attention_dimensions)
+        else:
+            self.local_attention = torch.nn.Identity()
     
     
     def forward(self,query_source : torch.Tensor, context : torch.Tensor):
@@ -180,8 +210,8 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         attn=self.attn_norm(attn)
         # attn=self.attn_combine(torch.concat([attn,query_source],-1))
         attn = attn + query_source
-        if self.add_local_attention:
-            attn = attn*self._local_attnetion(attn)
+        if self._add_local_attention:
+            attn = attn*self.local_attention(attn)
         
         #--------------------
         # print("total attn",time.time()-start)
