@@ -94,230 +94,81 @@ class SymmetricSqrt(nn.Module):
 
 import torch
 import torch.nn as nn
-from torch.autograd import Function
 
-class _SmoothSymmetricLogFunction(Function):
+class SmoothSymmetricSqrt(nn.Module):
     """
-    Custom autograd function that uses the exact derivative in backward pass
-    while keeping the forward approximation.
+    This function is kinda-interpolation between y=x and y=sqrt(x)
     """
-    @staticmethod
-    def forward(ctx, x, approx_module):
-        """
-        Forward pass: use the approximation
-        """
-        ctx.save_for_backward(x)
-        ctx.approx_module = approx_module
-        return approx_module._compute(x)
-    
-    @staticmethod
-    def backward(ctx, grad_output):
-        """
-        Backward pass: use the exact derivative instead of backpropagating through forward approximation
-        """
-        x, = ctx.saved_tensors
-        approx_module = ctx.approx_module
-        # print("back",x)
-        # Compute exact derivative: 1/(|x| + e^(-|x|))
-        x_abs = x.abs()
-        exact_derivative = 1.0 / (x_abs + torch.exp(-x_abs))
-        
-        # Handle sign for negative x values (since integral is odd function)
-        sign = torch.sign(x)
-        sign[sign == 0] = 1  # Handle x=0 case
-        
-        # Apply chain rule: grad_input = grad_output * derivative
-        grad_input = grad_output * exact_derivative * sign
-        
-        return grad_input, None  # None for approx_module (not differentiable)
-
-class SmoothSymmetricLog3rdOrder(nn.Module):
-    def __init__(self, split_point=8.4211):
+    def __init__(self,inv_split = 2.5):
         super().__init__()
-        params=[
-            0.9926349357766904,
-            0.8110374873908223,
-            0.10474537829412185,
-            0.7690230856892495,
-            0.3516600050453235,
-            0.0199296372515136,
-            0.00010754123262324145
-        ]
-        # Coefficients for 3rd order rational approximation (0 <= x <= 8)
-        self.register_buffer('a1', torch.tensor(params[0]))
-        self.register_buffer('a2', torch.tensor(params[1]))
-        self.register_buffer('a3', torch.tensor(params[2]))
-        self.register_buffer('b1', torch.tensor(params[3]))
-        self.register_buffer('b2', torch.tensor(params[4]))
-        self.register_buffer('b3', torch.tensor(params[5]))
-        self.register_buffer('num_const', torch.tensor(params[6]))
         
-        # Constant for logarithmic approximation (x > 8)
-        self.log_const = 0.767229259388
-        self.split_point = split_point
+        self.inv_split = inv_split
+        b = [0.0038933507013838354,
+            1.0526701833814136,
+            -1.3141444069161157,
+            0.6846405296018866,
+            -0.08648287900443206,
+            -1.3859825762259927,
+            0.823326685232045,
+            -0.20215808335524396,
+            0.018149838932938412,
+            0.9045875826093197]
+        inv_weights=torch.tensor(b)
+        self.register_buffer('inv_weights', inv_weights)
+        self.A = 1.66
+        self.B = -0.31630601136
+        self.bias = -0.8431526
     
     def forward(self, x):
-        """
-        Approximate F(x) = ∫₀ˣ 1/(t + e^(-t)) dt with custom backward pass
-        """
-        # Handle negative values using odd function property: F(-x) = -F(x)
-        x_g0 = x > 0
-        x_s0 = ~x_g0
-        
-        # Create output tensor
-        out = torch.zeros_like(x)
-        # Positive values: compute directly
-        if torch.any(x_g0):
-            out[x_g0] = _SmoothSymmetricLogFunction.apply(x[x_g0], self)
-        
-        # Negative values: use F(-x) = -F(x)
-        if torch.any(x_s0):
-            out[x_s0] = -_SmoothSymmetricLogFunction.apply(-x[x_s0], self)
-        
-        return out
-    
-    def _compute(self, x):
-        """
-        Core computation for x >= 0
-        """
-        # Create output tensor with same device and dtype as input
-        out = torch.zeros_like(x)
-        
-        # Create masks
-        mask_small = x <= self.split_point
-        mask_large = ~mask_small
-        
-        # Compute rational approximation for x <= split_point
-        if torch.any(mask_small):
-            x_small = x[mask_small]
-            
-            # Numerator: a1*x + a2*x^2 + a3*x^3 + num_const
-            numerator = (
-                self.a1 * x_small + self.num_const +
-                self.a2 * x_small**2 +
-                self.a3 * x_small**3
-            )
-            
-            # Denominator: 1 + b1*x + b2*x^2 + b3*x^3
-            denominator = (
-                1.0 +
-                self.b1 * x_small +
-                self.b2 * x_small**2 +
-                self.b3 * x_small**3
-            )
-            
-            out[mask_small] = numerator / denominator
-        
-        # Compute logarithmic approximation for x > split_point
-        if torch.any(mask_large):
-            x_large = x[mask_large]
-            out[mask_large] = torch.log(x_large) + self.log_const
-        
-        return out
+        sign = x.sign()
+        x=x.abs()        
+        a = 2*(x+1).sqrt()
+        b = x
+        sigmoid = (self.A*x+self.B).sigmoid()
+        return sign*0.5*(a*sigmoid+(1-sigmoid)*b+self.bias)
     
     def derivative(self, x):
-        """
-        Exact analytic derivative (for reference/debugging)
-        """
-        x_abs = x.abs()
-        return 1.0 / (x_abs + torch.exp(-x_abs))
-
-
-class SmoothSymmetricLog4rdOrder(nn.Module):
-    def __init__(self,split_point = 8.1044):
-        super().__init__()
+        y = x.abs()
+        s = (self.A * y + self.B).sigmoid()
+        sqrt_term = (y + 1).sqrt()
         
-        params=[0.9998109410074897,
-        0.8425166425498785,
-        0.412532839718835,
-        0.02168303733037949,
-        0.8424443481738484,
-        0.5758277939280647,
-        0.13134256599296878,
-        0.0037374247639141932,
-        8.936675541995365e-06]
+        # Compute h'(y) = A*s*(1-s)*(sqrt(y+1) - 0.5*y) + s/(2*sqrt(y+1)) + 0.5*(1-s)
+        term1 = self.A * s * (1 - s) * (sqrt_term - 0.5 * y)
+        term2 = s / (2 * sqrt_term)
+        term3 = 0.5 * (1 - s)
         
-        # Coefficients for rational approximation (0 <= x <= 8)
-        # Using nn.Parameter to allow potential fine-tuning if needed
-        self.register_buffer('a1', torch.tensor(params[0]))
-        self.register_buffer('a2', torch.tensor(params[1]))
-        self.register_buffer('a3', torch.tensor(params[2]))
-        self.register_buffer('a4', torch.tensor(params[3]))
-        self.register_buffer('b1', torch.tensor(params[4]))
-        self.register_buffer('b2', torch.tensor(params[5]))
-        self.register_buffer('b3', torch.tensor(params[6]))
-        self.register_buffer('b4', torch.tensor(params[7]))
-        self.register_buffer('num_const', torch.tensor(params[8]))
-        
-        
-        # Constant for logarithmic approximation (x > 8)
-        self.log_const = 0.767229259388
-        self.split_point = split_point
+        return term1 + term2 + term3
     
-    def forward(self, x):
-        """
-        Approximate F(x) = ∫₀ˣ 1/(t + e^(-t)) dt with custom backward pass
-        """
-        # Handle negative values using odd function property: F(-x) = -F(x)
-        x_g0 = x > 0
-        x_s0 = ~x_g0
+    def inverse(self,x : torch.Tensor):
+        """This is somewhat optimal approximation of Smooth Symmetric Sqrt inverse function"""
+        sign = x.sign()
+        x = x.abs()
+        res = torch.zeros_like(x)
         
-        # Create output tensor
-        out = torch.zeros_like(x)
+        x1_mask = x>=2.5792
+        if torch.any(x1_mask):
+            x1 = x[x1_mask]
+            inv = (x1-self.bias/2).pow(2)-1
+            res[x1_mask]=inv*sign[x1_mask]
         
-        # Positive values: compute directly using custom autograd
-        if torch.any(x_g0):
-            out[x_g0] = _SmoothSymmetricLogFunction.apply(x[x_g0], self)
+        x2_mask = x<=0.05
+        if torch.any(x2_mask):
+            x2 = x[x2_mask]
+            res[x2_mask]=x2*sign[x2_mask]/self.inv_weights[-1]
         
-        # Negative values: use F(-x) = -F(x)
-        if torch.any(x_s0):
-            out[x_s0] = -_SmoothSymmetricLogFunction.apply(-x[x_s0], self)
-        
-        return out
-    
-    def _compute(self, x):
-
-        # Create output tensor with same device and dtype as input
-        out = torch.zeros_like(x)
-        
-        # Create masks
-        mask_small = x <= self.split_point
-        mask_large = ~mask_small
-        
-        # Compute rational approximation for x <= 8
-        if torch.any(mask_small):
-            x_small = x[mask_small]
+        x0_mask = ~x1_mask & ~x2_mask
+        if torch.any(x0_mask):
+            w=self.inv_weights
+            x0 = x[x0_mask]
+            x1 = x0
+            x2 = x0*x1
+            x3 = x0*x2
+            x4 = x0*x3
+            up = w[0]+x1*w[1]+x2*w[2]+x3*w[3]+x4*w[4]
+            down = 1+w[5]*x1+w[6]*x2+w[7]*x3+w[8]*x4
+            res[x0_mask] = up/down*sign[x0_mask]
             
-            # Numerator: a1*x + a2*x^2 + a3*x^3 + a4*x^4
-            numerator = (
-                self.a1 * x_small + self.num_const+
-                self.a2 * x_small**2 +
-                self.a3 * x_small**3 +
-                self.a4 * x_small**4
-            )
-            
-            # Denominator: 1 + b1*x + b2*x^2 + b3*x^3 + b4*x^4
-            denominator = (
-                1.0 +
-                self.b1 * x_small +
-                self.b2 * x_small**2 +
-                self.b3 * x_small**3 +
-                self.b4 * x_small**4
-            )
-            
-            out[mask_small] = numerator / denominator
-        
-        # Compute logarithmic approximation for x > 8
-        if torch.any(mask_large):
-            x_large = x[mask_large]
-            out[mask_large] = torch.log(x_large) + self.log_const
-        
-        return out
-    
-    def derivative(self,x):
-        x_abs = x.abs()
-        return 1.0/(x_abs+torch.exp(-x_abs))
-
+        return res
 
 def flip_even_odd(x: torch.Tensor, dim: int = -1):
     """
@@ -375,7 +226,12 @@ class InvertibleScaleAndTranslate(nn.Module):
         dimension_split (int, optional): Dimension to split the input. Defaults to -1 (last dimension).
         non_linearity (torch.nn.Module): invertible non-linearity function that is used to improve model expressiveness
     """
-    def __init__(self, model,dimension_split = -1,non_linearity : Union[InvertibleTanh,SymmetricSqrt,SymmetricLog,InvertibleLeakyReLU] = InvertibleTanh(2)):
+    def __init__(
+        self, 
+        model,
+        dimension_split = -1,
+        non_linearity : Union[InvertibleTanh,SymmetricSqrt,SymmetricLog,InvertibleLeakyReLU,SmoothSymmetricSqrt] = InvertibleTanh(2)
+    ):
         super().__init__()
         self.model=model
         self.dimension_split = dimension_split  # Ensure integer type
