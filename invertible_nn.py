@@ -1,4 +1,5 @@
-from typing import Union
+import random
+from typing import Iterable, Union
 import torch
 import torch.nn as nn
 
@@ -170,7 +171,35 @@ class SmoothSymmetricSqrt(nn.Module):
             
         return res
 
-def flip_even_odd(x: torch.Tensor, dim: int = -1):
+def create_checkerboard_mask(dims,device):
+    """
+    Create checkerboard mask for spatial partitioning
+    Returns mask where True values remain unchanged, False values get transformed
+    """
+    mask = torch.zeros(dims, dtype=torch.bool,device=device)
+    a = [torch.arange(d,device=device) for d in dims]
+    ab = torch.meshgrid(a,indexing="ij")
+    mask[torch.stack(ab).sum(0)%2==0]=True
+    return mask
+
+def split_tensor(x,split_dim):
+    ind = create_checkerboard_mask(x.shape[1:],device=x.device)
+    reduced_shape = list(x.shape)
+    reduced_shape[split_dim]//=2
+    set_a = x[:,ind].reshape(reduced_shape)
+    set_b = x[:,~ind].reshape(reduced_shape)   
+    return set_a,set_b 
+
+def join_split(a,b,split_dim):
+    shape = list(a.shape)
+    shape[split_dim]*=2
+    res = torch.zeros(shape,device=a.device)
+    ind = create_checkerboard_mask(res.shape[1:],a.device)
+    res[:,ind]=a.reshape(a.shape[0],-1)
+    res[:,~ind]=b.reshape(b.shape[0],-1)
+    return res
+
+def permute_even_odd(x: torch.Tensor, dim: int = -1):
     """
     Split tensor into even- and odd-indexed slices along a given dimension.
 
@@ -190,12 +219,12 @@ def flip_even_odd(x: torch.Tensor, dim: int = -1):
 
     return torch.concat([even, odd],dim)
 
-def unflip_even_odd(x: torch.Tensor, dim: int = -1):
+def unpermute_even_odd(x: torch.Tensor, dim: int = -1):
     """
-    Undo flip_even_odd: interleave even and odd parts back along a given dim.
+    Undo permute_even_odd: interleave even and odd parts back along a given dim.
 
     Args:
-        x: tensor produced by flip_even_odd
+        x: tensor produced by permute_even_odd
         dim: dimension along which to invert
 
     Returns:
@@ -225,17 +254,19 @@ class InvertibleScaleAndTranslate(nn.Module):
         model (nn.Module): Neural network to compute scaling and translation factors. It takes input with half dimensions along specified dim and returns twice of it.
         dimension_split (int, optional): Dimension to split the input. Defaults to -1 (last dimension).
         non_linearity (torch.nn.Module): invertible non-linearity function that is used to improve model expressiveness
+        flip_dim: keep it None please
     """
     def __init__(
         self, 
         model,
         dimension_split = -1,
-        non_linearity : Union[InvertibleTanh,SymmetricSqrt,SymmetricLog,InvertibleLeakyReLU,SmoothSymmetricSqrt] = InvertibleTanh(2)
+        non_linearity : Union[InvertibleTanh,SymmetricSqrt,SymmetricLog,InvertibleLeakyReLU,SmoothSymmetricSqrt] = InvertibleTanh(2),
     ):
         super().__init__()
         self.model=model
         self.dimension_split = dimension_split  # Ensure integer type
         self.non_linearity=non_linearity
+        self.flip = random.randint(0,1)==0
     
     def get_scale_and_translate(self,x):
         scale,translate = self.model(x).chunk(2,self.dimension_split)
@@ -254,11 +285,13 @@ class InvertibleScaleAndTranslate(nn.Module):
                 Transformed tensor with the same shape as input and scale parameter.
         """
         x1,x2 = input.chunk(2,self.dimension_split)
-        scale,translate = self.get_scale_and_translate(x1)
         
+        scale,translate = self.get_scale_and_translate(x1)
         z2 = x2*scale+translate
-        concat = torch.concat([self.non_linearity(z2),x1],self.dimension_split)
-        concat = flip_even_odd(concat,self.dimension_split)
+        y=self.non_linearity(z2)
+        
+        concat = torch.concat([y,x1],self.dimension_split)
+        concat = permute_even_odd(concat,self.dimension_split)
         
         jacob_det = self.non_linearity.derivative(z2)*scale
         
@@ -274,14 +307,17 @@ class InvertibleScaleAndTranslate(nn.Module):
         Returns:
             torch.Tensor: Reconstructed input tensor.
         """
-        output = unflip_even_odd(output,self.dimension_split)
-        
+        output = unpermute_even_odd(output,self.dimension_split)
         f_z2,x1 = output.chunk(2,self.dimension_split)
+        
         z2 = self.non_linearity.inverse(f_z2)
         
         scale,translate = self.get_scale_and_translate(x1)
         x2 = (z2-translate)/(scale+1e-6)
+        
+        # concat = join_split(x1,x2,self.dimension_split)
         concat = torch.concat([x1,x2],self.dimension_split)
+        
         return concat
   
 class InvertibleSequential(nn.Sequential):
