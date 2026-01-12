@@ -2,7 +2,7 @@ import random
 from typing import Iterable, Union
 import torch
 import torch.nn as nn
-
+import math
 class InvertibleLeakyReLU(nn.Module):
     def __init__(self, negative_slope=0.2):
         super().__init__()
@@ -260,7 +260,7 @@ class InvertibleScaleAndTranslate(nn.Module):
         self, 
         model,
         dimension_split = -1,
-        non_linearity : Union[InvertibleTanh,SymmetricSqrt,SymmetricLog,InvertibleLeakyReLU,SmoothSymmetricSqrt] = InvertibleTanh(2),
+        non_linearity : Union[InvertibleTanh,SymmetricSqrt,SymmetricLog,InvertibleLeakyReLU,SmoothSymmetricSqrt] = InvertibleLeakyReLU(),
     ):
         super().__init__()
         self.model=model
@@ -360,3 +360,56 @@ class InvertibleSequential(nn.Sequential):
             prev = m.inverse(prev)
         return prev
         
+
+
+
+def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
+    """
+    Maximum-likelihood loss for a normalizing flow.
+
+    Args:
+        flow: InvertibleSequential. forward(x) -> (z, jacobians)
+        x: Data batch shaped (B, ...).
+        eps: Numerical stability for log.
+        sum_dim: Which dimension to reduce over *after* flattening non-batch dims with
+            `.flatten(1)`. In this implementation, both `log_det` and `log_pz` are built as
+            tensors of shape (B, N) where N is the number of event dimensions (all original
+            dims except batch). `sum_dim` controls which dimension you sum across to get one
+            scalar log-probability per sample. Typically keep `sum_dim=-1` (or `sum_dim=1`)
+            so you sum over the event dimension(s) and end up with shape (B,) for `log_det`
+            and `log_pz`. [web:259]
+
+            Examples:
+            - If `flatten(1)` produces shape (B, N), then `sum_dim=1` or `sum_dim=-1` gives
+              per-sample totals.
+            - If you later change the code to not flatten, you could use a tuple of dims
+              (but this function currently expects an int because it flattens first).
+
+    Returns:
+        loss: Scalar (mean NLL over batch).
+        diagnostics: dict with mean log_det and mean log_pz.
+    """
+    z, jacobians = flow(x)  # z = f(x)
+
+    # 1) log|det J| for the full flow: sum over layers, sum over event dims
+    log_det = 0.0
+    for jd in jacobians:
+        # jd shape matches the transformed subset; sum over all non-batch dims
+        log_det = log_det + torch.log(jd.abs() + eps).flatten(1).sum(dim=sum_dim)
+
+    # 2) log p(z) under N(0,1): sum over event dims
+    # log N(z;0,1) = -0.5*(z^2 + log(2*pi)) per dimension
+    log_pz = (-0.5 * (z**2 + math.log(2 * math.pi))).flatten(1).sum(dim=sum_dim)
+
+    # 3) log p(x) = log p(z) + log|det J|
+    log_px = log_pz + log_det
+
+    # maximize log p(x)  <=>  minimize -log p(x)
+    nll = -log_px
+    loss = nll.mean()
+
+    return loss, {
+        "nll_mean": nll.mean().detach(),
+        "log_det_mean": log_det.mean().detach(),
+        "log_pz_mean": log_pz.mean().detach(),
+    }
