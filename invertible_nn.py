@@ -1,8 +1,10 @@
 import random
-from typing import Iterable, Union
+from typing import Optional, Union
 import torch
 import torch.nn as nn
 import math
+from copy import deepcopy
+
 class InvertibleLeakyReLU(nn.Module):
     def __init__(self, negative_slope=0.2):
         super().__init__()
@@ -19,7 +21,6 @@ class InvertibleLeakyReLU(nn.Module):
     def derivative(self, x):
         # d/dx = 1 if x >= 0 else negative_slope
         return torch.where(x >= 0, torch.ones_like(x), torch.full_like(x, self.negative_slope))
-
 class InvertibleTanh(torch.nn.Module):
     def __init__(self,scale=2):
         super().__init__()
@@ -39,7 +40,6 @@ class InvertibleTanh(torch.nn.Module):
     def derivative(self, x):
         # Derivative: d/dx [scale * tanh(x)] = scale * (1 - tanh^2(x))
         return self.scale * (1 - torch.tanh(x)**2)
-
 class SymmetricLog(nn.Module):
     def __init__(self):
         super().__init__()
@@ -67,7 +67,6 @@ class SymmetricLog(nn.Module):
         # for x <= 0: d/dx [-log(1-x)] = 1/(1-x)
         out[~mask] = 1.0 / (1 - x[~mask] + 1e-6)
         return out
-
 class SymmetricSqrt(nn.Module):
     def __init__(self):
         super().__init__()
@@ -92,10 +91,6 @@ class SymmetricSqrt(nn.Module):
         # for x<=0: d/dx [1 - sqrt(1-x)] = 1/(2*sqrt(1-x))
         out[~mask] = 1.0 / (2 * (1 - x[~mask]).sqrt()+1e-6)
         return out
-
-import torch
-import torch.nn as nn
-
 class SmoothSymmetricSqrt(nn.Module):
     """
     This function is kinda-interpolation between y=x and y=sqrt(x)
@@ -170,6 +165,27 @@ class SmoothSymmetricSqrt(nn.Module):
             res[x0_mask] = up/down*sign[x0_mask]
             
         return res
+class InvertibleIdentity(nn.Module):
+    """
+    Invertible no-op / placeholder nonlinearity.
+
+    - forward(x) returns x unchanged.
+    - inverse(y) returns y unchanged.
+    - derivative(x) returns ones with same shape as x (Jacobian determinant = 1 elementwise).
+
+    This is analogous to torch.nn.Identity, which is a placeholder identity operator. [web:304]
+    """
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+    def inverse(self, y: torch.Tensor) -> torch.Tensor:
+        return y
+
+    def derivative(self, x: torch.Tensor) -> torch.Tensor:
+        return torch.ones_like(x)
 
 def create_checkerboard_mask(dims,device):
     """
@@ -260,11 +276,13 @@ class InvertibleScaleAndTranslate(nn.Module):
         self, 
         model,
         dimension_split = -1,
-        non_linearity : Union[InvertibleTanh,SymmetricSqrt,SymmetricLog,InvertibleLeakyReLU,SmoothSymmetricSqrt] = InvertibleLeakyReLU(),
+        non_linearity : Union[InvertibleTanh,SmoothSymmetricSqrt,InvertibleIdentity] = SmoothSymmetricSqrt,
     ):
         super().__init__()
         self.model=model
         self.dimension_split = dimension_split  # Ensure integer type
+        if isinstance(non_linearity,type):
+            non_linearity=non_linearity()
         self.non_linearity=non_linearity
         self.flip = random.randint(0,1)==0
     
@@ -395,11 +413,11 @@ def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
     log_det = 0.0
     for jd in jacobians:
         # jd shape matches the transformed subset; sum over all non-batch dims
-        log_det = log_det + torch.log(jd.abs() + eps).flatten(1).sum(dim=sum_dim)
+        log_det = log_det + torch.log(jd.abs() + eps).flatten(1).mean(dim=sum_dim)
 
     # 2) log p(z) under N(0,1): sum over event dims
     # log N(z;0,1) = -0.5*(z^2 + log(2*pi)) per dimension
-    log_pz = (-0.5 * (z**2 + math.log(2 * math.pi))).flatten(1).sum(dim=sum_dim)
+    log_pz = (-0.5 * (z**2 + math.log(2 * math.pi))).flatten(1).mean(dim=sum_dim)
 
     # 3) log p(x) = log p(z) + log|det J|
     log_px = log_pz + log_det
@@ -408,8 +426,133 @@ def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
     nll = -log_px
     loss = nll.mean()
 
-    return loss, {
-        "nll_mean": nll.mean().detach(),
-        "log_det_mean": log_det.mean().detach(),
-        "log_pz_mean": log_pz.mean().detach(),
-    }
+    return loss
+
+
+
+class NormalizingFlow:
+    """
+    Wrapper around your InvertibleSequential + flow_nll_loss training loop.
+
+    Key features:
+    - Model definition is fully determined in __init__ (input_dim is required, not inferred from data).
+    - fit(...) trains on a tensor dataset and returns the best model (CPU, eval).
+    - Works with flow_nll_loss that returns either:
+        * loss
+        * (loss, diagnostics_dict)
+      (avoids "iteration over a 0-d tensor" unpacking error).
+    - Optional gradient clipping via torch.nn.utils.clip_grad_norm_. [web:381]
+    - Uses optimizer.zero_grad(set_to_none=True) for performance/memory. [web:399]
+    """
+
+    def __init__(
+        self,
+        *,
+        input_dim: int,
+        hidden_dim: int = 32,
+        layers: int = 3,
+        device: Optional[str] = 'cpu',
+    ):
+        self.input_dim = int(input_dim)
+        self.hidden_dim = int(hidden_dim)
+        self.layers = int(layers)
+
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = device
+        self.model = self._build_model().to(self.device)
+
+    def _build_model(self) -> nn.Module:
+        if self.input_dim % 2 != 0:
+            raise ValueError(
+                f"input_dim must be even for InvertibleScaleAndTranslate(input.chunk(2)). Got {self.input_dim}."
+            )
+
+        half = self.input_dim // 2
+        blocks = []
+        for _ in range(self.layers):
+            blocks.append(
+                InvertibleScaleAndTranslate(
+                    model=nn.Sequential(
+                        nn.Linear(half, self.hidden_dim),
+                        nn.LayerNorm(self.hidden_dim),
+                        nn.GELU(),
+                        nn.Linear(self.hidden_dim, self.input_dim),
+                    ),
+                    dimension_split=-1,
+                )
+            )
+        return InvertibleSequential(*blocks)
+
+    def fit(
+        self,
+        data: torch.Tensor,
+        *,
+        batch_size: int = 512,
+        lr: float = 1e-2,
+        epochs: int = 30,
+        save_skip_epochs: int = 2,
+        grad_clip_max_norm: Optional[float] = 1.0,
+        grad_clip_norm_type: Union[float, str] = 2.0,
+        debug: bool = True,
+    ) -> nn.Module:
+        """
+        Train on `data` and return best model.
+
+        Args:
+            data: Tensor of shape [N, input_dim].
+            batch_size: Batch size.
+            lr: AdamW learning rate.
+            epochs: Epoch count.
+            save_skip_epochs: Start tracking best model after this epoch index.
+            grad_clip_max_norm: If not None, clip global grad norm to this value. [web:381]
+            grad_clip_norm_type: p-norm used by clip_grad_norm_ (2.0 = L2). [web:381]
+            debug: If True, prints when best loss improves.
+
+        Returns:
+            trained_model: Best model on CPU in eval() mode.
+        """
+        if data.ndim != 2 or data.shape[1] != self.input_dim:
+            raise ValueError(f"Expected data shape [N, {self.input_dim}], got {tuple(data.shape)}")
+
+        batch_size = min(batch_size,data.shape[0])
+        data = data.to(self.device)
+
+        optim = torch.optim.AdamW(self.model.parameters(), lr=lr)
+
+        best_loss = float("inf")
+        best_model = deepcopy(self.model).cpu()
+        improved = False
+
+        n = data.shape[0]
+
+        for epoch in range(epochs):
+            if debug and improved:
+                print(f"Epoch {epoch}: best_loss={best_loss:0.3f}")
+            improved = False
+
+            # shuffle each epoch
+            perm = torch.randperm(n, device=self.device)
+            data_shuf = data[perm]
+
+            for start in range(0, n, batch_size):
+                batch = data_shuf[start : start + batch_size]
+                optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
+                loss = flow_nll_loss(self.model, batch, sum_dim=-1)
+                loss.backward()
+
+                if grad_clip_max_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.model.parameters(),
+                        max_norm=grad_clip_max_norm,
+                        norm_type=grad_clip_norm_type,
+                    )  # clips global norm in-place [web:381]
+
+                optim.step()
+
+                if (epoch >= save_skip_epochs) and (loss < best_loss):
+                    best_loss = loss
+                    best_model = deepcopy(self.model).cpu()
+                    improved = True
+
+        return best_model.eval()
