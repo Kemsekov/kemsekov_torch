@@ -461,6 +461,12 @@ class NormalizingFlow:
         self.model = self._build_model().to(self.device)
         self.best_trained_model = None
 
+    def to(self,device):
+        self.device=device
+        self.model=self.model.to(device)
+        if self.best_trained_model:
+            self.best_trained_model=self.best_trained_model.to(device)
+
     def _build_model(self) -> nn.Module:
         if self.input_dim % 2 != 0:
             raise ValueError(
@@ -505,10 +511,9 @@ class NormalizingFlow:
             )
         blocks[-1].non_linearity = InvertibleIdentity()
         return InvertibleSequential(*blocks)
-
     def log_prob(self, data):
         model = self.best_trained_model or self.model
-        z, jacobians = model(data)
+        z, jacobians = model(data.to(self.device))
         
         # log p(z) under standard normal
         log_pz = Normal(0, 1).log_prob(z).flatten(1).sum(dim=-1)
@@ -522,8 +527,7 @@ class NormalizingFlow:
         # log p(x) = log p(z) + log |det J|
         log_px = log_pz + log_det
         
-        return log_px
-        
+        return log_px.to(data.device)
     def fit(
         self,
         data: torch.Tensor,
@@ -531,6 +535,8 @@ class NormalizingFlow:
         epochs: int = 30,
         lr: float = 1e-2,
         data_renoise=0.05,
+        grad_clip_max_norm: Optional[float] = 1.0,
+        grad_clip_norm_type: Union[float, str] = 2.0,
         debug: bool = True,
     ) -> nn.Module:
         """
@@ -557,7 +563,7 @@ class NormalizingFlow:
 
         optim = torch.optim.AdamW(self.model.parameters(), lr=lr)
         best_loss = float("inf")
-        self.best_trained_model = deepcopy(self.model).cpu()
+        self.best_trained_model = deepcopy(self.model).to(self.device)
         improved = False
         n = data.shape[0]
         slices = list(range(0, n, batch_size))
@@ -584,9 +590,15 @@ class NormalizingFlow:
 
                     if loss < best_loss:
                         best_loss = loss
-                        self.best_trained_model = deepcopy(self.model).cpu()
+                        self.best_trained_model = deepcopy(self.model).to(self.device)
                         improved = True
                     loss.backward()
+                    if grad_clip_max_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            max_norm=grad_clip_max_norm,
+                            norm_type=grad_clip_norm_type,
+                        )
                     optim.step()
                     sch.step()
                     
@@ -605,6 +617,8 @@ class NormalizingFlow:
         history_size: int = 100,
         line_search_fn: str | None = "strong_wolfe",
         data_renoise=0.05,
+        grad_clip_max_norm: Optional[float] = 1.0,
+        grad_clip_norm_type: Union[float, str] = 2.0,
         debug: bool = True,
     ) -> nn.Module:
         """
@@ -640,7 +654,7 @@ class NormalizingFlow:
         class TrainingStep:
             best_loss = float("inf")
             improved = False
-        self.best_trained_model = deepcopy(self.model).cpu()
+        self.best_trained_model = deepcopy(self.model).to(self.device)
         training_step = TrainingStep()
         
         try:
@@ -662,9 +676,15 @@ class NormalizingFlow:
                         loss = flow_nll_loss(self.model, batch, sum_dim=-1)
                         if loss < training_step.best_loss:
                             training_step.best_loss = loss
-                            self.best_trained_model = deepcopy(self.model).cpu()
+                            self.best_trained_model = deepcopy(self.model).to(self.device)
                             training_step.improved = True
                         loss.backward()
+                        if grad_clip_max_norm is not None:
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(),
+                                max_norm=grad_clip_max_norm,
+                                norm_type=grad_clip_norm_type,
+                            )
                         return loss
 
                     optim.step(loss_step)
