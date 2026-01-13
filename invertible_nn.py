@@ -531,8 +531,6 @@ class NormalizingFlow:
         Generates samples drawn from trained distribution
         """
         return (self.best_trained_model or self.model).inverse(torch.randn((count,self.input_dim)))
-        
-    
     def log_prob(self, data : torch.Tensor) -> torch.Tensor:
         model = self.best_trained_model or self.model
         z, jacobians = model(data.to(self.device))
@@ -612,11 +610,20 @@ class NormalizingFlow:
         # Define optimizer on only the optimizable part
         optimizer = torch.optim.LBFGS([optimizable_data], lr=lr, max_iter=20)
         
+        class IterationData:
+            best_loss = 1e8
+            best_optimizable_data = optimizable_data.clone().detach()
+        
+        iteration = IterationData()
+        self._iteration = iteration
+        # Reconstruct full tensor by combining optimizable and fixed parts
+        self._current_data = torch.zeros_like(data)
+        
         def closure():
             optimizer.zero_grad()
             
-            # Reconstruct full tensor by combining optimizable and fixed parts
-            current_data = torch.zeros_like(data)
+            iteration = self._iteration
+            current_data = self._current_data.detach()
             
             # Fill in the optimizable columns
             current_data[:, columns_to_optimize] = optimizable_data
@@ -627,6 +634,11 @@ class NormalizingFlow:
             
             # Compute loss on the full tensor
             loss = -self.log_prob(current_data).sum()
+            
+            if loss<iteration.best_loss:
+                iteration.best_loss=loss
+                iteration.best_optimizable_data=optimizable_data.detach().clone()
+            
             loss.backward()
             
             return loss
@@ -637,13 +649,13 @@ class NormalizingFlow:
         
         # Create final result by combining optimized and fixed parts
         result = torch.zeros_like(data)
-        result[:, columns_to_optimize] = optimizable_data.detach()
+        result[:, columns_to_optimize] = iteration.best_optimizable_data
         
         # Add back fixed columns if any exist
         if fixed_columns:
             result[:, fixed_columns] = fixed_data
         
-        return result, loss
+        return result, iteration.best_loss
 
     def fit(
         self,
@@ -728,3 +740,14 @@ class NormalizingFlow:
         self.model.eval()
         return self.best_trained_model.eval()
     
+    def to_prior(self,data : torch.Tensor) -> torch.Tensor:
+        """
+        Converts data tensor to latent space (standard normal dist)
+        """
+        return (self.best_trained_model or self.model)(data)[0]
+    
+    def to_target(self,latent_prior : torch.Tensor) -> torch.Tensor:
+        """
+        Converts data tensor to target posterior space(dataset distribution)
+        """
+        return (self.best_trained_model or self.model).inverse(latent_prior)
