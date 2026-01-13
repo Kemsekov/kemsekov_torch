@@ -473,6 +473,10 @@ class NormalizingFlow:
                 f"input_dim must be even for InvertibleScaleAndTranslate(input.chunk(2)). Got {self.input_dim}."
             )
 
+        norm = nn.RMSNorm
+        act = nn.ReLU
+        # act = nn.SiLU
+        
         half = self.input_dim // 2
         blocks = []
         for i in range(self.layers):
@@ -480,19 +484,19 @@ class NormalizingFlow:
                 nn.Linear(half, self.hidden_dim),
                 
                 Residual([
-                    nn.RMSNorm(self.hidden_dim),
-                    nn.ReLU(),
+                    norm(self.hidden_dim),
+                    act(),
                     nn.Linear(self.hidden_dim, self.hidden_dim),
-                ],init_at_zero=False),
+                ],init_at_zero=True),
                 
                 Residual([
-                    nn.RMSNorm(self.hidden_dim),
-                    nn.ReLU(),
+                    norm(self.hidden_dim),
+                    act(),
                     nn.Linear(self.hidden_dim, self.hidden_dim),
-                ],init_at_zero=False),
+                ],init_at_zero=True),
                 
-                nn.RMSNorm(self.hidden_dim),
-                nn.ReLU(),
+                norm(self.hidden_dim),
+                act(),
 
                 nn.Linear(self.hidden_dim, self.input_dim),
                 # nn.LayerNorm(self.input_dim),
@@ -535,8 +539,7 @@ class NormalizingFlow:
         epochs: int = 30,
         lr: float = 1e-2,
         data_renoise=0.05,
-        grad_clip_max_norm: Optional[float] = 1.0,
-        grad_clip_norm_type: Union[float, str] = 2.0,
+        grad_clip_max_norm: Optional[float] = None,
         debug: bool = True,
     ) -> nn.Module:
         """
@@ -549,7 +552,6 @@ class NormalizingFlow:
             epochs: Epoch count.
             save_skip_epochs: Start tracking best model after this epoch index.
             grad_clip_max_norm: If not None, clip global grad norm to this value. [web:381]
-            grad_clip_norm_type: p-norm used by clip_grad_norm_ (2.0 = L2). [web:381]
             debug: If True, prints when best loss improves.
 
         Returns:
@@ -597,7 +599,7 @@ class NormalizingFlow:
                         torch.nn.utils.clip_grad_norm_(
                             self.model.parameters(),
                             max_norm=grad_clip_max_norm,
-                            norm_type=grad_clip_norm_type,
+                            norm_type=2.0,
                         )
                     optim.step()
                     sch.step()
