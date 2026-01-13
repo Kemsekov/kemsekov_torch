@@ -515,9 +515,15 @@ class NormalizingFlow:
             )
         blocks[-1].non_linearity = InvertibleIdentity()
         return InvertibleSequential(*blocks)
-    # TODO: add sample method
-    # add optimize method
-    def log_prob(self, data):
+    
+    def sample(self,count : int) -> torch.Tensor:
+        """
+        Generates samples drawn from trained distribution
+        """
+        return (self.best_trained_model or self.model).inverse(torch.randn((count,self.input_dim)))
+        
+    
+    def log_prob(self, data : torch.Tensor) -> torch.Tensor:
         model = self.best_trained_model or self.model
         z, jacobians = model(data.to(self.device))
         
@@ -534,6 +540,7 @@ class NormalizingFlow:
         log_px = log_pz + log_det
         
         return log_px.to(data.device)
+    
     def fit(
         self,
         data: torch.Tensor,
@@ -567,6 +574,7 @@ class NormalizingFlow:
         
         data_min_std = data.std(0).quantile(0)
 
+        self.model.train()
         optim = torch.optim.AdamW(self.model.parameters(), lr=lr)
         best_loss = float("inf")
         self.best_trained_model = deepcopy(self.model).to(self.device)
@@ -612,5 +620,6 @@ class NormalizingFlow:
             if debug: print("Stop training")
         if debug and improved:
             print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}")
+        self.model.eval()
         return self.best_trained_model.eval()
     
