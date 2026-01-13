@@ -44,8 +44,9 @@ class Residual(torch.nn.Module):
             
     def forward(self,x):
         out = self.m(x)
-        x_resize = resize_tensor(x,out.shape[1:])
-        return self.alpha*out+x_resize
+        if out.shape!=x.shape:
+            x = resize_tensor(x,out.shape[1:])
+        return self.alpha*out+x
 
 class Repeat(torch.nn.Module):
     """
@@ -434,7 +435,54 @@ def kl_divergence(mu : torch.Tensor, logvar : torch.Tensor ,latent_dimension=[-1
         kl = kl.sum(dim=latent_dimension)
     
     return kl.mean()
- 
+
+
+def mmd_rbf(A, B, gamma=None, eps=1e-12):
+    """
+    Compute unbiased MMD^2 between samples A and B using an RBF (Gaussian) kernel.
+
+    Args:
+        A: array-like, shape (n, d)
+        B: array-like, shape (m, d)
+        gamma: RBF parameter. If None, uses median pairwise-distance heuristic.
+               Kernel is k(x,y)=exp(-gamma * ||x-y||^2). [web:336]
+        eps: numerical stability
+
+    Returns:
+        mmd2: float, unbiased estimate of MMD^2 [web:334][web:336]
+        gamma: float, kernel parameter used
+    """
+    if not isinstance(A,torch.Tensor):
+        A = torch.tensor(A)
+    if not isinstance(B,torch.Tensor):
+        B = torch.tensor(B)
+    n, d = A.shape
+    m, d2 = B.shape
+    assert d == d2
+
+    def sq_dists(X, Y):
+        XX = torch.sum(X * X, axis=1)[:, None]
+        YY = torch.sum(Y * Y, axis=1)[None, :]
+        return XX + YY - 2.0 * (X @ Y.T)
+
+    if gamma is None:
+        Z = torch.vstack([A, B])
+        D = sq_dists(Z, Z)
+        tri = D[torch.triu_indices(D.shape[0], col=1)]
+        med = torch.median(tri)
+        gamma = 1.0 / (med + eps)  # simple median heuristic choice
+
+    Kxx = torch.exp(-gamma * sq_dists(A, A))
+    Kyy = torch.exp(-gamma * sq_dists(B, B))
+    Kxy = torch.exp(-gamma * sq_dists(A, B))
+
+    # unbiased: remove diagonal self-similarity terms in Kxx and Kyy [web:334][web:336]
+    Kxx.fill_diagonal_(0.0)
+    Kyy.fill_diagonal_(0.0)
+
+    mmd2 = (Kxx.sum() / (n * (n - 1))) + (Kyy.sum() / (m * (m - 1))) - 2.0 * Kxy.mean()
+    return mmd2, gamma
+
 from torch.autograd import Function
 class _GradientReversalFunction(Function):
     @staticmethod

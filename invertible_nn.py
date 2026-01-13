@@ -377,9 +377,6 @@ class InvertibleSequential(nn.Sequential):
         for m in reversed(self):
             prev = m.inverse(prev)
         return prev
-        
-
-
 
 def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
     """
@@ -412,12 +409,14 @@ def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
     # 1) log|det J| for the full flow: sum over layers, sum over event dims
     log_det = 0.0
     for jd in jacobians:
+        safe_abs = jd.abs() + eps
+        # smooth_l1 = torch.nn.functional.smooth_l1_loss(jd,torch.zeros_like(jd),reduction='none')+1e-2
         # jd shape matches the transformed subset; sum over all non-batch dims
-        log_det = log_det + torch.log(jd.abs() + eps).flatten(1).mean(dim=sum_dim)
+        log_det += torch.log(safe_abs).flatten(1).sum(dim=sum_dim)
 
     # 2) log p(z) under N(0,1): sum over event dims
     # log N(z;0,1) = -0.5*(z^2 + log(2*pi)) per dimension
-    log_pz = (-0.5 * (z**2 + math.log(2 * math.pi))).flatten(1).mean(dim=sum_dim)
+    log_pz = (-0.5 * (z**2 + math.log(2 * math.pi))).flatten(1).sum(dim=sum_dim)
 
     # 3) log p(x) = log p(z) + log|det J|
     log_px = log_pz + log_det
@@ -427,9 +426,8 @@ def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
     loss = nll.mean()
 
     return loss
-
-
-
+from torch.distributions import Normal
+from kemsekov_torch.residual import Residual
 class NormalizingFlow:
     """
     Wrapper around your InvertibleSequential + flow_nll_loss training loop.
@@ -461,6 +459,7 @@ class NormalizingFlow:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
         self.model = self._build_model().to(self.device)
+        self.best_trained_model = None
 
     def _build_model(self) -> nn.Module:
         if self.input_dim % 2 != 0:
@@ -470,30 +469,68 @@ class NormalizingFlow:
 
         half = self.input_dim // 2
         blocks = []
-        for _ in range(self.layers):
+        for i in range(self.layers):
+            steps = [
+                nn.Linear(half, self.hidden_dim),
+                
+                Residual([
+                    nn.RMSNorm(self.hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(self.hidden_dim, self.hidden_dim),
+                ],init_at_zero=False),
+                
+                Residual([
+                    nn.RMSNorm(self.hidden_dim),
+                    nn.ReLU(),
+                    nn.Linear(self.hidden_dim, self.hidden_dim),
+                ],init_at_zero=False),
+                
+                nn.RMSNorm(self.hidden_dim),
+                nn.ReLU(),
+
+                nn.Linear(self.hidden_dim, self.input_dim),
+                # nn.LayerNorm(self.input_dim),
+            ]
+            if i==self.layers-1 and "Norm" in str(steps[-1]):
+                steps=steps[:-1]
             blocks.append(
                 InvertibleScaleAndTranslate(
-                    model=nn.Sequential(
-                        nn.Linear(half, self.hidden_dim),
-                        nn.LayerNorm(self.hidden_dim),
-                        nn.GELU(),
-                        nn.Linear(self.hidden_dim, self.input_dim),
-                    ),
+                    model=nn.Sequential(*steps),
                     dimension_split=-1,
+                    non_linearity=InvertibleIdentity
+                    # non_linearity=InvertibleTanh
+                    # non_linearity=SmoothSymmetricSqrt
+                    # non_linearity=InvertibleLeakyReLU
                 )
             )
+        blocks[-1].non_linearity = InvertibleIdentity()
         return InvertibleSequential(*blocks)
 
+    def log_prob(self, data):
+        model = self.best_trained_model or self.model
+        z, jacobians = model(data)
+        
+        # log p(z) under standard normal
+        log_pz = Normal(0, 1).log_prob(z).flatten(1).sum(dim=-1)
+        
+        # log |det J|
+        log_det = 0.0
+        for jd in jacobians:
+            log_abs_jd = torch.log(torch.abs(jd) + 1e-12)
+            log_det += log_abs_jd.flatten(1).sum(dim=-1)
+        
+        # log p(x) = log p(z) + log |det J|
+        log_px = log_pz + log_det
+        
+        return log_px
+        
     def fit(
         self,
         data: torch.Tensor,
-        *,
         batch_size: int = 512,
-        lr: float = 1e-2,
         epochs: int = 30,
-        save_skip_epochs: int = 2,
-        grad_clip_max_norm: Optional[float] = 1.0,
-        grad_clip_norm_type: Union[float, str] = 2.0,
+        lr: float = 1e-2,
+        data_renoise=0.05,
         debug: bool = True,
     ) -> nn.Module:
         """
@@ -519,40 +556,121 @@ class NormalizingFlow:
         data = data.to(self.device)
 
         optim = torch.optim.AdamW(self.model.parameters(), lr=lr)
-
         best_loss = float("inf")
-        best_model = deepcopy(self.model).cpu()
+        self.best_trained_model = deepcopy(self.model).cpu()
         improved = False
+        n = data.shape[0]
+        slices = list(range(0, n, batch_size))
+        
+        sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,len(slices)*epochs)
+        try:
+            for epoch in range(epochs):
+                if debug and improved:
+                    print(f"Epoch {epoch}: best_loss={best_loss:0.3f}")
+                improved = False
 
+                # shuffle each epoch
+                perm = torch.randperm(n, device=self.device)
+                data_shuf = data[perm]
+
+                for start in slices:
+                    batch = data_shuf[start : start + batch_size]
+                    
+                    if data_renoise>0:
+                        batch=batch+torch.randn_like(batch)*batch.abs()*data_renoise
+                    
+                    optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
+                    loss = flow_nll_loss(self.model, batch, sum_dim=-1)
+
+                    if loss < best_loss:
+                        best_loss = loss
+                        self.best_trained_model = deepcopy(self.model).cpu()
+                        improved = True
+                    loss.backward()
+                    optim.step()
+                    sch.step()
+                    
+        except KeyboardInterrupt:
+            if debug: print("Stop training")
+        if debug and improved:
+            print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}")
+        return self.best_trained_model.eval()
+    def fit_LBFGS(
+        self,
+        data: torch.Tensor,
+        batch_size=1024,
+        epochs: int = 1,
+        lr: float = 1.0,
+        max_iter: int = 20,
+        history_size: int = 100,
+        line_search_fn: str | None = "strong_wolfe",
+        data_renoise=0.05,
+        debug: bool = True,
+    ) -> nn.Module:
+        """
+        Train using L-BFGS (full-batch recommended).
+        
+        Args:
+            data: Tensor of shape [N, input_dim].
+            lr: Learning rate (L-BFGS often needs lr=1 or similar).
+            max_iter: Max iterations per step().
+            history_size: L-BFGS history.
+            line_search_fn: 'strong_wolfe' or None. [web:466][web:476]
+            epochs: How many times to loop (usually 1 is enough if max_iter is high, 
+                    or loop more with re-shuffling if using batches).
+        """
+        if data.ndim != 2 or data.shape[1] != self.input_dim:
+            raise ValueError(f"Expected data shape [N, {self.input_dim}], got {tuple(data.shape)}")
+
+        # L-BFGS works best with full batch or very large batches
+        data = data.to(self.device)
+        
+        # optimizer setup [web:466]
+        optim = torch.optim.LBFGS(
+            self.model.parameters(), 
+            lr=lr, 
+            max_iter=max_iter, 
+            history_size=history_size, 
+            line_search_fn=line_search_fn
+        )
+
+        batch_size = min(batch_size,data.shape[0])
         n = data.shape[0]
 
-        for epoch in range(epochs):
-            if debug and improved:
-                print(f"Epoch {epoch}: best_loss={best_loss:0.3f}")
+        class TrainingStep:
+            best_loss = float("inf")
             improved = False
+        self.best_trained_model = deepcopy(self.model).cpu()
+        training_step = TrainingStep()
+        
+        try:
+            for epoch in range(epochs):
+                if debug and training_step.improved:
+                    print(f"Epoch {epoch}: best_loss={training_step.best_loss:0.3f}")
+                training_step.improved = False
 
-            # shuffle each epoch
-            perm = torch.randperm(n, device=self.device)
-            data_shuf = data[perm]
+                # shuffle each epoch
+                perm = torch.randperm(n, device=self.device)
+                data_shuf = data[perm]
 
-            for start in range(0, n, batch_size):
-                batch = data_shuf[start : start + batch_size]
-                optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
-                loss = flow_nll_loss(self.model, batch, sum_dim=-1)
-                loss.backward()
+                for start in range(0, n, batch_size):
+                    batch = data_shuf[start : start + batch_size]
+                    if data_renoise>0:
+                        batch=batch+torch.randn_like(batch)*batch.abs()*data_renoise
+                    def loss_step():
+                        optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
+                        loss = flow_nll_loss(self.model, batch, sum_dim=-1)
+                        if loss < training_step.best_loss:
+                            training_step.best_loss = loss
+                            self.best_trained_model = deepcopy(self.model).cpu()
+                            training_step.improved = True
+                        loss.backward()
+                        return loss
 
-                if grad_clip_max_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.model.parameters(),
-                        max_norm=grad_clip_max_norm,
-                        norm_type=grad_clip_norm_type,
-                    )  # clips global norm in-place [web:381]
-
-                optim.step()
-
-                if (epoch >= save_skip_epochs) and (loss < best_loss):
-                    best_loss = loss
-                    best_model = deepcopy(self.model).cpu()
-                    improved = True
-
-        return best_model.eval()
+                    optim.step(loss_step)
+        except KeyboardInterrupt:
+            if debug: print("Stop training")
+        
+        if debug and training_step.improved:
+            print(f"Last Epoch {epoch}: best_loss={training_step.best_loss:0.3f}")
+        return self.best_trained_model.eval()
