@@ -499,7 +499,7 @@ class NormalizingFlow:
                 act(),
 
                 nn.Linear(self.hidden_dim, self.input_dim),
-                # nn.LayerNorm(self.input_dim),
+                # norm(self.input_dim)
             ]
             if i==self.layers-1 and "Norm" in str(steps[-1]):
                 steps=steps[:-1]
@@ -609,90 +609,4 @@ class NormalizingFlow:
         if debug and improved:
             print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}")
         return self.best_trained_model.eval()
-    def fit_LBFGS(
-        self,
-        data: torch.Tensor,
-        batch_size=1024,
-        epochs: int = 1,
-        lr: float = 1.0,
-        max_iter: int = 20,
-        history_size: int = 100,
-        line_search_fn: str | None = "strong_wolfe",
-        data_renoise=0.05,
-        grad_clip_max_norm: Optional[float] = 1.0,
-        grad_clip_norm_type: Union[float, str] = 2.0,
-        debug: bool = True,
-    ) -> nn.Module:
-        """
-        Train using L-BFGS (full-batch recommended).
-        
-        Args:
-            data: Tensor of shape [N, input_dim].
-            lr: Learning rate (L-BFGS often needs lr=1 or similar).
-            max_iter: Max iterations per step().
-            history_size: L-BFGS history.
-            line_search_fn: 'strong_wolfe' or None. [web:466][web:476]
-            epochs: How many times to loop (usually 1 is enough if max_iter is high, 
-                    or loop more with re-shuffling if using batches).
-        """
-        if data.ndim != 2 or data.shape[1] != self.input_dim:
-            raise ValueError(f"Expected data shape [N, {self.input_dim}], got {tuple(data.shape)}")
-
-        # L-BFGS works best with full batch or very large batches
-        data = data.to(self.device)
-        
-        # optimizer setup [web:466]
-        optim = torch.optim.LBFGS(
-            self.model.parameters(), 
-            lr=lr, 
-            max_iter=max_iter, 
-            history_size=history_size, 
-            line_search_fn=line_search_fn
-        )
-
-        batch_size = min(batch_size,data.shape[0])
-        n = data.shape[0]
-
-        class TrainingStep:
-            best_loss = float("inf")
-            improved = False
-        self.best_trained_model = deepcopy(self.model).to(self.device)
-        training_step = TrainingStep()
-        
-        try:
-            for epoch in range(epochs):
-                if debug and training_step.improved:
-                    print(f"Epoch {epoch}: best_loss={training_step.best_loss:0.3f}")
-                training_step.improved = False
-
-                # shuffle each epoch
-                perm = torch.randperm(n, device=self.device)
-                data_shuf = data[perm]
-
-                for start in range(0, n, batch_size):
-                    batch = data_shuf[start : start + batch_size]
-                    if data_renoise>0:
-                        batch=batch+torch.randn_like(batch)*batch.abs()*data_renoise
-                    def loss_step():
-                        optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
-                        loss = flow_nll_loss(self.model, batch, sum_dim=-1)
-                        if loss < training_step.best_loss:
-                            training_step.best_loss = loss
-                            self.best_trained_model = deepcopy(self.model).to(self.device)
-                            training_step.improved = True
-                        loss.backward()
-                        if grad_clip_max_norm is not None:
-                            torch.nn.utils.clip_grad_norm_(
-                                self.model.parameters(),
-                                max_norm=grad_clip_max_norm,
-                                norm_type=grad_clip_norm_type,
-                            )
-                        return loss
-
-                    optim.step(loss_step)
-        except KeyboardInterrupt:
-            if debug: print("Stop training")
-        
-        if debug and training_step.improved:
-            print(f"Last Epoch {epoch}: best_loss={training_step.best_loss:0.3f}")
-        return self.best_trained_model.eval()
+    
