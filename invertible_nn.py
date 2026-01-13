@@ -541,34 +541,78 @@ class NormalizingFlow:
         
         return log_px.to(data.device)
 
-    def optimize(self, data: torch.Tensor,lr : float=1.0,epochs : int=1):
+    def optimize(self, data: torch.Tensor, lr: float = 1.0, epochs: int = 1, 
+             columns_to_optimize: list[int] = None):
         """
-        Optimize data to maximize log probability using LBFGS optimizer.
-
+        Optimize only specific columns of data to maximize log probability.
+        
         Args:
-            data: Input tensor to optimize
-
+            data: Input tensor of shape [batch_size, input_dim]
+            columns_to_optimize: List of column indices to optimize (0-based). 
+                                If None or empty, all columns will be optimized.
+            
         Returns:
-            Optimized data tensor, loss
+            Optimized data tensor, final loss
         """
-        # Clone the input data and set it as a parameter for optimization
-        _data = data.clone().detach().requires_grad_(True)
-
-        # Define the optimizer
-        optimizer = torch.optim.LBFGS([_data], lr=lr)
-
+        batch_size, input_dim = data.shape
+        
+        # Handle default case - optimize all columns if none specified
+        if columns_to_optimize is None or len(columns_to_optimize) == 0:
+            columns_to_optimize = list(range(input_dim))
+        
+        # Validate column indices
+        columns_to_optimize = [c for c in columns_to_optimize if 0 <= c < input_dim]
+        if not columns_to_optimize:
+            return data.clone(), -self.log_prob(data).sum().detach()
+        
+        # Identify fixed columns as those not in columns_to_optimize
+        all_columns = list(range(input_dim))
+        fixed_columns = [c for c in all_columns if c not in columns_to_optimize]
+        
+        # Create optimizable parameters for only the specified columns
+        optimizable_data = data[:, columns_to_optimize].clone().detach().requires_grad_(True)
+        
+        # Fixed data doesn't need gradients
+        if fixed_columns:
+            fixed_data = data[:, fixed_columns].clone().detach()
+        else:
+            fixed_data = None
+        
+        # Define optimizer on only the optimizable part
+        optimizer = torch.optim.LBFGS([optimizable_data], lr=lr, max_iter=20)
+        
         def closure():
             optimizer.zero_grad()
-            # Use negative log probability as loss (since we want to maximize log_prob)
-            loss = -self.log_prob(_data).sum()
+            
+            # Reconstruct full tensor by combining optimizable and fixed parts
+            current_data = torch.zeros_like(data)
+            
+            # Fill in the optimizable columns
+            current_data[:, columns_to_optimize] = optimizable_data
+            
+            # Fill in fixed columns if any exist
+            if fixed_columns:
+                current_data[:, fixed_columns] = fixed_data
+            
+            # Compute loss on the full tensor
+            loss = -self.log_prob(current_data).sum()
             loss.backward()
+            
             return loss
-
-        # Run the optimization
+        
+        # Run optimization
         for i in range(epochs):
             loss = optimizer.step(closure)
-
-        return _data.detach(),loss
+        
+        # Create final result by combining optimized and fixed parts
+        result = torch.zeros_like(data)
+        result[:, columns_to_optimize] = optimizable_data.detach()
+        
+        # Add back fixed columns if any exist
+        if fixed_columns:
+            result[:, fixed_columns] = fixed_data
+        
+        return result, loss
 
     def fit(
         self,
