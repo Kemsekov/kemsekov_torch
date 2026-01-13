@@ -578,7 +578,7 @@ class NormalizingFlow:
         lr: float = 1e-2,
         data_renoise=0.025,
         grad_clip_max_norm: Optional[float] = 1,
-        debug: bool = True,
+        debug: bool = False,
     ) -> nn.Module:
         """
         Train on `data` and return best model.
@@ -636,6 +636,7 @@ class NormalizingFlow:
                         self.best_trained_model = deepcopy(self.model).to(self.device)
                         improved = True
                     loss.backward()
+                    
                     if grad_clip_max_norm is not None:
                         torch.nn.utils.clip_grad_norm_(
                             self.model.parameters(),
