@@ -515,6 +515,8 @@ class NormalizingFlow:
             )
         blocks[-1].non_linearity = InvertibleIdentity()
         return InvertibleSequential(*blocks)
+    # TODO: add sample method
+    # add optimize method
     def log_prob(self, data):
         model = self.best_trained_model or self.model
         z, jacobians = model(data.to(self.device))
@@ -562,6 +564,8 @@ class NormalizingFlow:
 
         batch_size = min(batch_size,data.shape[0])
         data = data.to(self.device)
+        
+        data_min_std = data.std(0).quantile(0)
 
         optim = torch.optim.AdamW(self.model.parameters(), lr=lr)
         best_loss = float("inf")
@@ -585,7 +589,7 @@ class NormalizingFlow:
                     batch = data_shuf[start : start + batch_size]
                     
                     if data_renoise>0:
-                        batch=batch+torch.randn_like(batch)*batch.abs()*data_renoise
+                        batch=batch+torch.randn_like(batch)*data_min_std*data_renoise
                     
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
                     loss = flow_nll_loss(self.model, batch, sum_dim=-1)
