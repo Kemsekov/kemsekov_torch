@@ -1,5 +1,5 @@
 import random
-from typing import Optional, Union
+from typing import Generator, Optional, Union
 import torch
 import torch.nn as nn
 import math
@@ -428,6 +428,7 @@ def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
     return loss
 from torch.distributions import Normal
 from kemsekov_torch.residual import Residual
+from kemsekov_torch.common_modules import mmd_rbf
 class NormalizingFlow:
     """
     Wrapper around your InvertibleSequential + flow_nll_loss training loop.
@@ -516,6 +517,15 @@ class NormalizingFlow:
         blocks[-1].non_linearity = InvertibleIdentity()
         return InvertibleSequential(*blocks)
     
+    def MMD2_with_data(self,data : torch.Tensor) -> float:
+        """
+        Returns MMD^2 of sampled learned latent space with given data.
+        This method can be used as a metric for evaluating how good trained model is.
+        """
+        with torch.no_grad():
+            sampled = self.sample(len(data))
+            return mmd_rbf(data,sampled)[0].item()
+    
     def sample(self,count : int) -> torch.Tensor:
         """
         Generates samples drawn from trained distribution
@@ -540,6 +550,27 @@ class NormalizingFlow:
         log_px = log_pz + log_det
         
         return log_px.to(data.device)
+
+    def interpolate(self,dataA : torch.Tensor,dataB : torch.Tensor, N : int):
+        """
+        Generate N interpolated samples between dataA and dataB via latent space linear interpolation.
+        
+        Args:
+            dataA: Starting data point tensor
+            dataB: Ending data point tensor  
+            N: Number of interpolation steps to generate
+        
+        Yields:
+            torch.Tensor: Interpolated sample at each step from dataA to dataB
+        """
+        m = (self.best_trained_model or self.model)
+        latentsA = m(dataA)[0]
+        latentsB = m(dataB)[0]
+        time = torch.linspace(0,1,N)
+        for i in range(N):
+            t = time[i]
+            interpolated = (1-t)*latentsA+t*latentsB
+            yield m.inverse(interpolated)
 
     def optimize(self, data: torch.Tensor, lr: float = 1.0, epochs: int = 1, 
              columns_to_optimize: list[int] = None):
@@ -619,8 +650,8 @@ class NormalizingFlow:
         data: torch.Tensor,
         batch_size: int = 512,
         epochs: int = 30,
-        lr: float = 1e-2,
         data_renoise=0.025,
+        lr: float = 1e-2,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
     ) -> nn.Module:
@@ -630,9 +661,9 @@ class NormalizingFlow:
         Args:
             data: Tensor of shape [N, input_dim].
             batch_size: Batch size.
-            lr: AdamW learning rate.
             epochs: Epoch count.
-            save_skip_epochs: Start tracking best model after this epoch index.
+            data_renoise: dataset renoise factor. This is very important parameter and must be finetuned. Lays in range [0.01,0.1]
+            lr: AdamW learning rate.
             grad_clip_max_norm: If not None, clip global grad norm to this value. [web:381]
             debug: If True, prints when best loss improves.
 
@@ -645,7 +676,7 @@ class NormalizingFlow:
         batch_size = min(batch_size,data.shape[0])
         data = data.to(self.device)
         
-        data_min_std = data.std(0).quantile(0)
+        data_min_std = data.std(0).median()
 
         self.model.train()
         optim = torch.optim.AdamW(self.model.parameters(), lr=lr)
