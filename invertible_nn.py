@@ -528,26 +528,55 @@ class NormalizingFlow:
         z, jacobians = model(data.to(self.device))
         
         # log p(z) under standard normal
-        log_pz = Normal(0, 1).log_prob(z).flatten(1).sum(dim=-1)
+        log_pz = Normal(0, 1).log_prob(z).flatten(-1).sum(dim=-1)
         
         # log |det J|
         log_det = 0.0
         for jd in jacobians:
-            log_abs_jd = torch.log(torch.abs(jd) + 1e-12)
-            log_det += log_abs_jd.flatten(1).sum(dim=-1)
+            log_abs_jd = torch.log(torch.abs(jd) + 1e-8)
+            log_det += log_abs_jd.flatten(-1).sum(dim=-1)
         
         # log p(x) = log p(z) + log |det J|
         log_px = log_pz + log_det
         
         return log_px.to(data.device)
-    
+
+    def optimize(self, data: torch.Tensor,lr : float=1.0,epochs : int=1):
+        """
+        Optimize data to maximize log probability using LBFGS optimizer.
+
+        Args:
+            data: Input tensor to optimize
+
+        Returns:
+            Optimized data tensor, loss
+        """
+        # Clone the input data and set it as a parameter for optimization
+        _data = data.clone().detach().requires_grad_(True)
+
+        # Define the optimizer
+        optimizer = torch.optim.LBFGS([_data], lr=lr)
+
+        def closure():
+            optimizer.zero_grad()
+            # Use negative log probability as loss (since we want to maximize log_prob)
+            loss = -self.log_prob(_data).sum()
+            loss.backward()
+            return loss
+
+        # Run the optimization
+        for i in range(epochs):
+            loss = optimizer.step(closure)
+
+        return _data.detach(),loss
+
     def fit(
         self,
         data: torch.Tensor,
         batch_size: int = 512,
         epochs: int = 30,
         lr: float = 1e-2,
-        data_renoise=0.05,
+        data_renoise=0.03,
         grad_clip_max_norm: Optional[float] = None,
         debug: bool = True,
     ) -> nn.Module:
