@@ -342,7 +342,7 @@ class NormalizingFlow:
         self,
         constraint : Callable[[torch.Tensor],torch.Tensor],
         num_samples: int,
-        noise_scale: float = 0.05,
+        noise_scale: float = 0.01,
         steps: int = 2,
         lr: float = 1,
     ) -> torch.Tensor:
@@ -352,7 +352,7 @@ class NormalizingFlow:
         Args:
             constraint: Constraint loss function. Accepts generated target in (num_samples,dim) shape and returns loss (scalar tensor) that defines condition for sampling.
             num_samples: Number of samples to generate
-            noise_scale: Scale of noise added during Langevin dynamics (default 0.05)
+            noise_scale: Scale of noise added during Langevin dynamics (default 0.01)
             steps: Number of optimization steps (default 2)
             lr: Learning rate for the optimization (default 1)
 
