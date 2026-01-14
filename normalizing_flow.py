@@ -240,7 +240,7 @@ class NormalizingFlow:
         data: torch.Tensor,
         batch_size: int = 512,
         epochs: int = 30,
-        data_renoise=0.05,
+        data_renoise=0.03,
         lr: float = 1e-2,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
@@ -269,19 +269,25 @@ class NormalizingFlow:
         data_min_std = data.std(0).median()
 
         self.model.train()
-        optim = torch.optim.AdamW(self.model.parameters(), lr=lr)
-        best_loss = float("inf")
+        
+        optim = torch.optim.AdamW(self.model.parameters(), lr=lr,weight_decay=1e-4)
+        
+        self.best_loss = float("inf")
         self.best_trained_model = deepcopy(self.model).to(self.device)
-        improved = False
+        self.improved = False
         n = data.shape[0]
         slices = list(range(0, n, batch_size))
         
-        sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,len(slices)*epochs)
+        total_steps = len(slices)*epochs
+        
+        # sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
+        sch = torch.optim.lr_scheduler.ExponentialLR(optim,(0.15)**(1/total_steps))
+        
         try:
             for epoch in range(epochs):
-                if debug and improved:
-                    print(f"Epoch {epoch}: best_loss={best_loss:0.3f}")
-                improved = False
+                if debug and self.improved:
+                    print(f"Epoch {epoch}: best_loss={self.best_loss:0.3f}")
+                self.improved = False
 
                 # shuffle each epoch
                 perm = torch.randperm(n, device=self.device)
@@ -293,28 +299,30 @@ class NormalizingFlow:
                     if data_renoise>0:
                         batch=batch+torch.randn_like(batch)*data_min_std*data_renoise
                     
-                    optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
-                    loss = flow_nll_loss(self.model, batch, sum_dim=-1)
+                    def closure():
+                        optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
+                        loss = flow_nll_loss(self.model, batch, sum_dim=-1)
 
-                    if loss < best_loss:
-                        best_loss = loss
-                        self.best_trained_model = deepcopy(self.model).to(self.device)
-                        improved = True
-                    loss.backward()
-                    
-                    if grad_clip_max_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(
-                            self.model.parameters(),
-                            max_norm=grad_clip_max_norm,
-                            norm_type=2.0,
-                        )
-                    optim.step()
+                        if loss < self.best_loss:
+                            self.best_loss = loss
+                            self.best_trained_model = deepcopy(self.model).to(self.device)
+                            self.improved = True
+                        loss.backward()
+                        
+                        if grad_clip_max_norm is not None:
+                            torch.nn.utils.clip_grad_norm_(
+                                self.model.parameters(),
+                                max_norm=grad_clip_max_norm,
+                                norm_type=2.0,
+                            )
+                        return loss
+                    optim.step(closure)
                     sch.step()
                     
         except KeyboardInterrupt:
             if debug: print("Stop training")
-        if debug and improved:
-            print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}")
+        if debug and self.improved:
+            print(f"Last Epoch {epoch}: best_loss={self.best_loss:0.3f}")
         self.model.eval()
         return self.best_trained_model.eval()
     
