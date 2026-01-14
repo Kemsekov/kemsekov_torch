@@ -1,7 +1,7 @@
 from torch.distributions import Normal
 from kemsekov_torch.residual import Residual
 from kemsekov_torch.common_modules import mmd_rbf
-from typing import Generator, Optional
+from typing import Callable, Generator, Optional
 from copy import deepcopy
 import torch
 import torch.nn as nn
@@ -329,3 +329,78 @@ class NormalizingFlow:
         Converts data tensor to target posterior space(dataset distribution)
         """
         return (self.best_trained_model or self.model).inverse(latent_prior)
+
+    def conditional_sample(
+        self,
+        constraint : Callable[[torch.Tensor],torch.Tensor],
+        num_samples: int,
+        noise_scale: float = 0.05,
+        steps: int = 2,
+        lr: float = 1,
+    ) -> torch.Tensor:
+        """
+        Sample from p(X | X[c_i] = v_i) using constrained latent space optimization with Langevin dynamics.
+
+        Args:
+            constraint: Constraint loss function. Accepts generated target in (num_samples,dim) shape and returns loss (scalar tensor) that defines condition for sampling.
+            num_samples: Number of samples to generate
+            noise_scale: Scale of noise added during Langevin dynamics (default 0.05)
+            steps: Number of optimization steps (default 2)
+            lr: Learning rate for the optimization (default 1)
+
+        Returns:
+            torch.Tensor: Samples of shape [num_samples, input_dim] satisfying the conditions
+        """
+        if self.best_trained_model is None:
+            raise ValueError("Model must be trained before conditional sampling. Call fit() first.")
+
+        model = self.best_trained_model or self.model
+        model.eval()
+
+        # Initialize z from standard normal distribution
+        z = torch.randn(num_samples, self.input_dim, device=self.device, requires_grad=True)
+
+        original_prior = (z * z).mean().detach()
+
+        # Create optimizer for the latent variable z
+        optimizer = torch.optim.LBFGS([z], lr=lr)
+
+        class Iteration:
+            best_sample = z.clone().detach()
+            best_loss = 1e8
+        self._iteration = Iteration()
+        
+        def closure():
+            optimizer.zero_grad()
+
+            # Forward pass: x = M_inv(z)
+            x = model.inverse(z)
+
+            # Compute prior loss: L_prior = ||z||² (keep z in N(0,I)) must match original generated prior
+            L_prior = ((z * z).mean()-original_prior)**2
+
+            # Compute constraint loss: L_constraint = constraint(x)
+            L_constraint = constraint(x)
+
+            # Total loss: L_total = L_prior + λ * L_constraint
+            L_total = L_prior + L_constraint
+
+            it = self._iteration
+            if L_total<it.best_loss:
+                it.best_loss = L_total
+                it.best_sample = z.clone().detach()
+            
+            L_total.backward()
+            with torch.no_grad():
+                z.data += (noise_scale) * torch.randn_like(z)
+            return L_total
+        
+        for t in range(steps):
+            # Perform optimizer step
+            optimizer.step(closure)
+
+
+        with torch.no_grad():
+            final_x = model.inverse(self._iteration.best_sample)
+
+        return final_x
