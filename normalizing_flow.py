@@ -240,7 +240,7 @@ class NormalizingFlow:
         data: torch.Tensor,
         batch_size: int = 512,
         epochs: int = 30,
-        data_renoise=0.025,
+        data_renoise=0.05,
         lr: float = 1e-2,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
