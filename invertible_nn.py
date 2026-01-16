@@ -1,9 +1,106 @@
 import random
 from typing import Union
-import torch
-import torch.nn as nn
 import math
+import torch.nn as nn
+import torch
 
+class InvertibleComposition(nn.Module):
+    """
+    Composition of two invertible modules:
+        y = g(f(x))
+
+    Assumes each module implements:
+      - forward(x) -> y
+      - inverse(y) -> x
+      - derivative(x) -> dy/dx   (elementwise diagonal factor, same shape as x)
+
+    Then by chain rule:
+      d/dx g(f(x)) = g'(f(x)) * f'(x)  (elementwise product) [web:296][web:297]
+
+    Inverse of composition:
+      (g ∘ f)^{-1} = f^{-1} ∘ g^{-1}  [web:297]
+    """
+    def __init__(self, f: nn.Module, g: nn.Module):
+        super().__init__()
+        self.f = f
+        self.g = g
+
+    def forward(self, x: torch.Tensor):
+        y1 = self.f(x)
+        y2 = self.g(y1)
+        return y2
+
+    def inverse(self, y: torch.Tensor):
+        x1 = self.g.inverse(y)
+        x0 = self.f.inverse(x1)
+        return x0
+
+    def derivative(self, x: torch.Tensor):
+        # chain rule: g'(f(x)) * f'(x) [web:296]
+        is_train = self.f.training
+        y1 = self.f.eval()(x)
+        if is_train:
+            self.f.train()
+            
+        return self.g.derivative(y1) * self.f.derivative(x)
+
+class InvertibleBatchNorm1d(nn.Module):
+    """
+    Invertible BatchNorm-like layer (feature-wise affine using running stats).
+    Always affine: y = ((x - mean) / sqrt(var+eps)) * weight + bias. [web:284]
+
+    forward(x)   -> y   (updates running stats only in train mode)
+    inverse(y)   -> x   (never updates running stats)
+    derivative(x)-> dy/dx (elementwise diagonal factors; independent of x) [web:284]
+    """
+    def __init__(self, num_features: int, eps: float = 1e-5, momentum: float = 0.1, weight_eps: float = 1e-12):
+        super().__init__()
+        self.num_features = int(num_features)
+        self.eps = float(eps)
+        self.momentum = float(momentum)
+        self.weight_eps = float(weight_eps)
+
+        self.register_buffer("running_mean", torch.zeros(num_features))
+        self.register_buffer("running_var", torch.ones(num_features))
+        self.register_buffer("num_batches_tracked", torch.tensor(0, dtype=torch.long))
+
+        self.weight = nn.Parameter(torch.ones(num_features))
+        self.bias = nn.Parameter(torch.zeros(num_features))
+
+    def _reduce_dims(self, x: torch.Tensor):
+        # Normalize over all dims except last (features)
+        return tuple(range(x.ndim - 1))
+
+    @torch.no_grad()
+    def _update_running_stats(self, x: torch.Tensor):
+        dims = self._reduce_dims(x)
+        batch_mean = x.mean(dim=dims)
+        batch_var = x.var(dim=dims, unbiased=False)  # typical BN forward variance choice [web:284]
+
+        m = self.momentum
+        self.running_mean.mul_(1.0 - m).add_(m * batch_mean)
+        self.running_var.mul_(1.0 - m).add_(m * batch_var)
+        self.num_batches_tracked.add_(1)
+
+    def forward(self, x: torch.Tensor):
+        if self.training:
+            self._update_running_stats(x)
+
+        inv_std = torch.rsqrt(self.running_var + self.eps)
+        y = (x - self.running_mean) * inv_std
+        y = y * self.weight + self.bias
+        return y
+
+    def inverse(self, y: torch.Tensor):
+        xhat = (y - self.bias) / (self.weight + self.weight_eps)
+        std = torch.sqrt(self.running_var + self.eps)
+        x = xhat * std + self.running_mean
+        return x
+
+    def derivative(self, x: torch.Tensor):
+        # dy/dx = weight / sqrt(running_var + eps)
+        d = self.weight * torch.rsqrt(self.running_var + self.eps)
+        return d.expand_as(x)
 class InvertibleLeakyReLU(nn.Module):
     def __init__(self, negative_slope=0.2):
         super().__init__()
@@ -20,25 +117,50 @@ class InvertibleLeakyReLU(nn.Module):
     def derivative(self, x):
         # d/dx = 1 if x >= 0 else negative_slope
         return torch.where(x >= 0, torch.ones_like(x), torch.full_like(x, self.negative_slope))
-class InvertibleTanh(torch.nn.Module):
-    def __init__(self,scale=2):
+class InvertibleTanh(nn.Module):
+    """
+    y = scale * tanh(x)
+
+    Numerical stability improvements:
+    - inverse uses torch.atanh when available (stable + simple)
+    - fallback uses log1p-based formula
+    - clamp uses dtype-aware eps
+    - derivative uses cosh formulation to avoid tanh(x)^2 cancellation for large |x|
+    """
+    def __init__(self, scale=2.0, eps=None):
         super().__init__()
-        self.scale=scale
-    
+        self.scale = float(scale)
+        self.eps = eps  # if None -> choose from dtype at runtime
+
+    def _eps(self, x):
+        # dtype-aware epsilon; you can also force a larger eps via ctor
+        if self.eps is not None:
+            return float(self.eps)
+        # tiny is the smallest positive normal; eps is machine epsilon
+        # Using a slightly larger clamp than machine eps is usually better here.
+        return 1e-6 if x.dtype in (torch.float32, torch.bfloat16) else 1e-12
+
     def forward(self, x):
-        return self.scale*torch.tanh(x)
-    
+        return self.scale * torch.tanh(x)
+
     def inverse(self, y):
-        # Inverse: y = scale * tanh(x) => x = arctanh(y/scale)
-        # arctanh(z) = 0.5 * ln((1+z)/(1-z)), where z = y/scale
+        # x = atanh(y/scale), but must keep |y/scale| < 1
         z = y / self.scale
-        # Clamp z to [-1+eps, 1-eps] to avoid numerical instability
-        z = torch.clamp(z, min=-1.0 + 1e-6, max=1.0 - 1e-6)
-        return 0.5 * torch.log((1 + z) / (1 - z))
-    
+        eps = self._eps(z)
+        z = z.clamp(min=-1.0 + eps, max=1.0 - eps)
+
+        # Prefer builtin atanh (stable implementation)
+        if hasattr(torch, "atanh"):
+            return torch.atanh(z)
+
+        # Fallback: atanh(z) = 0.5 * (log1p(z) - log1p(-z))  (more stable than log((1+z)/(1-z)))
+        return 0.5 * (torch.log1p(z) - torch.log1p(-z))
+
     def derivative(self, x):
-        # Derivative: d/dx [scale * tanh(x)] = scale * (1 - tanh^2(x))
-        return self.scale * (1 - torch.tanh(x)**2)
+        # dy/dx = scale * sech^2(x) = scale / cosh(x)^2
+        # This avoids tanh(x)^2 cancellation when tanh(x) saturates near 1.
+        c = torch.cosh(x)
+        return self.scale / (c * c)
 class SymmetricLog(nn.Module):
     def __init__(self):
         super().__init__()
@@ -67,29 +189,36 @@ class SymmetricLog(nn.Module):
         out[~mask] = 1.0 / (1 - x[~mask] + 1e-6)
         return out
 class SymmetricSqrt(nn.Module):
-    def __init__(self):
+    def __init__(self, eps: float = 1e-12):
         super().__init__()
-    def forward(self,x):
-        mask = x>0
-        out = x*0
-        out[mask]=((1+x[mask]).sqrt()-1).to(x.dtype)
-        out[~mask]=(1-(1-x[~mask]).sqrt()).to(x.dtype)
-        return out
-    def inverse(self, y):
-        mask = y >= 0
-        out = torch.empty_like(y)
-        out[mask]   = (y[mask] + 1).pow(2) - 1
-        out[~mask]  = 1 - (1 - y[~mask]).pow(2)
-        return out
-    
-    def derivative(self, x):
-        mask = x > 0
-        out = torch.empty_like(x)
-        # for x>0: d/dx [sqrt(1+x)-1] = 1/(2*sqrt(1+x))
-        out[mask] = 1.0 / (2 * (1 + x[mask]).sqrt()+1e-6)
-        # for x<=0: d/dx [1 - sqrt(1-x)] = 1/(2*sqrt(1-x))
-        out[~mask] = 1.0 / (2 * (1 - x[~mask]).sqrt()+1e-6)
-        return out
+        self.eps = eps
+
+    @staticmethod
+    def _sqrt1pm1_stable(t: torch.Tensor, eps: float):
+        # returns sqrt(1+t) - 1, stable for small t
+        # valid for t >= -1
+        s = torch.sqrt(torch.clamp(1.0 + t, min=0.0))
+        return t / (s + 1.0 + eps)  # use identity from stable sqrt difference [web:210]
+
+    def forward(self, x: torch.Tensor):
+        # y = sign(x) * (sqrt(1+|x|) - 1)
+        xa = x.abs()
+        y = self._sqrt1pm1_stable(xa, self.eps)
+        return torch.copysign(y, x)
+
+    def inverse(self, y: torch.Tensor):
+        # if y =  sqrt(1+x)-1  => x = (y+1)^2 - 1
+        # if y = - (sqrt(1+|x|)-1) => |x| = (|y|+1)^2 - 1, then apply sign
+        ya = y.abs()
+        xa = (ya + 1.0).pow(2) - 1.0
+        return torch.copysign(xa, y)
+
+    def derivative(self, x: torch.Tensor):
+        # d/dx [sign(x)*(sqrt(1+|x|)-1)] = 1/(2*sqrt(1+|x|)) for x!=0
+        xa = x.abs()
+        denom = 2.0 * torch.sqrt(1.0 + xa)  # already stable; no subtraction here
+        # avoid divide by 0 if something goes pathological
+        return 1.0 / (denom + self.eps)
 class SmoothSymmetricSqrt(nn.Module):
     """
     This function is kinda-interpolation between y=x and y=sqrt(x)
@@ -120,7 +249,7 @@ class SmoothSymmetricSqrt(nn.Module):
         a = 2*(x+1).sqrt()
         b = x
         sigmoid = (self.A*x+self.B).sigmoid()
-        return sign*0.5*(a*sigmoid+(1-sigmoid)*b+self.bias)
+        return sign*0.555*(a*sigmoid+(1-sigmoid)*b+self.bias)
     
     def derivative(self, x):
         y = x.abs()
@@ -132,10 +261,11 @@ class SmoothSymmetricSqrt(nn.Module):
         term2 = s / (2 * sqrt_term)
         term3 = 0.5 * (1 - s)
         
-        return term1 + term2 + term3
+        return (term1 + term2 + term3)*1.11
     
     def inverse(self,x : torch.Tensor):
         """This is somewhat optimal approximation of Smooth Symmetric Sqrt inverse function"""
+        x=x/1.11
         sign = x.sign()
         x = x.abs()
         res = torch.zeros_like(x)
@@ -377,7 +507,7 @@ class InvertibleSequential(nn.Sequential):
             prev = m.inverse(prev)
         return prev
 
-def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
+def flow_nll_loss(flow, x, eps: float = 1e-8,sum_dim=-1):
     """
     Maximum-likelihood loss for a normalizing flow.
 
@@ -408,10 +538,11 @@ def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
     # 1) log|det J| for the full flow: sum over layers, sum over event dims
     log_det = 0.0
     for jd in jacobians:
-        safe_abs = jd.abs() + eps
-        # smooth_l1 = torch.nn.functional.smooth_l1_loss(jd,torch.zeros_like(jd),reduction='none')+1e-2
+        safe_abs1 = jd.abs() + eps
+        # safe_abs2 = torch.nn.functional.smooth_l1_loss(jd,torch.zeros_like(jd),reduction='none')+eps
+        # avg = (safe_abs1+safe_abs2)/2
         # jd shape matches the transformed subset; sum over all non-batch dims
-        log_det += torch.log(safe_abs).flatten(1).sum(dim=sum_dim)
+        log_det += torch.log(safe_abs1).flatten(1).sum(dim=sum_dim)
 
     # 2) log p(z) under N(0,1): sum over event dims
     # log N(z;0,1) = -0.5*(z^2 + log(2*pi)) per dimension

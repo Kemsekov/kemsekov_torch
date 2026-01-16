@@ -28,6 +28,7 @@ class NormalizingFlow:
         input_dim: int,
         hidden_dim: int = 32,
         layers: int = 3,
+        dropout=0.05,
         device: Optional[str] = 'cpu',
     ):
         self.input_dim = int(input_dim)
@@ -37,7 +38,7 @@ class NormalizingFlow:
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
-        self.model = self._build_model().to(self.device)
+        self.model = self._build_model(dropout).to(self.device)
         self.best_trained_model = None
 
     def to(self,device):
@@ -46,15 +47,16 @@ class NormalizingFlow:
         if self.best_trained_model:
             self.best_trained_model=self.best_trained_model.to(device)
 
-    def _build_model(self) -> nn.Module:
+    def _build_model(self,dropout_p) -> nn.Module:
         if self.input_dim % 2 != 0:
             raise ValueError(
                 f"input_dim must be even for InvertibleScaleAndTranslate(input.chunk(2)). Got {self.input_dim}."
             )
 
         norm = nn.RMSNorm
+        # norm = nn.BatchNorm1d
         act = nn.ReLU
-        dropout = lambda: nn.Dropout(p=0.05)
+        dropout = lambda: nn.Dropout(p=dropout_p)
         # act = nn.SiLU
         
         half = self.input_dim // 2
@@ -86,12 +88,19 @@ class NormalizingFlow:
                 InvertibleScaleAndTranslate(
                     model=nn.Sequential(*steps),
                     dimension_split=-1,
-                    non_linearity=InvertibleIdentity
+                    non_linearity=InvertibleIdentity,
+                    # non_linearity=InvertibleBatchNorm1d(half),
                     # non_linearity=InvertibleTanh
                     # non_linearity=SmoothSymmetricSqrt
-                    # non_linearity=InvertibleLeakyReLU
+                    # non_linearity=InvertibleLeakyReLU(0.9)
+                    # non_linearity=InvertibleComposition(
+                    #     InvertibleBatchNorm1d(half),
+                    #     SymmetricSqrt()
+                    # )
+                    # non_linearity=SymmetricLog
                 )
             )
+        # blocks[0].non_linearity = SymmetricLog()
         blocks[-1].non_linearity = InvertibleIdentity()
         return InvertibleSequential(*blocks)
     
@@ -240,7 +249,7 @@ class NormalizingFlow:
         data: torch.Tensor,
         batch_size: int = 512,
         epochs: int = 30,
-        data_renoise=0.03,
+        data_renoise=0.025,
         lr: float = 1e-2,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
@@ -303,10 +312,11 @@ class NormalizingFlow:
                         batch=batch+torch.randn_like(batch)*data_renoise
                     
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
-                    loss = flow_nll_loss(self.model, batch, sum_dim=-1).mean()
+                    
+                    loss = flow_nll_loss(self.model, batch, sum_dim=-1).mean()+2 # add 2 to make it positive
 
                     if loss < self.best_loss:
-                        self.best_loss = loss
+                        self.best_loss = loss.item()
                         self.best_trained_model = deepcopy(self.model).to(self.device)
                         self.improved = True
                     loss.backward()
