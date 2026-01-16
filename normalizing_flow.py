@@ -1,7 +1,7 @@
 from torch.distributions import Normal
 from kemsekov_torch.residual import Residual
 from kemsekov_torch.common_modules import mmd_rbf
-from typing import Callable, Generator, Optional
+from typing import Callable, Generator, Literal, Optional
 from copy import deepcopy
 import torch
 import torch.nn as nn
@@ -244,6 +244,7 @@ class NormalizingFlow:
         lr: float = 1e-2,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
+        scheduler : Literal['exponential','cosine'] = 'cosine'
     ) -> nn.Module:
         """
         Train on `data` and return best model.
@@ -266,7 +267,7 @@ class NormalizingFlow:
         batch_size = min(batch_size,data.shape[0])
         data = data.to(self.device)
         
-        data_min_std = data.std(0).median()
+        data_renoise *= data.std(0).median()
 
         self.model.train()
         
@@ -280,8 +281,10 @@ class NormalizingFlow:
         
         total_steps = len(slices)*epochs
         
-        # sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
-        sch = torch.optim.lr_scheduler.ExponentialLR(optim,(0.15)**(1/total_steps))
+        if scheduler=='cosine':
+            sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
+        if scheduler=='exponential':
+            sch = torch.optim.lr_scheduler.ExponentialLR(optim,(0.15)**(1/total_steps))
         
         try:
             for epoch in range(epochs):
@@ -297,26 +300,25 @@ class NormalizingFlow:
                     batch = data_shuf[start : start + batch_size]
                     
                     if data_renoise>0:
-                        batch=batch+torch.randn_like(batch)*data_min_std*data_renoise
+                        batch=batch+torch.randn_like(batch)*data_renoise
                     
-                    def closure():
-                        optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
-                        loss = flow_nll_loss(self.model, batch, sum_dim=-1)
+                    optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
+                    loss = flow_nll_loss(self.model, batch, sum_dim=-1)
 
-                        if loss < self.best_loss:
-                            self.best_loss = loss
-                            self.best_trained_model = deepcopy(self.model).to(self.device)
-                            self.improved = True
-                        loss.backward()
-                        
-                        if grad_clip_max_norm is not None:
-                            torch.nn.utils.clip_grad_norm_(
-                                self.model.parameters(),
-                                max_norm=grad_clip_max_norm,
-                                norm_type=2.0,
-                            )
-                        return loss
-                    optim.step(closure)
+                    if loss < self.best_loss:
+                        self.best_loss = loss
+                        self.best_trained_model = deepcopy(self.model).to(self.device)
+                        self.improved = True
+                    loss.backward()
+                    
+                    if grad_clip_max_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.model.parameters(),
+                            max_norm=grad_clip_max_norm,
+                            norm_type=2.0,
+                        )
+
+                    optim.step()
                     sch.step()
                     
         except KeyboardInterrupt:

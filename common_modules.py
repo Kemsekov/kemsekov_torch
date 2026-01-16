@@ -470,7 +470,7 @@ def mmd_rbf(A, B, gamma=None, eps=1e-12):
         D = sq_dists(Z, Z)
         tri = D[torch.triu_indices(D.shape[0], col=1)]
         med = torch.median(tri)
-        gamma = 1.0 / (med + eps)  # simple median heuristic choice
+        gamma = 5 / (med + eps)  # simple median heuristic choice
 
     Kxx = torch.exp(-gamma * sq_dists(A, A))
     Kyy = torch.exp(-gamma * sq_dists(B, B))
