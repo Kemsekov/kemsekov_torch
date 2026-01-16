@@ -422,6 +422,6 @@ def flow_nll_loss(flow, x, eps: float = 1e-12,sum_dim=-1):
 
     # maximize log p(x)  <=>  minimize -log p(x)
     nll = -log_px
-    loss = nll.mean()
+    loss = nll
 
     return loss

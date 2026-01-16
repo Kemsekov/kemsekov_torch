@@ -54,6 +54,7 @@ class NormalizingFlow:
 
         norm = nn.RMSNorm
         act = nn.ReLU
+        dropout = lambda: nn.Dropout(p=0.05)
         # act = nn.SiLU
         
         half = self.input_dim // 2
@@ -67,18 +68,17 @@ class NormalizingFlow:
                     act(),
                     nn.Linear(self.hidden_dim, self.hidden_dim),
                 ],init_at_zero=True),
-                
                 Residual([
                     norm(self.hidden_dim),
                     act(),
                     nn.Linear(self.hidden_dim, self.hidden_dim),
                 ],init_at_zero=True),
+                dropout(),
                 
                 norm(self.hidden_dim),
                 act(),
 
                 nn.Linear(self.hidden_dim, self.input_dim),
-                # norm(self.input_dim)
             ]
             if i==self.layers-1 and "Norm" in str(steps[-1]):
                 steps=steps[:-1]
@@ -303,7 +303,7 @@ class NormalizingFlow:
                         batch=batch+torch.randn_like(batch)*data_renoise
                     
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
-                    loss = flow_nll_loss(self.model, batch, sum_dim=-1)
+                    loss = flow_nll_loss(self.model, batch, sum_dim=-1).mean()
 
                     if loss < self.best_loss:
                         self.best_loss = loss
