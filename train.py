@@ -586,6 +586,7 @@ def train(
             on_epoch_end(epoch,model)
     except KeyboardInterrupt:
         _print_red("Interrupt training")
+    del acc
     gc.collect()
     try:
         torch.cuda.empty_cache()
