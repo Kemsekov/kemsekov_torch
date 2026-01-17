@@ -48,7 +48,6 @@ def train(
         on_epoch_end = None,
         on_train_batch_end = None,
         on_test_batch_end = None,
-        save_plots = False,
         compile_torchscript=False
     ):
     """
@@ -207,7 +206,6 @@ def train(
         Method that is called at the end of each test batch. The model, batch, loss, and metric are passed to
         this method. Default is None.
 
-    save_plots: create plots of metrics for saved checkpoints
     
     compile_torchscript: try to compile and save torchscript model
     
@@ -268,14 +266,12 @@ def train(
     total_parameters = sum([v.numel() for v in model.parameters()])/1000/1000
     _print_blue(f"Total model parameters {total_parameters:0.2f} M")
     save_last_dir = os.path.join(save_results_dir,"last")
-    plot_dir = os.path.join(save_last_dir, "plots")
     report_path = os.path.join(save_last_dir,"report.json")
     state_dir = os.path.join(save_last_dir,"state")
 
     checkpoints_dir = os.path.join(save_results_dir,"checkpoints")
     
     os.makedirs(save_last_dir, exist_ok=True)
-    os.makedirs(plot_dir, exist_ok=True)
     os.makedirs(state_dir, exist_ok=True)
     os.makedirs(checkpoints_dir, exist_ok=True)
 
@@ -424,7 +420,7 @@ def train(
             running_loss = 0.0
             metric = {}
             for opt in optimizer_acc:
-                opt.zero_grad()  # Reset gradients before accumulation
+                opt.zero_grad(set_to_none=True)  # Reset gradients before accumulation
             pbar = tqdm(train_loader,desc=f"train {acc.process_index}")
             start = time.time()
             NANS_COUNT = 0
@@ -432,7 +428,7 @@ def train(
             for batch in pbar:
                 with acc.accumulate(model):
                     for opt in optimizer_acc:
-                        opt.zero_grad()
+                        opt.zero_grad(set_to_none=True)
                     
                     # sometimes accelerate autocast fails to do it's job
                     # and we need manually cast batch to required dtype
@@ -564,7 +560,7 @@ def train(
                 acc.save_state(state_dir)
                 # create history plots in plots folder
                 # Update to save loss and metric plots in separate files and only for the last epoch
-                plots_and_stats(save_plots, plot_dir, report_path, train_metric_history, test_metric_history, train_time_history, loss_history, test_loss_history, acc, is_testing, epoch) 
+                plots_and_stats(report_path, train_metric_history, test_metric_history, train_time_history, loss_history, test_loss_history, acc, is_testing, epoch) 
 
                 best_test_metric = test_metric
                 if acc.is_main_process and checkpoints_count>1:
@@ -597,32 +593,8 @@ def train(
     except: pass
     return model
 
-def plots_and_stats(save_plots, plot_dir, report_path, train_metric_history, test_metric_history, train_time_history, loss_history, test_loss_history, acc, is_testing, epoch):
+def plots_and_stats(report_path, train_metric_history, test_metric_history, train_time_history, loss_history, test_loss_history, acc, is_testing, epoch):
     if acc.is_main_process:
-        if save_plots:
-                    # Loss plot
-            plt.figure()
-            plt.plot(loss_history, label="Train Loss")
-            if is_testing:
-                plt.plot(test_loss_history, label=f"Test Loss")
-            plt.title("Loss History")
-            plt.xlabel("Epoch")
-            plt.ylabel("Loss")
-            plt.legend()
-            plt.savefig(os.path.join(plot_dir, "loss_history.png"))
-            plt.close()
-
-                    # Metric plot
-            save_plot_metric_history(plot_dir, train_metric_history,test_metric_history if is_testing else None,'train')
-                    
-                    # time plot
-            plt.figure()
-            plt.plot(train_time_history)
-            plt.title(f"Epoch execution time")
-            plt.xlabel("Epoch")
-            plt.ylabel("Seconds")
-            plt.savefig(os.path.join(plot_dir, f"train_time_history.png"))
-            plt.close()
 
         results = {
                     "loss_history"          : loss_history,

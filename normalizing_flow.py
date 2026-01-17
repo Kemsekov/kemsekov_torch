@@ -397,7 +397,8 @@ class NormalizingFlow:
             x = model.inverse(z)
 
             # Compute prior loss: L_prior = ||z||² (keep z in N(0,I)) must match original generated prior
-            L_prior = ((z * z).mean()-original_prior)**2
+            # L_prior = ((z * z).mean()-original_prior)**2
+            L_prior = (z * z).mean()
 
             # Compute constraint loss: L_constraint = constraint(x)
             L_constraint = constraint(x)
