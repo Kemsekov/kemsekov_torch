@@ -30,7 +30,7 @@ class NormalizingFlow:
         layers: int = 3,
         dropout=0.05,
         device: Optional[str] = 'cpu',
-        non_linearity : Union[InvertibleTanh,SmoothSymmetricSqrt,SymmetricSqrt,InvertibleIdentity] = InvertibleIdentity,
+        non_linearity : Union[SmoothSymmetricSqrt,InvertibleIdentity] = InvertibleIdentity,
     ):
         self.non_linearity=non_linearity
         self.input_dim = int(input_dim)
