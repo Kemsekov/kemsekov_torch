@@ -30,7 +30,9 @@ class NormalizingFlow:
         layers: int = 3,
         dropout=0.05,
         device: Optional[str] = 'cpu',
+        non_linearity : Union[InvertibleTanh,SmoothSymmetricSqrt,SymmetricSqrt,InvertibleIdentity] = InvertibleIdentity,
     ):
+        self.non_linearity=non_linearity
         self.input_dim = int(input_dim)
         self.hidden_dim = int(hidden_dim)
         self.layers = int(layers)
@@ -88,19 +90,9 @@ class NormalizingFlow:
                 InvertibleScaleAndTranslate(
                     model=nn.Sequential(*steps),
                     dimension_split=-1,
-                    non_linearity=InvertibleIdentity,
-                    # non_linearity=InvertibleBatchNorm1d(half),
-                    # non_linearity=InvertibleTanh
-                    # non_linearity=SmoothSymmetricSqrt
-                    # non_linearity=InvertibleLeakyReLU(0.9)
-                    # non_linearity=InvertibleComposition(
-                    #     InvertibleBatchNorm1d(half),
-                    #     SymmetricSqrt()
-                    # )
-                    # non_linearity=SymmetricLog
+                    non_linearity=self.non_linearity,
                 )
             )
-        # blocks[0].non_linearity = SymmetricLog()
         blocks[-1].non_linearity = InvertibleIdentity()
         return InvertibleSequential(*blocks)
     
