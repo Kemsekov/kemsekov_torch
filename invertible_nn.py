@@ -4,6 +4,17 @@ import math
 import torch.nn as nn
 import torch
 
+def _test_invertible_module(m : nn.Module,x0 = -5,x1 = 5):
+    x = torch.linspace(x0,x1,1024).requires_grad_(True)
+    y = m(x)
+    y.sum().backward()
+    xgrad = x.grad
+    xderiv = m.derivative(x)
+    yinv = m.inverse(y)
+    
+    print("Inverse MAE",(x-yinv).abs().mean().item())
+    print("deriv MAE",(xderiv-xgrad).abs().mean().item())
+
 class InvertibleComposition(nn.Module):
     """
     Composition of two invertible modules:
@@ -44,6 +55,162 @@ class InvertibleComposition(nn.Module):
             
         return self.g.derivative(y1) * self.f.derivative(x)
 
+class KFunction(torch.nn.Module):
+    def __init__(self, n_mid=11):
+        super().__init__()
+        self.n_mid = n_mid
+        # Register core constants as buffers (will be moved with .to())
+        self.register_buffer('pi', torch.tensor(math.pi))
+        self.register_buffer('const', torch.tensor(0.5) - self.pi / 4)
+        
+        # Precompute spline coefficients (will register as buffers)
+        self._precompute_spline()
+        
+    def _precompute_spline(self):
+        """Precompute spline coefficients on current device/dtype"""
+        device = self.pi.device
+        dtype = self.pi.dtype
+        
+        # Create grid in x-space for middle segment
+        x_mid = torch.linspace(
+            -self.pi/2, self.pi/2, self.n_mid,
+            device=device, dtype=dtype
+        )
+        
+        # Compute corresponding y values using middle segment formula
+        y_mid = x_mid - 0.5 * torch.cos(x_mid) + 0.5
+        
+        # Precompute global constants for linear segments
+        self.register_buffer('y_low_global', y_mid[0])     # = 0.5 - pi/2
+        self.register_buffer('y_high_global', y_mid[-1])   # = 0.5 + pi/2
+        
+        # Set up clamped cubic spline system for inverse function
+        n = self.n_mid
+        A = torch.zeros((n, n), device=device, dtype=dtype)
+        rhs = torch.zeros(n, device=device, dtype=dtype)
+        
+        h_global = torch.diff(y_mid)
+        # Left boundary: derivative of inverse = 1/k'(-pi/2) = 1/0.5 = 2.0
+        h0 = h_global[0]
+        A[0, 0] = 2 * h0
+        A[0, 1] = h0
+        slope0 = (x_mid[1] - x_mid[0]) / h0
+        rhs[0] = 6 * (slope0 - 2.0)
+        
+        # Right boundary: derivative of inverse = 1/k'(pi/2) = 1/1.5 = 2/3
+        h_last = h_global[-1]
+        A[-1, -2] = h_last
+        A[-1, -1] = 2 * h_last
+        slope_last = (x_mid[-1] - x_mid[-2]) / h_last
+        rhs[-1] = 6 * ((2.0/3.0) - slope_last)
+        
+        # Interior points
+        for i in range(1, n-1):
+            h_prev = h_global[i-1]
+            h_curr = h_global[i]
+            
+            A[i, i-1] = h_prev
+            A[i, i] = 2 * (h_prev + h_curr)
+            A[i, i+1] = h_curr
+            
+            slope_forward = (x_mid[i+1] - x_mid[i]) / h_curr
+            slope_backward = (x_mid[i] - x_mid[i-1]) / h_prev
+            rhs[i] = 6 * (slope_forward - slope_backward)
+        
+        # Solve for second derivatives
+        m_global = torch.linalg.solve(A, rhs)
+        
+        # Create grouped spline parameters tensor [n_mid-1, 6]
+        # Columns: [y_i, x_i, x_{i+1}, m_i, m_{i+1}, h_i]
+        n_intervals = self.n_mid - 1
+        spline_params = torch.zeros((n_intervals, 6), device=device, dtype=dtype)
+        spline_params[:, 0] = y_mid[:-1]          # y_i
+        spline_params[:, 1] = x_mid[:-1]          # x_i
+        spline_params[:, 2] = x_mid[1:]           # x_{i+1}
+        spline_params[:, 3] = m_global[:-1]       # m_i
+        spline_params[:, 4] = m_global[1:]        # m_{i+1}
+        spline_params[:, 5] = h_global            # h_i
+        
+        self.register_buffer('spline_params', spline_params)
+
+    def forward(self, x):
+        """Compute k(x) for input tensor x"""
+        result = torch.zeros_like(x)
+        
+        # Region 1: x <= -pi/2
+        mask1 = x <= -self.pi/2
+        result[mask1] = 0.5 * x[mask1] + self.const
+        
+        # Region 2: -pi/2 < x < pi/2
+        mask2 = (x > -self.pi/2) & (x < self.pi/2)
+        result[mask2] = x[mask2] - 0.5 * torch.cos(x[mask2]) + 0.5
+        
+        # Region 3: x >= pi/2
+        mask3 = x >= self.pi/2
+        result[mask3] = 1.5 * x[mask3] + self.const
+        
+        return result
+
+    def derivative(self, x):
+        """Compute derivative k'(x) = g(x)"""
+        result = torch.empty_like(x)
+        
+        # Region 1: x < -pi/2 -> constant 0.5
+        mask1 = x < -self.pi/2
+        result[mask1] = 0.5
+        
+        # Region 2: -pi/2 <= x <= pi/2 -> 0.5*sin(x) + 1
+        mask2 = (x >= -self.pi/2) & (x <= self.pi/2)
+        result[mask2] = 0.5 * torch.sin(x[mask2]) + 1.0
+        
+        # Region 3: x > pi/2 -> constant 1.5
+        mask3 = x > self.pi/2
+        result[mask3] = 1.5
+        
+        return result
+
+    def inverse(self, y):
+        """Compute inverse function k^{-1}(y)"""
+        result = torch.empty_like(y)
+        
+        # Left linear segment: y <= y_low_global
+        left_mask = y <= self.y_low_global
+        result[left_mask] = 2 * (y[left_mask] - self.const)
+        
+        # Right linear segment: y >= y_high_global
+        right_mask = y >= self.y_high_global
+        result[right_mask] = (y[right_mask] - self.const) / 1.5
+        
+        # Middle segment: spline interpolation
+        mid_mask = (~left_mask) & (~right_mask)
+        if torch.any(mid_mask):
+            y_vals = y[mid_mask]
+            
+            # Direct index approximation
+            normalized = (y_vals - self.y_low_global) / (self.y_high_global - self.y_low_global)
+            indices = (normalized * (self.n_mid - 1)).long()
+            indices = torch.clamp(indices, 0, self.n_mid - 2)
+            
+            # Single read of all required parameters
+            params = self.spline_params[indices]  # Shape: [num_vals, 6]
+            y_i = params[:, 0]
+            x_i = params[:, 1]
+            x_ip1 = params[:, 2]
+            m_i = params[:, 3]
+            m_ip1 = params[:, 4]
+            h_i = params[:, 5]
+            
+            # Cubic spline interpolation
+            t = (y_vals - y_i) / h_i
+            one_minus_t = 1 - t
+            h_i2_div6 = (h_i ** 2) / 6
+            
+            term1 = one_minus_t * x_i + t * x_ip1
+            term2 = h_i2_div6 * (one_minus_t ** 3 - one_minus_t) * m_i
+            term3 = h_i2_div6 * (t ** 3 - t) * m_ip1
+            result[mid_mask] = term1 + term2 + term3
+        
+        return result
 class InvertibleBatchNorm1d(nn.Module):
     """
     Invertible BatchNorm-like layer (feature-wise affine using running stats).

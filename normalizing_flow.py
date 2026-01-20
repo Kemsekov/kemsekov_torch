@@ -346,9 +346,10 @@ class NormalizingFlow:
         self,
         constraint : Callable[[torch.Tensor],torch.Tensor],
         num_samples: int,
-        noise_scale: float = 0.01,
+        noise_scale: float = 0.0,
         steps: int = 2,
         lr: float = 1,
+        mode_closeness_weight = 1.0
     ) -> torch.Tensor:
         """
         Sample from p(X | X[c_i] = v_i) using constrained latent space optimization with Langevin dynamics.
@@ -356,9 +357,10 @@ class NormalizingFlow:
         Args:
             constraint: Constraint loss function. Accepts generated target in (num_samples,dim) shape and returns loss (scalar tensor) that defines condition for sampling.
             num_samples: Number of samples to generate
-            noise_scale: Scale of noise added during Langevin dynamics (default 0.01)
+            noise_scale: Scale of noise added during Langevin dynamics (default 0.01). Increasing this value will result in samples more spread from condition. Values around [0 to 0.05] are generally good enough.
             steps: Number of optimization steps (default 2)
             lr: Learning rate for the optimization (default 1)
+            mode_closeness_weight: Weight for trying to sample closer to distribution mode. Increasing this value make samples cluster more around closest distribution mode, potentially leading to mode collapse (all samples are the same). Values [0 to 2] are generally good enough.
 
         Returns:
             torch.Tensor: Samples of shape [num_samples, input_dim] satisfying the conditions
@@ -389,8 +391,8 @@ class NormalizingFlow:
             x = model.inverse(z)
 
             # Compute prior loss: L_prior = ||z||² (keep z in N(0,I)) must match original generated prior
-            # L_prior = ((z * z).mean()-original_prior)**2
             L_prior = (z * z).mean()
+            L_prior = (L_prior-original_prior)**2+mode_closeness_weight*L_prior
 
             # Compute constraint loss: L_constraint = constraint(x)
             L_constraint = constraint(x)
