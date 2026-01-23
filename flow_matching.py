@@ -537,14 +537,17 @@ class FlowModel1d(nn.Module):
     def log_prob(self, data: torch.Tensor) -> torch.Tensor:
         """Ultra-fast Gaussian approximation for visualization"""
         from torch.func import vmap, jacrev
+        
         Y = data # complex domain
-
-        X = self.to_prior(Y) # X of shape (16,2)
-
+        X = self.to_prior(Y) # normal noise
+        def elementwise_prior(x): return self.to_prior(x).view(-1,dim).sum(0)
+        
         # change of variables stuff
         dim = Y.shape[-1]
-        batch_jac = vmap(jacrev(lambda x: self.to_prior(x).view(-1,dim).sum(0)))(Y.view(-1,dim)).view(*Y.shape[:-1],dim,dim)
+        Y_flat = Y.view(-1,dim)
+        output_shape = *Y.shape[:-1],dim,dim
+        batch_jac = vmap(jacrev(elementwise_prior))(Y_flat).view(output_shape)
         jac_det = batch_jac.det().abs()
 
-        fy = Normal(0,1).log_prob(X).sum(-1).exp()*jac_det
+        fy = Normal(0,1).log_prob(X).sum(-1) + jac_det.log()
         return fy
