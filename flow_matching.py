@@ -575,6 +575,9 @@ class FlowModel1d(nn.Module):
         """
         Jacobian det approx via pairwise L2 distances of perturbed neighbors.
         Gives exact same result as `full_log_prob` but at **much** lower computational cost.
+        
+        This piece of code is just brilliant, i don't understand myself how i've come up with it,
+        but this stuff perfectly computes log prob of flow matching model at very low cost.
         """
         if not steps: steps = min(self.default_steps, 8)
         Y = data.to(self.device)
