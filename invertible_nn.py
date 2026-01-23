@@ -674,12 +674,13 @@ class InvertibleSequential(nn.Sequential):
             prev = m.inverse(prev)
         return prev
 
-def flow_nll_loss(flow, x, eps: float = 1e-8,sum_dim=-1):
+def flow_nll_loss(z, jacobians, x, eps: float = 1e-8,sum_dim=-1):
     """
     Maximum-likelihood loss for a normalizing flow.
 
     Args:
-        flow: InvertibleSequential. forward(x) -> (z, jacobians)
+        z: Latents of normalizing flow models
+        jacobians: jacobians of normalizing flow model
         x: Data batch shaped (B, ...).
         eps: Numerical stability for log.
         sum_dim: Which dimension to reduce over *after* flattening non-batch dims with
@@ -700,7 +701,6 @@ def flow_nll_loss(flow, x, eps: float = 1e-8,sum_dim=-1):
         loss: Scalar (mean NLL over batch).
         diagnostics: dict with mean log_det and mean log_pz.
     """
-    z, jacobians = flow(x)  # z = f(x)
 
     # 1) log|det J| for the full flow: sum over layers, sum over event dims
     log_det = 0.0
@@ -718,8 +718,4 @@ def flow_nll_loss(flow, x, eps: float = 1e-8,sum_dim=-1):
     # 3) log p(x) = log p(z) + log|det J|
     log_px = log_pz + log_det
 
-    # maximize log p(x)  <=>  minimize -log p(x)
-    nll = -log_px
-    loss = nll
-
-    return loss
+    return -log_px,log_det

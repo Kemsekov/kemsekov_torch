@@ -58,8 +58,8 @@ class NormalizingFlow:
         norm = nn.RMSNorm
         # norm = nn.BatchNorm1d
         act = nn.ReLU
-        dropout = lambda: nn.Dropout(p=dropout_p)
         # act = nn.SiLU
+        dropout = lambda: nn.Dropout(p=dropout_p)
         
         half = self.input_dim // 2
         blocks = []
@@ -239,6 +239,7 @@ class NormalizingFlow:
     def fit(
         self,
         data: torch.Tensor,
+        data_prior : Optional[torch.Tensor] = None,
         batch_size: int = 512,
         epochs: int = 30,
         data_renoise=0.025,
@@ -267,6 +268,9 @@ class NormalizingFlow:
 
         batch_size = min(batch_size,data.shape[0])
         data = data.to(self.device)
+
+        if data_prior is not None:
+            data_prior = data_prior.to(self.device)
         
         data_renoise *= data.std(0).median()
 
@@ -296,6 +300,8 @@ class NormalizingFlow:
                 # shuffle each epoch
                 perm = torch.randperm(n, device=self.device)
                 data_shuf = data[perm]
+                if data_prior is not None:
+                    prior_shuf = data_prior[perm]
 
                 losses = []
                 for start in slices:
@@ -305,9 +311,14 @@ class NormalizingFlow:
                         batch=batch+torch.randn_like(batch)*data_renoise
                     
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
+                    z,jac = self.model(batch)
                     
-                    loss = flow_nll_loss(self.model, batch, sum_dim=-1).mean()+2 # add 2 to make it positive
+                    nil,log_det = flow_nll_loss(z,jac, batch, sum_dim=-1)
+                    loss = nil.mean()
 
+                    if data_prior is not None:
+                        prior_batch = prior_shuf[start : start + batch_size]
+                        loss+=(z-prior_batch).pow(2).mean()
 
                     loss.backward()
                     
