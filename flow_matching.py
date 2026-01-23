@@ -463,7 +463,7 @@ class FlowModel1d(nn.Module):
         constraint : Callable[[torch.Tensor],torch.Tensor],
         num_samples: int,
         noise_scale: float = 0.0,
-        steps: int = 3,
+        steps: int = 2,
         lr: float = 1,
         mode_closeness_weight = 0.1,
         sampler_steps = None
