@@ -362,7 +362,7 @@ class FlowModel1d(nn.Module):
                     act(),
                     nn.Linear(hidden_dim,hidden_dim),
                 ]),
-                nn.Sequential(
+                nn.Sequential( #gating helps a lot!
                     nn.Linear(hidden_dim,hidden_dim),
                     nn.Sigmoid()
                 )
@@ -380,7 +380,7 @@ class FlowModel1d(nn.Module):
         for m,temb in self.residual_blocks:
             x = m(x*temb(x))
         
-        x = self.dropout(x)
+        # x = self.dropout(x)
         return self.collapse(x)
         
     def fit(
@@ -410,8 +410,6 @@ class FlowModel1d(nn.Module):
         Returns:
             trained_model: Best model on CPU in eval() mode.
         """
-        
-
         device = list(model.parameters())[0].device
 
         batch_size = min(batch_size,data.shape[0])
@@ -422,7 +420,7 @@ class FlowModel1d(nn.Module):
         
         model.train()
         fm = FlowMatching()
-        optim = torch.optim.AdamW(model.parameters(), lr=lr,weight_decay=1e-4)
+        optim = torch.optim.AdamW(model.parameters(), lr=lr)
         
         best_loss = float("inf")
         best_r2 = -1e8
@@ -434,7 +432,11 @@ class FlowModel1d(nn.Module):
         total_steps = len(slices)*epochs
         
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
-        lossf = torch.nn.functional.mse_loss
+        
+        
+        lossf = F.smooth_l1_loss
+        # lossf = F.mse_loss
+        lossf = lambda a,b: 0.2*F.smooth_l1_loss(a,b)+F.mse_loss(a,b)
         
         try:
             for epoch in range(epochs):
@@ -476,7 +478,6 @@ class FlowModel1d(nn.Module):
                             model.parameters(),
                             max_norm=grad_clip_max_norm,
                             norm_type=2.0,
-                            
                         )
                     optim.step()
                     sch.step()
