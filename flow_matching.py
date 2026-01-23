@@ -248,8 +248,9 @@ class FlowModel1d(nn.Module):
         act = nn.GELU
         self.time_emb = nn.Sequential(
             nn.Linear(1,hidden_dim),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(hidden_dim,hidden_dim),
+            nn.Dropout(dropout_p),
         )
         self.expand = nn.Linear(in_dim,hidden_dim)
         
@@ -297,6 +298,7 @@ class FlowModel1d(nn.Module):
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
         reflow_window = 1,
+        lossf = F.mse_loss
     ) -> nn.Module:
         """
         Train on `data` and return best model.
@@ -338,16 +340,14 @@ class FlowModel1d(nn.Module):
         
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
         
-        
-        lossf = F.smooth_l1_loss
-        lossf = F.mse_loss
+
         
         try:
             for epoch in range(epochs):
                 if debug and improved:
                     print(f"Epoch {epoch}: best_loss={best_loss:0.3f}\tbest r2={best_r2:0.3f}")
                 improved = False
-
+                
                 # shuffle each epoch
                 perm = torch.randperm(n, device=device)
                 data_shuf = data[perm]
@@ -365,13 +365,6 @@ class FlowModel1d(nn.Module):
                     time = torch.rand(batch.shape[0],device=device)
                     if prior_dataset is not None:
                         prior_batch = prior_shuf[start : start + batch_size]
-                        # time = torch.randn(batch.shape[0],device=device).sigmoid()
-                        
-                        t=(torch.randn(batch.shape[0],device=device)-0.35).tanh()
-                        t-=t.min()
-                        t/=t.max()
-                        time = t
-                        
                         time*=reflow_window
                         
                     pred_dir,target_dir,contrast_dir,t = \
@@ -439,13 +432,14 @@ class FlowModel1d(nn.Module):
             with torch.no_grad():
                 data = current_model.to_target(prior)
             self.fit(
-                data,
+                data=data,
                 prior_dataset=prior,
                 debug=debug,
                 batch_size=batch_size,
                 epochs=epochs_per_window_step,
                 lr=lr,
                 reflow_window=w,
+                lossf = F.smooth_l1_loss
             )
         self.default_steps=5
         self.eval()
@@ -547,13 +541,13 @@ class FlowModel1d(nn.Module):
         return final_x
     
     # Alternative even simpler version (Gaussian approximation):
-    def log_prob(self, data: torch.Tensor) -> torch.Tensor:
+    def log_prob(self, data: torch.Tensor,steps=-1) -> torch.Tensor:
         """Ultra-fast Gaussian approximation for visualization"""
         from torch.func import vmap, jacrev
         
         Y = data.to(self.device) # complex domain
-        X = self.to_prior(Y) # normal noise
-        def elementwise_prior(x): return self.to_prior(x).view(-1,dim).sum(0)
+        X = self.to_prior(Y,steps) # normal noise
+        def elementwise_prior(x): return self.to_prior(x,steps).view(-1,dim).sum(0)
         
         # change of variables stuff
         dim = Y.shape[-1]
