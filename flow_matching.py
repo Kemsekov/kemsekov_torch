@@ -263,7 +263,8 @@ class FlowModel1d(nn.Module):
                 ]),
                 nn.Sequential( #gating helps a lot!
                     nn.Linear(hidden_dim,hidden_dim),
-                    nn.Sigmoid()
+                    nn.Sigmoid(),
+                    # nn.Dropout(dropout_p)
                 )
             ]) for i in range(residual_blocks)
         ])
@@ -280,7 +281,6 @@ class FlowModel1d(nn.Module):
         for m,temb in self.residual_blocks:
             x = m(x*temb(x))
         
-        # x = self.dropout(x)
         return self.collapse(x)
     
     def to(self,device):
@@ -339,9 +339,7 @@ class FlowModel1d(nn.Module):
         total_steps = len(slices)*epochs
         
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
-        
-
-        
+        all_r2s = []
         try:
             for epoch in range(epochs):
                 if debug and improved:
@@ -392,6 +390,7 @@ class FlowModel1d(nn.Module):
                     
                 mean_loss = sum(losses)/len(losses)
                 mean_r2 = sum(r2s)/len(r2s)
+                all_r2s.append(mean_r2)
                 if mean_r2 > best_r2:
                     best_loss = mean_loss.item()
                     best_trained_model = deepcopy(model)
@@ -406,6 +405,8 @@ class FlowModel1d(nn.Module):
         with torch.no_grad():
             for p1,p2 in zip(model.parameters(),best_trained_model.parameters()):
                 p1.copy_(p2.to(device))
+        model.eval()
+        return sum(all_r2s)/len(all_r2s)
     
     def mmd2_with_data(self,data : torch.Tensor) -> float:
         """
