@@ -325,7 +325,7 @@ class FlowMatching:
                     else:
                         logdet += logdet_correction  # Forward integration
                     
-                    xt.requires_grad_(False)
+                    # xt.requires_grad_(False)
             else:
                 # Standard inference without gradient tracking
                 with torch.no_grad():
@@ -388,7 +388,7 @@ class FlowModel1d(nn.Module):
         data: torch.Tensor,
         prior_dataset : Optional[torch.Tensor] = None,
         batch_size: int = 512,
-        epochs: int = 30,
+        epochs: int = 100,
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
         grad_clip_max_norm: Optional[float] = 1,
@@ -504,11 +504,11 @@ class FlowModel1d(nn.Module):
                 p1+=p2-p1
 
     def reflow(self,
-               dataset_size,
-               batch_size,
-               epochs_per_window_step=10,
-               window_steps=5,
-               lr=1e-2,
+               dataset_size=2048,
+               batch_size=512,
+               epochs_per_window_step=8,
+               window_steps=4,
+               lr=0.02,
                debug = False
         ):
         current_model = deepcopy(self).train()
@@ -559,6 +559,7 @@ class FlowModel1d(nn.Module):
             compute_logdet=True
         )
         return z, logdet
+    
     def to_target(self,normal_noise : torch.Tensor,steps=None):
         if not steps: steps = self.default_steps
         fm = FlowMatching()
