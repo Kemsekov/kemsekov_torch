@@ -236,108 +236,7 @@ class FlowMatching:
         if return_intermediates:
             return xt, intermediates
         return xt
-    def sample_with_logdet(
-        self,
-        model: nn.Module,
-        x0: torch.Tensor,
-        steps: int,
-        churn_scale: float = 0.0,
-        inverse: bool = False,
-        return_intermediates: bool = False,
-        compute_logdet: bool = False
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[list[torch.Tensor]]]:
-        """
-        Samples from a flow-matching model with Euler integration and optionally computes log-determinant.
-        
-        Args:
-            model: Callable vθ(x, t) predicting vector field/motion.
-            x0: Starting point (image or noise tensor).
-            steps: Number of Euler steps.
-            churn_scale: Amount of noise added for stability each step.
-            inverse (bool): If False, integrate forward from x0 to x1 (image → noise).
-                            If True, reverse for noise → image.
-            return_intermediates: Whether to return intermediate xt values.
-            compute_logdet: Whether to compute and return log-determinant of Jacobian.
-        
-        Returns:
-            Tuple containing:
-            1. xt - Final sample tensor
-            2. logdet - Log-determinant of Jacobian (or None if compute_logdet=False)
-            3. intermediates - List of intermediate values if return_intermediates=True (or None)
-        """
-        device = next(model.parameters()).device
-        x0 = x0.to(device)
-        batch_size = x0.shape[0]
-        
-        # Setup time steps
-        if inverse:
-            ts = torch.linspace(1, 0, steps+1, device=device)
-        else:
-            ts = torch.linspace(0, 1, steps+1, device=device)
-        
-        xt = x0.clone()
-        dt = -1/steps if inverse else 1/steps
-        
-        # Initialize log-determinant accumulator if needed
-        logdet = torch.zeros(batch_size, device=device) if compute_logdet else None
-        
-        intermediates = [] if return_intermediates else None
-        
-        # Integration loop
-        for i in range(steps):
-            t = ts[i]
-            
-            # Apply churn noise if specified
-            if churn_scale > 0:
-                noise = xt.std(dim=0, keepdim=True) * torch.randn_like(xt) + xt.mean(dim=0, keepdim=True)
-                xt = churn_scale * noise + (1 - churn_scale) * xt
-            
-            t_expand = t.expand(batch_size)
-            
-            # Handle time scaling
-            t_scaler = self.time_scaler(t) + self.eps
-            
-            # Compute vector field prediction
-            if compute_logdet:
-                # Need gradients for Hutchinson estimator
-                xt.requires_grad_(True)
-                pred = model(xt, t_expand) / t_scaler
-                
-                # Hutchinson estimator for trace of Jacobian
-                if pred.requires_grad:
-                    eps = torch.randn_like(xt)
-                    jvp = torch.autograd.grad(
-                        outputs=pred,
-                        inputs=xt,
-                        grad_outputs=eps,
-                        create_graph=False,
-                        retain_graph=False,
-                        only_inputs=True
-                    )[0]
-                    trace_jac = (eps * jvp).sum(dim=1)
-                    
-                    # Update log-determinant using continuous normalizing flow formula
-                    # Note: sign depends on integration direction
-                    logdet_correction = trace_jac * abs(dt)
-                    if inverse:
-                        logdet -= logdet_correction  # Reverse integration
-                    else:
-                        logdet += logdet_correction  # Forward integration
-                    
-                    # xt.requires_grad_(False)
-            else:
-                # Standard inference without gradient tracking
-                with torch.no_grad():
-                    pred = model(xt, t_expand) / t_scaler
-            
-            # Euler update step
-            xt = xt + dt * pred
-            
-            # Save intermediate if requested
-            if return_intermediates:
-                intermediates.append(xt.clone())
-        
-        return xt, logdet, intermediates
+    
 class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data
@@ -542,31 +441,6 @@ class FlowModel1d(nn.Module):
         if not steps: steps = self.default_steps
         fm = FlowMatching()
         return fm.sample(self,data,steps,inverse=True)
-    def to_prior_with_logdet(self, data: torch.Tensor, steps: Optional[int] = None) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Transforms data to prior space and returns both the latent and log-determinant.
-        
-        Args:
-            data: Input data tensor of shape [batch_size, in_dim]
-            steps: Number of integration steps (uses default if None)
-        
-        Returns:
-            Tuple of:
-            - z: Latent representation in prior space [batch_size, in_dim]
-            - logdet: Log-determinant of the Jacobian transformation [batch_size]
-        """
-        if steps is None:
-            steps = self.default_steps
-        
-        fm = FlowMatching()
-        z, logdet, _ = fm.sample_with_logdet(
-            model=self,
-            x0=data,
-            steps=steps,
-            inverse=True,
-            compute_logdet=True
-        )
-        return z, logdet
     
     def to_target(self,normal_noise : torch.Tensor,steps=None):
         if not steps: steps = self.default_steps
@@ -659,27 +533,18 @@ class FlowModel1d(nn.Module):
 
         return final_x
     
-    def log_prob(self, data : torch.Tensor) -> torch.Tensor:
-        """
-        Computes the true log probability of data samples using change of variables formula.
-        
-        This accounts for both:
-        1. The log probability under the prior distribution
-        2. The log determinant of the Jacobian of the flow transformation
-        
-        Args:
-            data: Input data tensor of shape [batch_size, in_dim]
-        
-        Returns:
-            log_p: Log probabilities of shape [batch_size]
-        """
-        # Transform data to latent space and get Jacobian determinant
-        z, logdet = self.to_prior_with_logdet(data)
-        
-        # Log probability under standard normal prior
-        log_pz = -0.5 * (z.pow(2) + torch.log(2 * torch.tensor(torch.pi))).sum(dim=-1)
-        
-        # True log probability using change of variables formula
-        log_px = log_pz + logdet
-        
-        return log_px.to(data.device)
+    # Alternative even simpler version (Gaussian approximation):
+    def log_prob(self, data: torch.Tensor) -> torch.Tensor:
+        """Ultra-fast Gaussian approximation for visualization"""
+        from torch.func import vmap, jacrev
+        Y = data # complex domain
+
+        X = self.to_prior(Y) # X of shape (16,2)
+
+        # change of variables stuff
+        dim = Y.shape[-1]
+        batch_jac = vmap(jacrev(lambda x: self.to_prior(x).view(-1,dim).sum(0)))(Y.view(-1,dim)).view(*Y.shape[:-1],dim,dim)
+        jac_det = batch_jac.det()
+
+        fy = Normal(0,1).log_prob(X).sum(-1).exp()*jac_det
+        return fy
