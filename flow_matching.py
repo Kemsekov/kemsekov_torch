@@ -512,7 +512,7 @@ class FlowModel1d(nn.Module):
             return mmd_rbf(data,sampled)[0].item()
         
     def reflow(self,
-               dataset_size=2048,
+               dataset_size=4096,
                batch_size=512,
                epochs_per_window_step=8,
                window_steps=4,
