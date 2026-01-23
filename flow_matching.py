@@ -1,4 +1,5 @@
 from copy import deepcopy
+import math
 from typing import Callable, Optional
 from kemsekov_torch.common_modules import Residual
 from kemsekov_torch.metrics import r2_score
@@ -221,7 +222,6 @@ class FlowMatching:
             if churn_scale>0:
                 noise = xt.std() * torch.randn_like(xt) + xt.mean()
                 xt = churn_scale * noise + (1 - churn_scale) * xt
-            
             t_expand = t.expand(x0.shape[0])
             
             t_scaler = self.time_scaler(t)+self.eps
@@ -236,7 +236,21 @@ class FlowMatching:
         if return_intermediates:
             return xt, intermediates
         return xt
+from torch.func import vmap, jacrev
+
+def generate_unit_simplex_vertices(d):
+    # 1. Generate the initial regular simplex
+    vertices = torch.eye(d)
+    last_vertex = (1 - torch.sqrt(torch.tensor(d + 1.0))) / d * torch.ones(d)
+    vertices = torch.cat([vertices, last_vertex.unsqueeze(0)], dim=0)
     
+    # 2. Recenter at the origin (subtract the mean)
+    vertices -= vertices.mean(dim=0)
+    
+    # 3. Normalize to unit length (radius = 1)
+    # Each row is a vertex; normalize along the last dimension
+    return torch.nn.functional.normalize(vertices, p=2, dim=-1)
+
 class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data
@@ -276,6 +290,8 @@ class FlowModel1d(nn.Module):
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         if t.ndim==1: t=t[:,None]
         time = self.time_emb(t)
+        while time.ndim<x.ndim:
+            time = time[:,None]
         x = self.expand(x)+time
         
         for m,temb in self.residual_blocks:
@@ -538,9 +554,7 @@ class FlowModel1d(nn.Module):
 
         return final_x
     
-    # Alternative even simpler version (Gaussian approximation):
     def log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
-        from torch.func import vmap, jacrev
         if not steps: steps = min(self.default_steps,8)
         
         Y = data.to(self.device) # complex domain
@@ -552,7 +566,45 @@ class FlowModel1d(nn.Module):
         Y_flat = Y.view(-1,dim)
         output_shape = *Y.shape[:-1],dim,dim
         batch_jac = vmap(jacrev(elementwise_prior),randomness='same')(Y_flat).view(output_shape)
-        jac_det = batch_jac.det().abs()
+        jac_det = batch_jac.det().abs()+1e-8
 
         fy = jac_det.log()+Normal(0,1).log_prob(X).sum(-1)
         return fy.to(data.device)
+
+    def log_prob_approx(self, data, steps=None, eps=1e-3):
+        """Jacobian det approx via pairwise L2 distances of perturbed neighbors"""
+        if not steps: steps = min(self.default_steps, 8)
+        Y = data.to(self.device)
+        
+        simplex_points = generate_unit_simplex_vertices(self.in_dim).to(self.device)
+        
+        # make shapes match
+        simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)*eps
+        
+        old_distances = torch.cdist(simplex_points, simplex_points)
+        old_distances[old_distances==0]=1e15 #to avoid div by zero
+        
+        Y_neighbors = Y[...,None,:] + simplex_points  # (B, n_neighbors, ...dim)
+        
+        # Compute priors for all neighbors
+        X_neighbors = self.to_prior(Y_neighbors, steps)
+        
+        # # Compute pairwise L2 distances between neighbors for each batch element
+        dists = torch.cdist(X_neighbors, X_neighbors)
+        
+        # # Geometric approximation: volume scaling ~ product of local stretches
+        local_stretches = (dists / old_distances)  # how much each direction stretched
+        
+        # this is kinda mean space stretching in given dimensions span
+        # we need to avoid averaging zero elements tho
+        mean_space_stretch = local_stretches.sum([-1,-2])/(self.in_dim*(self.in_dim+1))
+        
+        # we somehow assume that this thing corresponds to jacobian determinant
+        logdet_approx = torch.log(torch.abs(mean_space_stretch) + 1e-8)
+        
+        X_center = self.to_prior(Y,steps)
+        # X_center = X_neighbors[...,-1,:]
+        prior_logp = Normal(0,1).log_prob(X_center).sum(-1)
+        
+        # # Average log-stretch gives logdet approximation
+        return logdet_approx + prior_logp
