@@ -371,7 +371,7 @@ class NormalizingFlow:
         Args:
             constraint: Constraint loss function. Accepts generated target in (num_samples,dim) shape and returns loss (scalar tensor) that defines condition for sampling.
             num_samples: Number of samples to generate
-            noise_scale: Scale of noise added during Langevin dynamics (default 0.01). Increasing this value will result in samples more spread from condition. Values around [0 to 0.05] are generally good enough.
+            noise_scale: Scale of noise added during Langevin dynamics (default 0.00). Increasing this value will result in samples more spread from condition. Values around [0 to 0.05] are generally good enough.
             steps: Number of optimization steps (default 2)
             lr: Learning rate for the optimization (default 1)
             mode_closeness_weight: Weight for trying to sample closer to distribution mode. Increasing this value make samples cluster more around closest distribution mode, potentially leading to mode collapse (all samples are the same). Values [0 to 2] are generally good enough.

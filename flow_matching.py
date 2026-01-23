@@ -5,6 +5,7 @@ from kemsekov_torch.metrics import r2_score
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Normal
 
 class FlowMatching:
     def __init__(self,time_scaler : Callable[[torch.Tensor],torch.Tensor] = None,eps=1e-2):
@@ -236,7 +237,108 @@ class FlowMatching:
         if return_intermediates:
             return xt, intermediates
         return xt
-
+    def sample_with_logdet(
+        self,
+        model: nn.Module,
+        x0: torch.Tensor,
+        steps: int,
+        churn_scale: float = 0.0,
+        inverse: bool = False,
+        return_intermediates: bool = False,
+        compute_logdet: bool = False
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor], Optional[list[torch.Tensor]]]:
+        """
+        Samples from a flow-matching model with Euler integration and optionally computes log-determinant.
+        
+        Args:
+            model: Callable vθ(x, t) predicting vector field/motion.
+            x0: Starting point (image or noise tensor).
+            steps: Number of Euler steps.
+            churn_scale: Amount of noise added for stability each step.
+            inverse (bool): If False, integrate forward from x0 to x1 (image → noise).
+                            If True, reverse for noise → image.
+            return_intermediates: Whether to return intermediate xt values.
+            compute_logdet: Whether to compute and return log-determinant of Jacobian.
+        
+        Returns:
+            Tuple containing:
+            1. xt - Final sample tensor
+            2. logdet - Log-determinant of Jacobian (or None if compute_logdet=False)
+            3. intermediates - List of intermediate values if return_intermediates=True (or None)
+        """
+        device = next(model.parameters()).device
+        x0 = x0.to(device)
+        batch_size = x0.shape[0]
+        
+        # Setup time steps
+        if inverse:
+            ts = torch.linspace(1, 0, steps+1, device=device)
+        else:
+            ts = torch.linspace(0, 1, steps+1, device=device)
+        
+        xt = x0.clone()
+        dt = -1/steps if inverse else 1/steps
+        
+        # Initialize log-determinant accumulator if needed
+        logdet = torch.zeros(batch_size, device=device) if compute_logdet else None
+        
+        intermediates = [] if return_intermediates else None
+        
+        # Integration loop
+        for i in range(steps):
+            t = ts[i]
+            
+            # Apply churn noise if specified
+            if churn_scale > 0:
+                noise = xt.std(dim=0, keepdim=True) * torch.randn_like(xt) + xt.mean(dim=0, keepdim=True)
+                xt = churn_scale * noise + (1 - churn_scale) * xt
+            
+            t_expand = t.expand(batch_size)
+            
+            # Handle time scaling
+            t_scaler = self.time_scaler(t) + self.eps
+            
+            # Compute vector field prediction
+            if compute_logdet:
+                # Need gradients for Hutchinson estimator
+                xt.requires_grad_(True)
+                pred = model(xt, t_expand) / t_scaler
+                
+                # Hutchinson estimator for trace of Jacobian
+                if pred.requires_grad:
+                    eps = torch.randn_like(xt)
+                    jvp = torch.autograd.grad(
+                        outputs=pred,
+                        inputs=xt,
+                        grad_outputs=eps,
+                        create_graph=False,
+                        retain_graph=False,
+                        only_inputs=True
+                    )[0]
+                    trace_jac = (eps * jvp).sum(dim=1)
+                    
+                    # Update log-determinant using continuous normalizing flow formula
+                    # Note: sign depends on integration direction
+                    logdet_correction = trace_jac * abs(dt)
+                    if inverse:
+                        logdet -= logdet_correction  # Reverse integration
+                    else:
+                        logdet += logdet_correction  # Forward integration
+                    
+                    xt.requires_grad_(False)
+            else:
+                # Standard inference without gradient tracking
+                with torch.no_grad():
+                    pred = model(xt, t_expand) / t_scaler
+            
+            # Euler update step
+            xt = xt + dt * pred
+            
+            # Save intermediate if requested
+            if return_intermediates:
+                intermediates.append(xt.clone())
+        
+        return xt, logdet, intermediates
 class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data
@@ -288,7 +390,7 @@ class FlowModel1d(nn.Module):
         batch_size: int = 512,
         epochs: int = 30,
         contrastive_loss_weight=0.1,
-        lr: float = 0.025,
+        lr: float = 0.02,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
         reflow_window = 1,
@@ -431,13 +533,143 @@ class FlowModel1d(nn.Module):
         if not steps: steps = self.default_steps
         fm = FlowMatching()
         return fm.sample(self,data,steps,inverse=True)
-    
+    def to_prior_with_logdet(self, data: torch.Tensor, steps: Optional[int] = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Transforms data to prior space and returns both the latent and log-determinant.
+        
+        Args:
+            data: Input data tensor of shape [batch_size, in_dim]
+            steps: Number of integration steps (uses default if None)
+        
+        Returns:
+            Tuple of:
+            - z: Latent representation in prior space [batch_size, in_dim]
+            - logdet: Log-determinant of the Jacobian transformation [batch_size]
+        """
+        if steps is None:
+            steps = self.default_steps
+        
+        fm = FlowMatching()
+        z, logdet, _ = fm.sample_with_logdet(
+            model=self,
+            x0=data,
+            steps=steps,
+            inverse=True,
+            compute_logdet=True
+        )
+        return z, logdet
     def to_target(self,normal_noise : torch.Tensor,steps=None):
         if not steps: steps = self.default_steps
         fm = FlowMatching()
         return fm.sample(self,normal_noise,steps)
     
-    def sample(self,count,steps=None):
+    def sample(self,num_samples,steps=None):
         if not steps: steps = self.default_steps
-        return self.to_target(torch.randn((count,self.in_dim)),steps)
+        return self.to_target(torch.randn((num_samples,self.in_dim)),steps)
+    
+    def conditional_sample(
+        self,
+        constraint : Callable[[torch.Tensor],torch.Tensor],
+        num_samples: int,
+        noise_scale: float = 0.0,
+        steps: int = 2,
+        lr: float = 1,
+        mode_closeness_weight = 1.0,
+        sampler_steps = None
+    ) -> torch.Tensor:
+        """
+        Make conditional sampling of trained flow matching model.
         
+        I **strongly** advice you to call `reflow(...)` method before using conditional sampling,
+        otherwise you will need a lot more time to execute this method.
+        
+        Args:
+            constraint: Constraint loss function. Accepts generated target in `(num_samples,dim)` shape and returns loss `(scalar tensor)` that defines condition for sampling.
+            num_samples: Number of samples to generate
+            noise_scale: Scale of noise added during Langevin dynamics (default 0.00). Increasing this value will result in samples more spread from condition. Values around [0 to 0.05] are generally good enough.
+            steps: Number of optimization steps (default 2)
+            lr: Learning rate for the optimization (default 1)
+            mode_closeness_weight: Weight for trying to sample closer to distribution mode. Increasing this value make samples cluster more around closest distribution mode, potentially leading to mode collapse (all samples are the same).
+            sampler_steps: sampler steps for flow matching models.
+        Returns:
+            torch.Tensor: Samples of shape `[num_samples, input_dim]` satisfying the conditions
+        
+        """
+        model = self
+        
+        device = list(model.parameters())[0].device
+        model.eval()
+
+        # Initialize z from standard normal distribution
+        z = torch.randn(num_samples, model.in_dim, device=device, requires_grad=True)
+
+        original_prior = (z * z).mean().detach()
+
+        # Create optimizer for the latent variable z
+        optimizer = torch.optim.LBFGS([z], lr=lr)
+
+        class Iteration:
+            best_sample = z.clone().detach()
+            best_loss = 1e8
+        self._iteration = Iteration()
+        
+        def closure():
+            optimizer.zero_grad()
+
+            # Forward pass: x = M_inv(z)
+            x = model.to_target(z,sampler_steps)
+
+            # Compute prior loss: L_prior = ||z||² (keep z in N(0,I)) must match original generated prior
+            L_prior = (z * z).mean()
+            L_prior = (L_prior-original_prior)**2+mode_closeness_weight*L_prior
+
+            # Compute constraint loss: L_constraint = constraint(x)
+            L_constraint = constraint(x)
+
+            # Total loss: L_total = L_prior + λ * L_constraint
+            L_total = L_prior + L_constraint
+
+            it = self._iteration
+            if L_total<it.best_loss:
+                it.best_loss = L_total
+                it.best_sample = z.clone().detach()
+            
+            L_total.backward()
+            with torch.no_grad():
+                z.data += (noise_scale) * torch.randn_like(z)
+            return L_total
+        
+        for t in range(steps):
+            # Perform optimizer step
+            optimizer.step(closure)
+
+
+        with torch.no_grad():
+            final_x = model.to_target(self._iteration.best_sample)
+
+        return final_x
+    
+    def log_prob(self, data : torch.Tensor) -> torch.Tensor:
+        """
+        Computes the true log probability of data samples using change of variables formula.
+        
+        This accounts for both:
+        1. The log probability under the prior distribution
+        2. The log determinant of the Jacobian of the flow transformation
+        
+        Args:
+            data: Input data tensor of shape [batch_size, in_dim]
+        
+        Returns:
+            log_p: Log probabilities of shape [batch_size]
+        """
+        # Transform data to latent space and get Jacobian determinant
+        z, logdet = self.to_prior_with_logdet(data)
+        
+        # Log probability under standard normal prior
+        log_pz = -0.5 * (z.pow(2) + torch.log(2 * torch.tensor(torch.pi))).sum(dim=-1)
+        
+        # True log probability using change of variables formula
+        log_px = log_pz + logdet
+        
+        return log_px.to(data.device)
