@@ -241,7 +241,7 @@ class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data
     """
-    def __init__(self, in_dim,hidden_dim=32,residual_blocks=3,dropout_p=0.05) -> None:
+    def __init__(self, in_dim,hidden_dim=32,residual_blocks=3,dropout_p=0.05,device='cpu') -> None:
         super().__init__()
         self.in_dim=in_dim
         norm = nn.RMSNorm
@@ -270,6 +270,7 @@ class FlowModel1d(nn.Module):
         self.dropout = nn.Dropout(dropout_p)
         self.collapse = nn.Linear(hidden_dim,in_dim)
         self.default_steps=24
+        self.to(device)
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         if t.ndim==1: t=t[:,None]
@@ -280,7 +281,11 @@ class FlowModel1d(nn.Module):
         
         # x = self.dropout(x)
         return self.collapse(x)
-        
+    
+    def to(self,device):
+        self.device=device
+        return super().to(device)
+     
     def fit(
         model,
         data: torch.Tensor,
@@ -308,7 +313,7 @@ class FlowModel1d(nn.Module):
         Returns:
             trained_model: Best model on CPU in eval() mode.
         """
-        device = list(model.parameters())[0].device
+        device = model.device
 
         batch_size = min(batch_size,data.shape[0])
         data = data.to(device)
@@ -322,7 +327,9 @@ class FlowModel1d(nn.Module):
         
         best_loss = float("inf")
         best_r2 = -1e8
-        best_trained_model = deepcopy(model).to(device)
+        
+        best_trained_model = deepcopy(model)
+        
         improved = False
         n = data.shape[0]
         slices = list(range(0, n, batch_size))
@@ -333,8 +340,7 @@ class FlowModel1d(nn.Module):
         
         
         lossf = F.smooth_l1_loss
-        # lossf = F.mse_loss
-        lossf = lambda a,b: 0.2*F.smooth_l1_loss(a,b)+F.mse_loss(a,b)
+        lossf = F.mse_loss
         
         try:
             for epoch in range(epochs):
@@ -359,8 +365,15 @@ class FlowModel1d(nn.Module):
                     time = torch.rand(batch.shape[0],device=device)
                     if prior_dataset is not None:
                         prior_batch = prior_shuf[start : start + batch_size]
+                        # time = torch.randn(batch.shape[0],device=device).sigmoid()
+                        
+                        t=(torch.randn(batch.shape[0],device=device)-0.35).tanh()
+                        t-=t.min()
+                        t/=t.max()
+                        time = t
+                        
                         time*=reflow_window
-
+                        
                     pred_dir,target_dir,contrast_dir,t = \
                         fm.contrastive_flow_matching_pair(
                             model,
@@ -388,7 +401,7 @@ class FlowModel1d(nn.Module):
                 mean_r2 = sum(r2s)/len(r2s)
                 if mean_r2 > best_r2:
                     best_loss = mean_loss.item()
-                    best_trained_model = deepcopy(model).to(device)
+                    best_trained_model = deepcopy(model)
                     best_r2 = mean_r2
                     improved = True
         except KeyboardInterrupt:
@@ -399,7 +412,7 @@ class FlowModel1d(nn.Module):
         # update current model with best checkpoint
         with torch.no_grad():
             for p1,p2 in zip(model.parameters(),best_trained_model.parameters()):
-                p1+=p2-p1
+                p1.copy_(p2.to(device))
     
     def mmd2_with_data(self,data : torch.Tensor) -> float:
         """
@@ -408,12 +421,12 @@ class FlowModel1d(nn.Module):
         """
         with torch.no_grad():
             sampled = self.sample(len(data))
-            return mmd_rbf(data,sampled)[0].item()
+            return mmd_rbf(data.to(self.device),sampled)[0].item()
         
     def reflow(self,
                dataset_size=4096,
                batch_size=512,
-               epochs_per_window_step=8,
+               epochs_per_window_step=10,
                window_steps=4,
                lr=0.02,
                debug = False
@@ -439,26 +452,28 @@ class FlowModel1d(nn.Module):
     
     def to_prior(self,data : torch.Tensor,steps=None):
         if not steps: steps = self.default_steps
+        input_device = data.device
         fm = FlowMatching()
-        return fm.sample(self,data,steps,inverse=True)
+        return fm.sample(self,data.to(self.device),steps,inverse=True).to(input_device)
     
     def to_target(self,normal_noise : torch.Tensor,steps=None):
         if not steps: steps = self.default_steps
+        input_device = normal_noise.device
         fm = FlowMatching()
-        return fm.sample(self,normal_noise,steps)
+        return fm.sample(self,normal_noise.to(self.device),steps).to(input_device)
     
     def sample(self,num_samples,steps=None):
         if not steps: steps = self.default_steps
-        return self.to_target(torch.randn((num_samples,self.in_dim)),steps)
+        return self.to_target(torch.randn((num_samples,self.in_dim),device=self.device),steps)
     
     def conditional_sample(
         self,
         constraint : Callable[[torch.Tensor],torch.Tensor],
         num_samples: int,
         noise_scale: float = 0.0,
-        steps: int = 2,
+        steps: int = 3,
         lr: float = 1,
-        mode_closeness_weight = 1.0,
+        mode_closeness_weight = 0.1,
         sampler_steps = None
     ) -> torch.Tensor:
         """
@@ -480,12 +495,10 @@ class FlowModel1d(nn.Module):
         
         """
         model = self
-        
-        device = list(model.parameters())[0].device
         model.eval()
 
         # Initialize z from standard normal distribution
-        z = torch.randn(num_samples, model.in_dim, device=device, requires_grad=True)
+        z = torch.randn(num_samples, model.in_dim, device=self.device, requires_grad=True)
 
         original_prior = (z * z).mean().detach()
 
@@ -538,7 +551,7 @@ class FlowModel1d(nn.Module):
         """Ultra-fast Gaussian approximation for visualization"""
         from torch.func import vmap, jacrev
         
-        Y = data # complex domain
+        Y = data.to(self.device) # complex domain
         X = self.to_prior(Y) # normal noise
         def elementwise_prior(x): return self.to_prior(x).view(-1,dim).sum(0)
         
@@ -550,4 +563,4 @@ class FlowModel1d(nn.Module):
         jac_det = batch_jac.det().abs()
 
         fy = Normal(0,1).log_prob(X).sum(-1) + jac_det.log()
-        return fy
+        return fy.to(data.device)
