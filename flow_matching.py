@@ -306,13 +306,13 @@ class FlowModel1d(nn.Module):
     def fit(
         model,
         data: torch.Tensor,
-        prior_dataset : Optional[torch.Tensor] = None,
         batch_size: int = 512,
         epochs: int = 100,
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
+        prior_dataset : Optional[torch.Tensor] = None,
         reflow_window = 1,
         lossf = F.mse_loss
     ) -> nn.Module:
@@ -554,7 +554,7 @@ class FlowModel1d(nn.Module):
 
         return final_x
     
-    def log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
+    def full_log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
         if not steps: steps = min(self.default_steps,8)
         
         Y = data.to(self.device) # complex domain
@@ -571,40 +571,44 @@ class FlowModel1d(nn.Module):
         fy = jac_det.log()+Normal(0,1).log_prob(X).sum(-1)
         return fy.to(data.device)
 
-    def log_prob_approx(self, data, steps=None, eps=1e-3):
-        """Jacobian det approx via pairwise L2 distances of perturbed neighbors"""
+    def log_prob(self, data, steps=None, eps=1e-3):
+        """
+        Jacobian det approx via pairwise L2 distances of perturbed neighbors.
+        Gives exact same result as `full_log_prob` but at **much** lower computational cost.
+        """
         if not steps: steps = min(self.default_steps, 8)
         Y = data.to(self.device)
         
-        simplex_points = generate_unit_simplex_vertices(self.in_dim).to(self.device)
+        # generate N-dimensional simplex
+        simplex_points = generate_unit_simplex_vertices(self.in_dim).to(self.device)*eps
+        
+        # simplex that have some point at origin 0
+        shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
+
+        # log area of original simplex
+        original_simplex_area_log = shifted_simplex.logdet()
         
         # make shapes match
-        simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)*eps
+        simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
         
-        old_distances = torch.cdist(simplex_points, simplex_points)
-        old_distances[old_distances==0]=1e15 #to avoid div by zero
-        
+        # shift Y to sphere points of simplex
         Y_neighbors = Y[...,None,:] + simplex_points  # (B, n_neighbors, ...dim)
         
         # Compute priors for all neighbors
         X_neighbors = self.to_prior(Y_neighbors, steps)
         
-        # # Compute pairwise L2 distances between neighbors for each batch element
-        dists = torch.cdist(X_neighbors, X_neighbors)
+        # get area of transformed simplex
+        transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
+        transformed_simplex_area_log = transformed_simplex.logdet()
         
-        # # Geometric approximation: volume scaling ~ product of local stretches
-        local_stretches = (dists / old_distances)  # how much each direction stretched
+        # area ratio is our jacobian determinant approximation
+        logdet_approx = transformed_simplex_area_log - original_simplex_area_log
         
-        # this is kinda mean space stretching in given dimensions span
-        # we need to avoid averaging zero elements tho
-        mean_space_stretch = local_stretches.sum([-1,-2])/(self.in_dim*(self.in_dim+1))
-        
-        # we somehow assume that this thing corresponds to jacobian determinant
-        logdet_approx = torch.log(torch.abs(mean_space_stretch) + 1e-8)
-        
-        X_center = self.to_prior(Y,steps)
-        # X_center = X_neighbors[...,-1,:]
-        prior_logp = Normal(0,1).log_prob(X_center).sum(-1)
+        X = self.to_prior(Y,steps)
+        prior_logp = Normal(0,1).log_prob(X).sum(-1)
         
         # # Average log-stretch gives logdet approximation
-        return logdet_approx + prior_logp
+        result = logdet_approx + prior_logp
+        
+        return result+self.in_dim*math.log(self.in_dim)
+        
