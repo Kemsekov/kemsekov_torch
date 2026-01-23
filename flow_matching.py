@@ -571,6 +571,7 @@ class FlowModel1d(nn.Module):
         fy = jac_det.log()+Normal(0,1).log_prob(X).sum(-1)
         return fy.to(data.device)
 
+    # TODO: make a publication about this method
     def log_prob(self, data, steps=None, eps=1e-3):
         """
         Jacobian det approx via pairwise L2 distances of perturbed neighbors.
