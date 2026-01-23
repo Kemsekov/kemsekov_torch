@@ -2,6 +2,7 @@ from copy import deepcopy
 from typing import Callable, Optional
 from kemsekov_torch.common_modules import Residual
 from kemsekov_torch.metrics import r2_score
+from kemsekov_torch.common_modules import mmd_rbf
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -65,7 +66,6 @@ class FlowMatching:
         if time_scaler is None:
             time_scaler=lambda x:1
         self.time_scaler=time_scaler
-    
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
         Generates direction pairs for flow matching model training
@@ -185,7 +185,6 @@ class FlowMatching:
         target_neg_vec = (target_neg - input_neg) * self.time_scaler(time_expand_neg)
 
         return pred_direction, target, target_neg_vec, time_expand
-
     def sample(self,model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False):
         """
         Samples from a flow-matching model with Euler integration.
@@ -502,7 +501,16 @@ class FlowModel1d(nn.Module):
         with torch.no_grad():
             for p1,p2 in zip(model.parameters(),best_trained_model.parameters()):
                 p1+=p2-p1
-
+    
+    def mmd2_with_data(self,data : torch.Tensor) -> float:
+        """
+        Returns MMD^2 of sampled learned latent space with given data.
+        This method can be used as a metric for evaluating how good trained model is.
+        """
+        with torch.no_grad():
+            sampled = self.sample(len(data))
+            return mmd_rbf(data,sampled)[0].item()
+        
     def reflow(self,
                dataset_size=2048,
                batch_size=512,
