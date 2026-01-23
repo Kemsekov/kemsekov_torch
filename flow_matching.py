@@ -609,9 +609,12 @@ class FlowModel1d(nn.Module):
         
         X = self.to_prior(Y,steps)
         prior_logp = Normal(0,1).log_prob(X).sum(-1)
-        
-        # # Average log-stretch gives logdet approximation
+
+        # this stuff perfectly match log prob structure
         result = logdet_approx + prior_logp
         
+        # and this additional term is out of nowhere was found by accident
+        # it perfectly matches scale of full log-prob, but i don't understand
+        # why we need to add it honestly, well, it works
         return result+self.in_dim*math.log(self.in_dim)
         
