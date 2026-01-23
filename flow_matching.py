@@ -544,7 +544,7 @@ class FlowModel1d(nn.Module):
         # change of variables stuff
         dim = Y.shape[-1]
         batch_jac = vmap(jacrev(lambda x: self.to_prior(x).view(-1,dim).sum(0)))(Y.view(-1,dim)).view(*Y.shape[:-1],dim,dim)
-        jac_det = batch_jac.det()
+        jac_det = batch_jac.det().abs()
 
         fy = Normal(0,1).log_prob(X).sum(-1).exp()*jac_det
         return fy
