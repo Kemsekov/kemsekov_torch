@@ -261,10 +261,9 @@ class FlowModel1d(nn.Module):
                     act(),
                     nn.Linear(hidden_dim,hidden_dim),
                 ]),
-                nn.Sequential( #gating helps a lot!
+                nn.Sequential(
                     nn.Linear(hidden_dim,hidden_dim),
                     nn.Sigmoid(),
-                    # nn.Dropout(dropout_p)
                 )
             ]) for i in range(residual_blocks)
         ])
@@ -276,10 +275,11 @@ class FlowModel1d(nn.Module):
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         if t.ndim==1: t=t[:,None]
-        x = self.expand(x)+self.time_emb(t)
+        time = self.time_emb(t)
+        x = self.expand(x)+time
         
         for m,temb in self.residual_blocks:
-            x = m(x*temb(x))
+            x = m(x*(temb(x)))
         
         return self.collapse(x)
     
