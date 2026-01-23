@@ -279,7 +279,7 @@ class FlowModel1d(nn.Module):
         x = self.expand(x)+time
         
         for m,temb in self.residual_blocks:
-            x = m(x*(temb(x)))
+            x = m(x*temb(x))
         
         return self.collapse(x)
     
@@ -339,7 +339,6 @@ class FlowModel1d(nn.Module):
         total_steps = len(slices)*epochs
         
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
-        all_r2s = []
         try:
             for epoch in range(epochs):
                 if debug and improved:
@@ -390,7 +389,6 @@ class FlowModel1d(nn.Module):
                     
                 mean_loss = sum(losses)/len(losses)
                 mean_r2 = sum(r2s)/len(r2s)
-                all_r2s.append(mean_r2)
                 if mean_r2 > best_r2:
                     best_loss = mean_loss.item()
                     best_trained_model = deepcopy(model)
@@ -406,7 +404,6 @@ class FlowModel1d(nn.Module):
             for p1,p2 in zip(model.parameters(),best_trained_model.parameters()):
                 p1.copy_(p2.to(device))
         model.eval()
-        return sum(all_r2s)/len(all_r2s)
     
     def mmd2_with_data(self,data : torch.Tensor) -> float:
         """
@@ -542,9 +539,9 @@ class FlowModel1d(nn.Module):
         return final_x
     
     # Alternative even simpler version (Gaussian approximation):
-    def log_prob(self, data: torch.Tensor,steps=-1) -> torch.Tensor:
-        """Ultra-fast Gaussian approximation for visualization"""
+    def log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
         from torch.func import vmap, jacrev
+        if not steps: steps = min(self.default_steps,8)
         
         Y = data.to(self.device) # complex domain
         X = self.to_prior(Y,steps) # normal noise
@@ -554,8 +551,8 @@ class FlowModel1d(nn.Module):
         dim = Y.shape[-1]
         Y_flat = Y.view(-1,dim)
         output_shape = *Y.shape[:-1],dim,dim
-        batch_jac = vmap(jacrev(elementwise_prior))(Y_flat).view(output_shape)
+        batch_jac = vmap(jacrev(elementwise_prior),randomness='same')(Y_flat).view(output_shape)
         jac_det = batch_jac.det().abs()
 
-        fy = Normal(0,1).log_prob(X).sum(-1) + jac_det.log()
+        fy = jac_det.log()+Normal(0,1).log_prob(X).sum(-1)
         return fy.to(data.device)
