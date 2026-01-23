@@ -589,7 +589,7 @@ class FlowModel1d(nn.Module):
         shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
 
         # log area of original simplex
-        original_simplex_area_log = shifted_simplex.logdet()
+        original_simplex_area_log = shifted_simplex.slogdet()[1]
         
         # make shapes match
         simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
@@ -602,7 +602,7 @@ class FlowModel1d(nn.Module):
         
         # get area of transformed simplex
         transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
-        transformed_simplex_area_log = transformed_simplex.logdet()
+        transformed_simplex_area_log = transformed_simplex.slogdet()[1]
         
         # area ratio is our jacobian determinant approximation
         logdet_approx = transformed_simplex_area_log - original_simplex_area_log
