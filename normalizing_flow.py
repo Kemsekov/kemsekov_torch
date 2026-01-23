@@ -297,6 +297,7 @@ class NormalizingFlow:
                 perm = torch.randperm(n, device=self.device)
                 data_shuf = data[perm]
 
+                losses = []
                 for start in slices:
                     batch = data_shuf[start : start + batch_size]
                     
@@ -307,10 +308,7 @@ class NormalizingFlow:
                     
                     loss = flow_nll_loss(self.model, batch, sum_dim=-1).mean()+2 # add 2 to make it positive
 
-                    if loss < self.best_loss:
-                        self.best_loss = loss.item()
-                        self.best_trained_model = deepcopy(self.model).to(self.device)
-                        self.improved = True
+
                     loss.backward()
                     
                     if grad_clip_max_norm is not None:
@@ -322,7 +320,12 @@ class NormalizingFlow:
 
                     optim.step()
                     sch.step()
-                    
+                    losses.append(loss)
+                mean_loss = sum(losses)/len(losses)
+                if mean_loss < self.best_loss:
+                    self.best_loss = mean_loss.item()
+                    self.best_trained_model = deepcopy(self.model).to(self.device)
+                    self.improved = True
         except KeyboardInterrupt:
             if debug: print("Stop training")
         if debug and self.improved:
