@@ -264,9 +264,10 @@ class FlowModel1d(nn.Module):
             nn.Linear(1,hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim,hidden_dim),
-            nn.Dropout(dropout_p),
         )
         self.expand = nn.Linear(in_dim,hidden_dim)
+        
+        self.dropout = nn.Dropout(dropout_p)
         
         self.residual_blocks = nn.ModuleList([
             nn.ModuleList([
@@ -282,7 +283,6 @@ class FlowModel1d(nn.Module):
             ]) for i in range(residual_blocks)
         ])
         
-        self.dropout = nn.Dropout(dropout_p)
         self.collapse = nn.Linear(hidden_dim,in_dim)
         self.default_steps=24
         self.to(device)
@@ -292,8 +292,9 @@ class FlowModel1d(nn.Module):
         time = self.time_emb(t)
         while time.ndim<x.ndim:
             time = time[:,None]
-        x = self.expand(x)+time
-        
+        expand = self.expand(x)
+        x = expand+time
+        x = self.dropout(x)
         for m,temb in self.residual_blocks:
             x = m(x*temb(x))
         
@@ -314,7 +315,8 @@ class FlowModel1d(nn.Module):
         debug: bool = False,
         prior_dataset : Optional[torch.Tensor] = None,
         reflow_window = 1,
-        lossf = F.mse_loss
+        lossf = F.mse_loss,
+        scheduler = True,
     ) -> nn.Module:
         """
         Train on `data` and return best model.
@@ -379,7 +381,7 @@ class FlowModel1d(nn.Module):
                     if prior_dataset is not None:
                         prior_batch = prior_shuf[start : start + batch_size]
                         time*=reflow_window
-                        
+                            
                     pred_dir,target_dir,contrast_dir,t = \
                         fm.contrastive_flow_matching_pair(
                             model,
@@ -388,6 +390,8 @@ class FlowModel1d(nn.Module):
                             time=time
                         )
                     loss = lossf(pred_dir,target_dir)-contrastive_loss_weight*lossf(pred_dir,contrast_dir)
+                    
+                    
                     loss.backward()
                     
                     if grad_clip_max_norm is not None:
@@ -397,7 +401,7 @@ class FlowModel1d(nn.Module):
                             norm_type=2.0,
                         )
                     optim.step()
-                    sch.step()
+                    if scheduler: sch.step()
                     
                     r2 = r2_score(pred_dir,target_dir)
                     losses.append(loss)
@@ -429,19 +433,18 @@ class FlowModel1d(nn.Module):
         with torch.no_grad():
             sampled = self.sample(len(data))
             return mmd_rbf(data.to(self.device),sampled)[0].item()
-        
+    
     def reflow(self,
                dataset_size=4096,
                batch_size=512,
-               epochs_per_window_step=10,
+               epochs_per_window_step=20,
                window_steps=4,
                lr=0.02,
                debug = False
         ):
         current_model = deepcopy(self).train()
         for w in torch.linspace(1/window_steps,1,window_steps):
-            if debug:
-                print(f"Training on t=[0.00:{w:0.2f}]")
+            if debug: print(f"Training on t=[0.00:{w:0.2f}]")
             prior = torch.randn((dataset_size,self.in_dim))
             with torch.no_grad():
                 data = current_model.to_target(prior)
@@ -453,9 +456,11 @@ class FlowModel1d(nn.Module):
                 epochs=epochs_per_window_step,
                 lr=lr,
                 reflow_window=w,
-                lossf = F.smooth_l1_loss
+                # lossf = F.smooth_l1_loss,
+                scheduler=False,
+                contrastive_loss_weight=0.02
             )
-        self.default_steps=5
+        self.default_steps=4
         self.eval()
     
     def to_prior(self,data : torch.Tensor,steps=None):
