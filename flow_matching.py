@@ -9,6 +9,210 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
+def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False):
+    """
+    Samples from a flow-matching model with Euler integration.
+
+    Args:
+        model: Callable vθ(x, t) predicting vector field/motion.
+        x0: Starting point (image or noise tensor).
+        steps: Number of Euler steps.
+        churn_scale: Amount of noise added for stability each step.
+        inverse (bool): If False, integrate forward from x0 to x1 (image → noise).
+                        If True, reverse for noise → image.
+        return_intermediates: to return intermediates values of xt or not.
+    Returns:
+        Tuple[Tensor,List[Tensor]]:
+        1. xt - Final sample tensor.
+        2. intermediates - Intermediate xt values if return_intermediates is True
+    """
+    device = list(model.parameters())[0].device
+    if inverse: 
+        ts = torch.linspace(1, 0, steps, device=device)
+    else:
+        ts = torch.linspace(0, 1, steps, device=device)
+    x0 = x0.to(device)
+    xt = x0
+    dt = -1/steps if inverse else 1/steps
+    
+    intermediates = []
+    
+    for i in range(0,steps):
+        t = ts[i]
+        
+        # optional churn noise
+        if churn_scale>0:
+            noise = xt.std() * torch.randn_like(xt) + xt.mean()
+            xt = churn_scale * noise + (1 - churn_scale) * xt
+        t_expand = t.expand(x0.shape[0])
+        
+        pred = model(xt, t_expand)
+        
+        # forward or reverse Euler update
+        xt = xt + dt * pred
+        if return_intermediates:
+            intermediates.append(xt)
+    
+    if return_intermediates:
+        return xt, intermediates
+    return xt
+
+def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False,base_shift=0.0):
+    device = list(model.parameters())[0].device
+    shift = base_shift/steps
+    if inverse:
+        ts = torch.linspace(1-shift, shift, steps+1, device=device)  # steps intervals = steps+1 points
+        dt = ts[1]-ts[0]
+    else:
+        ts = torch.linspace(shift, 1-shift, steps+1, device=device)
+        dt = ts[1]-ts[0]
+    
+    x0 = x0.to(device)
+    xt = x0
+    intermediates = []
+    
+    # Store previous derivative for multi-step method
+    prev_pred = None
+    
+    for i in range(steps):
+        t_current = ts[i]
+        t_next = ts[i+1]
+        
+        # Optional churn noise
+        if churn_scale > 0:
+            noise = xt.std() * torch.randn_like(xt) + xt.mean()
+            xt = churn_scale * noise + (1 - churn_scale) * xt
+        
+        t_expand_current = t_current.expand(x0.shape[0])
+        
+        if i == 0:
+            # First step: full Heun evaluation (2 evaluations)
+            # Current derivative
+            pred_current = model(xt, t_expand_current)
+            
+            # Predictor step (Euler)
+            x_pred = xt + dt * pred_current
+            
+            # Evaluate at predicted point
+            t_expand_next = t_next.expand(x0.shape[0])
+            pred_next = model(x_pred, t_expand_next)
+            
+            # Corrector step (Heun's method)
+            xt = xt + dt * 0.5 * (pred_current + pred_next)
+            
+            # Store the predictor derivative for next step
+            prev_pred = pred_next
+        else:
+            # Subsequent steps: reuse previous derivative (1 evaluation per step)
+            # Predictor using previous derivative (Euler step)
+            x_pred = xt + dt * prev_pred
+            
+            # Evaluate at predicted point (ONLY ONE EVAL PER STEP)
+            t_expand_next = t_next.expand(x0.shape[0])
+            pred_next = model(x_pred, t_expand_next)
+            
+            # Corrector step using stored previous derivative
+            xt = xt + dt * 0.5 * (prev_pred + pred_next)
+            
+            # Update stored derivative for next step
+            prev_pred = pred_next
+        
+        if return_intermediates:
+            intermediates.append(xt.clone())
+    
+    if return_intermediates:
+        return xt, intermediates
+    return xt
+
+def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False,interval_shift=0.):
+    device = next(model.parameters()).device
+    x0 = x0.to(device)
+    xt = x0.clone()
+    
+    # === THEORETICAL DEFAULTS: Classical RK3 Butcher tableau ===
+    # Forward: t ∈ [0, 1], Reverse: t ∈ [1, 0] (proper time mapping)
+    # but i expect these values to be altered for flow matching model towards
+    # the center by some amount
+    if inverse:
+        t_start =   1.0-interval_shift
+        t_end =     0.0+interval_shift
+    else:
+        t_start =   0.0+interval_shift
+        t_end =     1.0-interval_shift
+    
+    
+    dt = t_end - t_start  # = -1.0 for reverse, +1.0 for forward
+    
+    intermediates = []
+    
+    if churn_scale > 0:
+        noise = xt.std() * torch.randn_like(xt) + xt.mean()
+        xt = churn_scale * noise + (1 - churn_scale) * xt
+    
+    # === First evaluation (k1 at start) - weight = 1/6 ===
+    t_expand_start = torch.tensor([t_start], device=device).expand(x0.shape[0])
+    k1 = model(xt, t_expand_start)
+    
+    # === Second evaluation (k2 at midpoint) - weight = 4/6 ===
+    t_mid = t_start + dt/2  # = 0.5 for both directions
+    x_mid = xt + (dt/2) * k1
+    t_expand_mid = torch.tensor([t_mid], device=device).expand(x0.shape[0])
+    k2 = model(x_mid, t_expand_mid)
+    
+    # === Third evaluation (k3 at endpoint) - weight = 1/6 ===
+    x_end_predictor = xt + dt * k2  # Classical RK3 uses k2 here, not the complex formula
+    t_expand_end = torch.tensor([t_end], device=device).expand(x0.shape[0])
+    k3 = model(x_end_predictor, t_expand_end)
+    
+    # === Classical RK3 update - theoretically optimal weights ===
+    xt_next = xt + dt * (k1 + 4*k2 + k3) / 6.0
+    
+    if return_intermediates:
+        intermediates.extend([x_mid, x_end_predictor, xt_next])
+    
+    return (xt_next, intermediates) if return_intermediates else xt_next
+
+def rk2(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False,interval_shift=0.):
+    device = next(model.parameters()).device
+    x0 = x0.to(device)
+    xt = x0.clone()
+    
+    # === THEORETICAL DEFAULTS: Ralston's method (optimal 2-stage RK) ===
+    if inverse:
+        t_start =   1.0-interval_shift
+        t_end =     0.0+interval_shift
+    else:
+        t_start =   0.0+interval_shift
+        t_end =     1.0-interval_shift
+    dt = t_end - t_start
+    
+    intermediates = []
+    
+    if churn_scale > 0:
+        noise = xt.std() * torch.randn_like(xt) + xt.mean()
+        xt = churn_scale * noise + (1 - churn_scale) * xt
+    
+    # === First evaluation (k1 at start) - weight = 1/4 ===
+    t_expand_start = torch.tensor([t_start], device=device).expand(x0.shape[0])
+    k1 = model(xt, t_expand_start)
+    
+    # === Second evaluation (k2 at 2/3 point) - Ralston's optimal point ===
+    t_ralston = t_start + (2/3) * dt  # = 1/3 for reverse, 2/3 for forward
+    x_ralston = xt + (2/3) * dt * k1
+    t_expand_ralston = torch.tensor([t_ralston], device=device).expand(x0.shape[0])
+    k2 = model(x_ralston, t_expand_ralston)
+    
+    # === Ralston's weights - proven minimum error bound ===
+    weight_k1 = 1/4
+    weight_k2 = 3/4
+    
+    xt_next = xt + dt * (weight_k1 * k1 + weight_k2 * k2)
+    
+    if return_intermediates:
+        intermediates.extend([x_ralston, xt_next])
+    
+    return (xt_next, intermediates) if return_intermediates else xt_next
+
 class FlowMatching:
     def __init__(self,time_scaler : Callable[[torch.Tensor],torch.Tensor] = None,eps=1e-2):
         """
@@ -186,56 +390,13 @@ class FlowMatching:
         target_neg_vec = (target_neg - input_neg) * self.time_scaler(time_expand_neg)
 
         return pred_direction, target, target_neg_vec, time_expand
-    def sample(self,model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False):
-        """
-        Samples from a flow-matching model with Euler integration.
+    def integrate(self,model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False):
+        match steps:
+            case 1: return euler(model,x0,steps,churn_scale,inverse,return_intermediates)
+            case 2: return rk2(model,x0,churn_scale,inverse,return_intermediates)
+            case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
+            case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates)
 
-        Args:
-            model: Callable vθ(x, t) predicting vector field/motion.
-            x0: Starting point (image or noise tensor).
-            steps: Number of Euler steps.
-            churn_scale: Amount of noise added for stability each step.
-            inverse (bool): If False, integrate forward from x0 to x1 (image → noise).
-                            If True, reverse for noise → image.
-            return_intermediates: to return intermediates values of xt or not.
-        Returns:
-            Tuple[Tensor,List[Tensor]]:
-            1. xt - Final sample tensor.
-            2. intermediates - Intermediate xt values if return_intermediates is True
-        """
-        device = list(model.parameters())[0].device
-        if inverse: 
-            ts = torch.linspace(1, 0, steps+1, device=device)
-        else:
-            ts = torch.linspace(0, 1, steps+1, device=device)
-
-        x0 = x0.to(device)
-        xt = x0
-        dt = -1/steps if inverse else 1/steps
-        
-        intermediates = []
-        
-        for i in range(0,steps):
-            t = ts[i]
-            
-            # optional churn noise
-            if churn_scale>0:
-                noise = xt.std() * torch.randn_like(xt) + xt.mean()
-                xt = churn_scale * noise + (1 - churn_scale) * xt
-            t_expand = t.expand(x0.shape[0])
-            
-            t_scaler = self.time_scaler(t)+self.eps
-            # original
-            pred = model(xt, t_expand)/t_scaler
-            
-            # forward or reverse Euler update
-            xt = xt + dt * pred
-            if return_intermediates:
-                intermediates.append(xt)
-        
-        if return_intermediates:
-            return xt, intermediates
-        return xt
 from torch.func import vmap, jacrev
 
 def generate_unit_simplex_vertices(d):
@@ -264,6 +425,7 @@ class FlowModel1d(nn.Module):
             nn.Linear(1,hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim,hidden_dim),
+            
         )
         self.expand = nn.Linear(in_dim,hidden_dim)
         
@@ -284,8 +446,9 @@ class FlowModel1d(nn.Module):
         ])
         
         self.collapse = nn.Linear(hidden_dim,in_dim)
-        self.default_steps=24
+        self.default_steps=12
         self.to(device)
+        self.eval()
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         if t.ndim==1: t=t[:,None]
@@ -303,7 +466,7 @@ class FlowModel1d(nn.Module):
     def to(self,device):
         self.device=device
         return super().to(device)
-     
+    
     def fit(
         model,
         data: torch.Tensor,
@@ -437,10 +600,11 @@ class FlowModel1d(nn.Module):
     def reflow(self,
                dataset_size=4096,
                batch_size=512,
-               epochs_per_window_step=20,
+               epochs_per_window_step=10,
                window_steps=4,
-               lr=0.02,
-               debug = False
+               lr=0.01,
+               debug = False,
+               contrastive_loss_weight=0.02
         ):
         current_model = deepcopy(self).train()
         for w in torch.linspace(1/window_steps,1,window_steps):
@@ -458,7 +622,7 @@ class FlowModel1d(nn.Module):
                 reflow_window=w,
                 # lossf = F.smooth_l1_loss,
                 scheduler=False,
-                contrastive_loss_weight=0.02
+                contrastive_loss_weight=contrastive_loss_weight
             )
         self.default_steps=4
         self.eval()
@@ -467,13 +631,13 @@ class FlowModel1d(nn.Module):
         if not steps: steps = self.default_steps
         input_device = data.device
         fm = FlowMatching()
-        return fm.sample(self,data.to(self.device),steps,inverse=True).to(input_device)
+        return fm.integrate(self,data.to(self.device),steps,inverse=True).to(input_device)
     
     def to_target(self,normal_noise : torch.Tensor,steps=None):
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
         fm = FlowMatching()
-        return fm.sample(self,normal_noise.to(self.device),steps).to(input_device)
+        return fm.integrate(self,normal_noise.to(self.device),steps).to(input_device)
     
     def sample(self,num_samples,steps=None):
         if not steps: steps = self.default_steps
@@ -486,7 +650,7 @@ class FlowModel1d(nn.Module):
         noise_scale: float = 0.0,
         steps: int = 2,
         lr: float = 1,
-        mode_closeness_weight = 0.1,
+        mode_closeness_weight = 1.0,
         sampler_steps = None
     ) -> torch.Tensor:
         """
@@ -560,7 +724,7 @@ class FlowModel1d(nn.Module):
         return final_x
     
     def full_log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
-        if not steps: steps = min(self.default_steps,8)
+        if not steps: steps = self.default_steps
         
         Y = data.to(self.device) # complex domain
         X = self.to_prior(Y,steps) # normal noise
@@ -571,21 +735,23 @@ class FlowModel1d(nn.Module):
         Y_flat = Y.view(-1,dim)
         output_shape = *Y.shape[:-1],dim,dim
         batch_jac = vmap(jacrev(elementwise_prior),randomness='same')(Y_flat).view(output_shape)
-        jac_det = batch_jac.det().abs()+1e-8
-
-        fy = jac_det.log()+Normal(0,1).log_prob(X).sum(-1)
-        return fy.to(data.device)
-
+        log_jac_det = batch_jac.slogdet()[1]
+        prior_log_prob = Normal(0,1).log_prob(X).sum(-1)
+        
+        return prior_log_prob+log_jac_det
+    
     # TODO: make a publication about this method
-    def log_prob(self, data, steps=None, eps=1e-3):
+    def log_prob(self, data, steps=None, eps=1e-3,return_separately = False):
         """
         Jacobian det approx via pairwise L2 distances of perturbed neighbors.
         Gives exact same result as `full_log_prob` but at **much** lower computational cost.
         
         This piece of code is just brilliant, i don't understand myself how i've come up with it,
         but this stuff perfectly computes log prob of flow matching model at very low cost.
+        
+        return_separately: returns prior_logprob and jacob_log separately
         """
-        if not steps: steps = min(self.default_steps, 8)
+        if not steps: steps = self.default_steps
         Y = data.to(self.device)
         
         # generate N-dimensional simplex
@@ -611,16 +777,13 @@ class FlowModel1d(nn.Module):
         transformed_simplex_area_log = transformed_simplex.slogdet()[1]
         
         # area ratio is our jacobian determinant approximation
-        logdet_approx = transformed_simplex_area_log - original_simplex_area_log
+        logdet_approx = transformed_simplex_area_log - original_simplex_area_log + self.in_dim*math.log(self.in_dim)
         
         X = self.to_prior(Y,steps)
         prior_logp = Normal(0,1).log_prob(X).sum(-1)
 
+        if return_separately:
+            return prior_logp,logdet_approx
         # this stuff perfectly match log prob structure
-        result = logdet_approx + prior_logp
-        
-        # and this additional term is out of nowhere was found by accident
-        # it perfectly matches scale of full log-prob, but i don't understand
-        # why we need to add it honestly, well, it works
-        return result+self.in_dim*math.log(self.in_dim)
+        return prior_logp+logdet_approx
         
