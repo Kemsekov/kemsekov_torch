@@ -416,7 +416,7 @@ class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data
     """
-    def __init__(self, in_dim,hidden_dim=32,residual_blocks=3,dropout_p=0.05,device='cpu') -> None:
+    def __init__(self, in_dim,hidden_dim=32,residual_blocks=3,dropout_p=0.0,device='cpu') -> None:
         super().__init__()
         self.in_dim=in_dim
         norm = nn.RMSNorm
@@ -425,11 +425,10 @@ class FlowModel1d(nn.Module):
             nn.Linear(1,hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim,hidden_dim),
-            
         )
         self.expand = nn.Linear(in_dim,hidden_dim)
         
-        self.dropout = nn.Dropout(dropout_p)
+        # self.dropout = nn.Dropout(dropout_p)
         
         self.residual_blocks = nn.ModuleList([
             nn.ModuleList([
@@ -455,9 +454,9 @@ class FlowModel1d(nn.Module):
         time = self.time_emb(t)
         while time.ndim<x.ndim:
             time = time[:,None]
+
         expand = self.expand(x)
         x = expand+time
-        x = self.dropout(x)
         for m,temb in self.residual_blocks:
             x = m(x*temb(x))
         
