@@ -604,7 +604,7 @@ class FlowModel1d(nn.Module):
         
         model.train()
         
-        optim = torch.optim.AdamW(list(model.parameters())+list(loss_normalizer.parameters()), lr=lr)
+        optim = torch.optim.AdamW(list(model.parameters())+list(loss_normalizer.parameters()), lr=lr,fused=True)
         
         best_loss = float("inf")
         best_r2 = -1e8

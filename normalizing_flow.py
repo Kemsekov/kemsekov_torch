@@ -1,6 +1,6 @@
 from torch.distributions import Normal
 from kemsekov_torch.residual import Residual
-from kemsekov_torch.common_modules import mmd_rbf,Prod
+from kemsekov_torch.common_modules import mmd_rbf,Prod, AddConst
 from typing import Callable, Generator, Literal, Optional
 from copy import deepcopy
 import torch
@@ -28,9 +28,45 @@ class LossNormalizer1d(nn.Module):
         """
         x = self.expand(x)
         return self.net(x)[:,0]
+
+class NormalizingFlowScaler:
+    """
+    Data scaler for normalizing flow
+    """
+    def __init__(self) -> None:
+        self.mean = 0
+        self.std = 1
+        
+    def inverse(self,data):
+        input_shape = list(data.shape)
+        input_shape[-1]//=2
+        last_dim = input_shape[-1]
+        data = data.flatten(-1)[:,:last_dim]
+        return (data*self.std[:,:last_dim]+self.mean[:,:last_dim]).reshape(input_shape)
+        
+    def transform(self,data : torch.Tensor):
+        input_shape = list(data.shape)
+        input_shape[-1]*=2
+        data = torch.concat([data,data.log_softmax(-1)],-1).flatten(-1)
+        data = (data-self.mean)/self.std
+        return data.reshape(input_shape)
+    
+    def fit_transform(self,data : torch.Tensor):
+        input_shape = list(data.shape)
+        input_shape[-1]*=2
+        data = torch.concat([data,data.log_softmax(-1)],-1).flatten(-1)
+        self.mean = data.mean(0,keepdim=True)
+        self.std = data.std(0,keepdim=True)+1e-6
+        
+        data = (data-self.mean)/self.std
+        return data.reshape(input_shape)
+        
+        
 class NormalizingFlow:
     """
     Wrapper around your InvertibleSequential + flow_nll_loss training loop.
+    
+    You must use this class alongside `NormalizingFlowScaler`
 
     Key features:
     - Model definition is fully determined in __init__ (input_dim is required, not inferred from data).
@@ -62,13 +98,13 @@ class NormalizingFlow:
         self.device = device
         self.model = self._build_model(dropout).to(self.device)
         self.best_trained_model = None
+        self._data_mean = 0
+        self._data_std = 1
 
     def to(self,device):
         self.device=device
         self.model=self.model.to(device)
-        if self.best_trained_model:
-            self.best_trained_model=self.best_trained_model.to(device)
-
+    
     def _build_model(self,dropout_p) -> nn.Module:
         if self.input_dim % 2 != 0:
             raise ValueError(
@@ -77,11 +113,12 @@ class NormalizingFlow:
 
         norm = nn.RMSNorm
         # norm = nn.BatchNorm1d
-        act = nn.ReLU
+        # act = nn.ReLU
+        act = nn.GELU
         # act = nn.SiLU
         dropout = lambda: nn.Dropout(p=dropout_p)
-        
-        half = self.input_dim // 2
+        input_dim = self.input_dim
+        half = input_dim // 2
         blocks = []
         for i in range(self.layers):
             steps = [
@@ -103,11 +140,13 @@ class NormalizingFlow:
                 Prod(nn.Sequential(
                     act(),
                     nn.Linear(self.hidden_dim, self.hidden_dim),
-                    norm(self.hidden_dim),  
-                    nn.Sigmoid()
+                    norm(self.hidden_dim),
+                    # SmoothSymmetricSqrt()
+                    nn.Tanh(),
+                    # AddConst(1.0)
                 )),
                 act(),
-                nn.Linear(self.hidden_dim, self.input_dim),
+                nn.Linear(self.hidden_dim, input_dim),
             ]
             if i==self.layers-1 and "Norm" in str(steps[-1]):
                 steps=steps[:-1]
@@ -134,9 +173,10 @@ class NormalizingFlow:
         """
         Generates samples drawn from trained distribution
         """
-        return (self.best_trained_model or self.model).inverse(torch.randn((count,self.input_dim)))
+        return self.model.inverse(torch.randn((count,self.input_dim)))
+    
     def log_prob(self, data : torch.Tensor) -> torch.Tensor:
-        model = self.best_trained_model or self.model
+        model = self.model
         z, jacobians = model(data.to(self.device))
         
         # log p(z) under standard normal
@@ -165,7 +205,7 @@ class NormalizingFlow:
         Yields:
             torch.Tensor: Interpolated sample at each step from dataA to dataB
         """
-        m = (self.best_trained_model or self.model)
+        m = self.model
         latentsA = m(dataA)[0]
         latentsB = m(dataB)[0]
         time = torch.linspace(0,1,N)
@@ -303,11 +343,11 @@ class NormalizingFlow:
         self.model.train()
         loss_normalizer = LossNormalizer1d(self.input_dim,hidden_dim=self.hidden_dim)
         
-        optim = torch.optim.AdamW(list(self.model.parameters())+list(loss_normalizer.parameters()), lr=lr,weight_decay=1e-4)
+        optim = torch.optim.AdamW(list(self.model.parameters())+list(loss_normalizer.parameters()), lr=lr,fused=True)
         
-        self.best_loss = float("inf")
-        self.best_trained_model = deepcopy(self.model).to(self.device)
-        self.improved = False
+        best_loss = float("inf")
+        best_trained_model = deepcopy(self.model).to(self.device)
+        improved = False
         n = data.shape[0]
         slices = list(range(0, n, batch_size))
         
@@ -317,12 +357,11 @@ class NormalizingFlow:
             sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
         if scheduler=='exponential':
             sch = torch.optim.lr_scheduler.ExponentialLR(optim,(0.15)**(1/total_steps))
-        
         try:
             for epoch in range(epochs):
-                if debug and self.improved:
-                    print(f"Epoch {epoch}: best_loss={self.best_loss:0.3f}")
-                self.improved = False
+                if debug and improved:
+                    print(f"Epoch {epoch}: best_loss={best_loss:0.3f}")
+                improved = False
 
                 # shuffle each epoch
                 perm = torch.randperm(n, device=self.device)
@@ -337,13 +376,14 @@ class NormalizingFlow:
                     if data_renoise>0:
                         batch=batch+torch.randn_like(batch)*data_renoise
                     
-                    optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
+                    optim.zero_grad(set_to_none=True)
                     z,jac = self.model(batch)
+                    loss_weight = loss_normalizer(z) # log(1/nil)=-log(nil)
                     
                     nil,log_det = flow_nll_loss(z,jac, batch, sum_dim=[-1])
-                    nil+=20 # to avoid negative losses
                     
-                    loss_weight = loss_normalizer(z)
+                    nil+=8
+                    
                     model_loss = (loss_weight.detach().exp()*nil).mean()
                     
                     with torch.no_grad():
@@ -368,28 +408,31 @@ class NormalizingFlow:
                     sch.step()
                     losses.append(nil.mean())
                 mean_loss = sum(losses)/len(losses)
-                if mean_loss < self.best_loss:
-                    self.best_loss = mean_loss.item()
-                    self.best_trained_model = deepcopy(self.model).to(self.device)
-                    self.improved = True
+                if mean_loss < best_loss:
+                    best_loss = mean_loss.item()
+                    best_trained_model = deepcopy(self.model)
+                    improved = True
         except KeyboardInterrupt:
             if debug: print("Stop training")
-        if debug and self.improved:
-            print(f"Last Epoch {epoch}: best_loss={self.best_loss:0.3f}")
+        if debug and improved:
+            print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}")
         self.model.eval()
-        return self.best_trained_model.eval()
+        with torch.no_grad():
+            for a,b in zip(self.model.parameters(),best_trained_model.parameters()):
+                a.copy_(b.to(a.device))
+        
     
     def to_prior(self,data : torch.Tensor) -> torch.Tensor:
         """
         Converts data tensor to latent space (standard normal dist)
         """
-        return (self.best_trained_model or self.model)(data)[0]
+        return self.model(data)[0]
     
     def to_target(self,latent_prior : torch.Tensor) -> torch.Tensor:
         """
         Converts data tensor to target posterior space(dataset distribution)
         """
-        return (self.best_trained_model or self.model).inverse(latent_prior)
+        return self.model.inverse(latent_prior)
 
     def conditional_sample(
         self,
@@ -414,10 +457,8 @@ class NormalizingFlow:
         Returns:
             torch.Tensor: Samples of shape [num_samples, input_dim] satisfying the conditions
         """
-        if self.best_trained_model is None:
-            raise ValueError("Model must be trained before conditional sampling. Call fit() first.")
 
-        model = self.best_trained_model or self.model
+        model = self.model
         model.eval()
 
         # Initialize z from standard normal distribution
