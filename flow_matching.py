@@ -360,6 +360,30 @@ class FlowMatching(nn.Module):
 
         return pred_direction, target, target_neg_vec, time_expand
     def integrate(self,model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False,no_grad_model =False):
+        """
+        Integrates the flow matching model using different numerical methods based on the number of steps.
+
+        This method selects an appropriate numerical integration technique depending on the number of steps:
+        - 1 step: Uses Euler method
+        - 2 steps: Uses Runge-Kutta 2nd order (RK2) method
+        - 3 steps: Uses Runge-Kutta 3rd order (RK3) method
+        - More than 3 steps: Uses Heun's method (modified trapezoidal rule)
+
+        Args:
+            model: Callable vθ(x, t) predicting vector field/motion.
+            x0: Starting point (image or noise tensor).
+            steps: Number of integration steps. Determines which numerical method to use.
+            churn_scale: Amount of noise added for stability each step.
+            inverse (bool): If False, integrate forward from x0 to x1 (image → noise).
+                            If True, reverse for noise → image.
+            return_intermediates: Whether to return intermediate values of xt.
+            no_grad_model: Whether to compute model predictions without gradient tracking.
+
+        Returns:
+            Tuple[Tensor,List[Tensor]] or Tensor:
+            - Final sample tensor if return_intermediates is False
+            - Tuple of (final tensor, list of intermediate tensors) if return_intermediates is True
+        """
         match steps:
             case 1: return euler(model,x0,steps,churn_scale,inverse,return_intermediates,time_transform=self.time_sampler_transform,no_grad_model=no_grad_model)
             case 2: return rk2(model,x0,churn_scale,inverse,return_intermediates)
@@ -381,6 +405,17 @@ def generate_unit_simplex_vertices(d):
     return torch.nn.functional.normalize(vertices, p=2, dim=-1)
 
 class LossNormalizer1d(nn.Module):
+    """
+    A neural network module that learns to normalize loss values based on input data and time.
+
+    This module is used in flow matching models to predict appropriate weights for loss normalization,
+    helping to stabilize training by adapting the loss function based on the current state and time.
+
+    Attributes:
+        expand (nn.Linear): Linear layer to expand input dimension to hidden dimension
+        time (nn.Linear): Linear layer to process time embeddings
+        net (nn.Sequential): Sequential network processing the combined input and time features
+    """
     def __init__(self, in_dim,hidden_dim=32) -> None:
         super().__init__()
         self.expand = nn.Linear(in_dim,hidden_dim)
@@ -392,6 +427,16 @@ class LossNormalizer1d(nn.Module):
             nn.Linear(hidden_dim, in_dim)
         )
     def forward(self,x : torch.Tensor,t : torch.Tensor):
+        """
+        Forward pass of the loss normalizer.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape [batch_size, in_dim]
+            t (torch.Tensor): Time tensor of shape [batch_size, 1] or [batch_size]
+
+        Returns:
+            torch.Tensor: Normalized loss weights of shape [batch_size, in_dim]
+        """
         time = self.time(t)
         x = self.expand(x)
         while time.ndim<x.ndim:
@@ -400,7 +445,27 @@ class LossNormalizer1d(nn.Module):
 
 class FlowModel1d(nn.Module):
     """
-    Flow-matching model for 1-dimensional (vector) data
+    Flow-matching model for 1-dimensional (vector) data.
+
+    This class implements a flow matching model that learns to transform simple distributions
+    (like Gaussian noise) into complex target distributions (like data samples). It supports
+    training, sampling, conditional sampling, and probability computation.
+
+    The model uses residual blocks with time embeddings to predict the vector field that
+    describes the flow between distributions. It includes methods for training with contrastive
+    flow matching, sampling from the learned distribution, and computing log probabilities.
+
+    Attributes:
+        fm (FlowMatching): Flow matching instance for handling core flow operations
+        in_dim (int): Input dimension of the data
+        hidden_dim (int): Hidden dimension of the neural network
+        time_emb (nn.Sequential): Time embedding network
+        expand (nn.Linear): Linear layer to expand input to hidden dimension
+        dropout (nn.Dropout): Dropout layer for regularization
+        residual_blocks (nn.ModuleList): List of residual blocks with attention mechanisms
+        collapse (nn.Linear): Linear layer to collapse hidden dimension back to input dimension
+        default_steps (int): Default number of integration steps for sampling
+        device (str): Device on which the model is located
     """
     def __init__(self, in_dim,hidden_dim=32,residual_blocks=3,dropout_p=0.0,device='cpu') -> None:
         super().__init__()
@@ -455,6 +520,18 @@ class FlowModel1d(nn.Module):
         return self.collapse(x)
     
     def to(self,device):
+        """
+        Moves the model to the specified device.
+
+        This method overrides the parent's to() method to also update the device attribute
+        of the FlowModel1d instance, ensuring that the model knows which device it's on.
+
+        Args:
+            device: The device (CPU/GPU) to move the model to
+
+        Returns:
+            FlowModel1d: The model moved to the specified device
+        """
         self.device=device
         return super().to(device)
     
@@ -474,16 +551,41 @@ class FlowModel1d(nn.Module):
         data_generation_model = None
     ):
         """
-        Train on `data` and return best model.
+        Trains the flow matching model on the provided data using contrastive flow matching.
+
+        This method implements a sophisticated training procedure that includes:
+        - Contrastive flow matching with negative samples
+        - Dynamic loss normalization using a separate neural network
+        - Optional reflow training with custom prior datasets
+        - Gradient clipping for stable training
+        - Model checkpointing to retain the best performing version
+
+        The training alternates between optimizing the main flow model and the loss normalizer,
+        using a weighted loss that combines MSE between predictions and targets with a
+        contrastive term that pushes predictions away from negative samples.
 
         Args:
-            data: Tensor of shape [N, input_dim].
-            batch_size: Batch size.
-            epochs: Epoch count.
-            data_renoise: dataset renoise factor. This is very important parameter and must be finetuned. Lays in range [0.01,0.1]
-            lr: AdamW learning rate.
-            grad_clip_max_norm: If not None, clip global grad norm to this value. [web:381]
-            debug: If True, prints when best loss improves.
+            data (torch.Tensor): Training data tensor of shape [N, input_dim].
+            batch_size (int): Number of samples per training batch (default: 512).
+            epochs (int): Number of training epochs (default: 100).
+            contrastive_loss_weight (float): Weight for the contrastive loss term that
+                                           uses negative samples (default: 0.1).
+            lr (float): Learning rate for the AdamW optimizer (default: 0.02).
+            normalizer_loss_weight (float): Weight for the auxiliary loss that trains
+                                          the loss normalizer network (default: 0.1).
+            grad_clip_max_norm (Optional[float]): Maximum gradient norm for clipping.
+                                                If None, no clipping is applied (default: 1).
+            debug (bool): Whether to print training progress and best loss updates (default: False).
+            prior_dataset (Optional[torch.Tensor]): Custom prior dataset to use instead of
+                                                   standard Gaussian noise. If provided,
+                                                   must have the same shape as the data (default: None).
+            reflow_window (float): Time window parameter for reflow training, controlling
+                                  the range of time values used during training (default: 1).
+            scheduler (bool): Whether to use a cosine annealing learning rate scheduler (default: True).
+            data_generation_model: Optional model to transform prior samples before training (default: None).
+
+        Returns:
+            None: Modifies the model in-place, retaining the best checkpoint based on validation loss.
         """
         model = self
         device = model.device
@@ -609,8 +711,19 @@ class FlowModel1d(nn.Module):
     
     def mmd2_with_data(self,data : torch.Tensor) -> float:
         """
-        Returns MMD^2 of sampled learned latent space with given data.
-        This method can be used as a metric for evaluating how good trained model is.
+        Computes the Maximum Mean Discrepancy (MMD) squared between the model's samples and given data.
+
+        This method generates samples from the trained model and compares them to the provided data
+        using the RBF kernel-based MMD metric. Lower values indicate that the model's samples
+        are more similar to the provided data, suggesting better model performance.
+
+        Args:
+            data (torch.Tensor): Reference data tensor to compare against model samples.
+                               Expected shape: [num_samples, input_dim]
+
+        Returns:
+            float: MMD^2 value indicating the discrepancy between model samples and reference data.
+                   Lower values indicate better similarity between the distributions.
         """
         with torch.no_grad():
             sampled = self.sample(len(data))
@@ -626,7 +739,37 @@ class FlowModel1d(nn.Module):
                contrastive_loss_weight=0.05,
                reruns = 2
         ):
-        
+        """
+        Performs reflow training to straighten the flow and enable using fewer integration steps.
+
+        Reflow is a technique that retrains the model to make the flow trajectories more direct,
+        allowing for accurate sampling with fewer integration steps. This is achieved by
+        progressively training the model on data generated from itself with increasingly
+        narrow time intervals, which encourages the flow to become more linear.
+
+        The method trains in time intervals from smaller to larger to preserve the original flow
+        as much as possible. This gradual approach helps maintain the learned characteristics
+        of the original model while improving its efficiency.
+
+        The method works by:
+        1. Generating synthetic data by transforming random noise through the current model
+        2. Retraining the model on this synthetic data with increasingly narrow time windows
+        3. Repeating this process for multiple reruns to refine the model
+
+        Args:
+            dataset_size (int): Size of the synthetic dataset to generate for reflow training
+            batch_size (int): Batch size for training during reflow
+            epochs_per_window_step (int): Number of epochs to train for each window step
+            window_steps (int): Number of time window steps to use (divides [0,1] interval)
+            lr (float): Learning rate for reflow training
+            debug (bool): Whether to print debug information during training
+            contrastive_loss_weight (float): Weight for contrastive loss component during training
+            reruns (int): Number of complete reflow cycles to perform
+
+        Returns:
+            None: Updates the model in-place and reduces the default number of integration steps to 5
+        """
+
         current_model = deepcopy(self).train()
         for r in range(reruns):
             for w in torch.linspace(1/window_steps,1,window_steps):
@@ -649,16 +792,66 @@ class FlowModel1d(nn.Module):
         self.eval()
     
     def to_prior(self,data : torch.Tensor,steps=None):
+        """
+        Transforms data from the target distribution back to the prior (noise) distribution.
+
+        This method performs the inverse transformation, mapping samples from the complex
+        target distribution (e.g., images, time series) back to the simple prior distribution
+        (typically Gaussian noise). This is achieved by integrating the flow in reverse.
+
+        Args:
+            data (torch.Tensor): Input tensor from the target distribution.
+                               Expected shape: [batch_size, input_dim]
+            steps (int, optional): Number of integration steps to use.
+                                 If None, uses the model's default steps.
+
+        Returns:
+            torch.Tensor: Transformed tensor in the prior distribution space.
+                         Same shape as input tensor.
+        """
         if not steps: steps = self.default_steps
         input_device = data.device
         return self.fm.integrate(self,data.to(self.device),steps,inverse=True).to(input_device)
     
     def to_target(self,normal_noise : torch.Tensor,steps=None):
+        """
+        Transforms samples from the prior (noise) distribution to the target distribution.
+
+        This method performs the forward transformation, mapping samples from the simple
+        prior distribution (typically Gaussian noise) to the complex target distribution
+        (e.g., images, time series). This is achieved by integrating the learned flow.
+
+        Args:
+            normal_noise (torch.Tensor): Input tensor from the prior distribution.
+                                       Expected shape: [batch_size, input_dim]
+            steps (int, optional): Number of integration steps to use.
+                                 If None, uses the model's default steps.
+
+        Returns:
+            torch.Tensor: Transformed tensor in the target distribution space.
+                         Same shape as input tensor.
+        """
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
         return self.fm.integrate(self,normal_noise.to(self.device),steps).to(input_device)
     
     def sample(self,num_samples,steps=None):
+        """
+        Generates samples from the learned target distribution.
+
+        This method creates new samples by first generating random Gaussian noise and then
+        transforming it through the learned flow to the target distribution. This is the
+        primary method for generating new data from the trained model.
+
+        Args:
+            num_samples (int): Number of samples to generate
+            steps (int, optional): Number of integration steps to use for transformation.
+                                 If None, uses the model's default steps.
+
+        Returns:
+            torch.Tensor: Generated samples from the target distribution.
+                         Shape: [num_samples, input_dim]
+        """
         if not steps: steps = self.default_steps
         return self.to_target(torch.randn((num_samples,self.in_dim),device=self.device),steps)
     
@@ -743,12 +936,31 @@ class FlowModel1d(nn.Module):
         return final_x
     
     def full_log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
+        """
+        Computes the full log probability of the data using exact Jacobian computation.
+
+        This method calculates the exact log probability using the change-of-variables formula:
+        log p(x) = log p(z) + log |det(J)|, where z is the corresponding latent variable
+        and J is the Jacobian of the transformation. This is computationally expensive
+        due to the Jacobian determinant calculation, so the log_prob method is recommended
+        for most use cases.
+
+        Args:
+            data (torch.Tensor): Input tensor for which to compute log probability.
+                               Expected shape: [batch_size, input_dim]
+            steps (int, optional): Number of integration steps to use for transformation.
+                                 If None, uses the model's default steps.
+
+        Returns:
+            torch.Tensor: Log probability values for each sample in the batch.
+                         Shape: [batch_size,]
+        """
         if not steps: steps = self.default_steps
-        
+
         Y = data.to(self.device) # complex domain
         X = self.to_prior(Y,steps) # normal noise
         def elementwise_prior(x): return self.to_prior(x,steps).view(-1,dim).sum(0)
-        
+
         # change of variables stuff
         dim = Y.shape[-1]
         Y_flat = Y.view(-1,dim)
@@ -756,48 +968,162 @@ class FlowModel1d(nn.Module):
         batch_jac = vmap(jacrev(elementwise_prior),randomness='same')(Y_flat).view(output_shape)
         log_jac_det = batch_jac.slogdet()[1]
         prior_log_prob = Normal(0,1).log_prob(X).sum(-1)
-        
+
         return prior_log_prob+log_jac_det
     
-    # TODO: make a publication about this method
+    def optimize(self, data: torch.Tensor, lr: float = 1.0, epochs: int = 1,
+             columns_to_optimize: list[int] = None):
+        """
+        Optimize specific columns of data to maximize log probability.
+
+        This method performs gradient-based optimization to adjust specific columns of the input
+        data to increase their likelihood under the learned model distribution. It keeps other
+        columns fixed while optimizing the specified ones.
+
+        Args:
+            data (torch.Tensor): Input tensor of shape [batch_size, input_dim] to optimize
+            lr (float): Learning rate for the LBFGS optimizer (default: 1.0)
+            epochs (int): Number of optimization epochs (default: 1)
+            columns_to_optimize (list[int]): List of column indices to optimize (0-based).
+                                           If None or empty, all columns will be optimized.
+
+        Returns:
+            tuple: A tuple containing:
+                 - torch.Tensor: Optimized data tensor with the same shape as input
+                 - torch.Tensor: Final loss value after optimization
+        """
+        batch_size, input_dim = data.shape
+
+        # Handle default case - optimize all columns if none specified
+        if columns_to_optimize is None or len(columns_to_optimize) == 0:
+            columns_to_optimize = list(range(input_dim))
+
+        # Validate column indices
+        columns_to_optimize = [c for c in columns_to_optimize if 0 <= c < input_dim]
+        if not columns_to_optimize:
+            return data.clone(), -self.log_prob(data).sum().detach()
+
+        # Identify fixed columns as those not in columns_to_optimize
+        all_columns = list(range(input_dim))
+        fixed_columns = [c for c in all_columns if c not in columns_to_optimize]
+
+        # Create optimizable parameters for only the specified columns
+        optimizable_data = data[:, columns_to_optimize].clone().detach().requires_grad_(True)
+
+        # Fixed data doesn't need gradients
+        if fixed_columns:
+            fixed_data = data[:, fixed_columns].clone().detach()
+        else:
+            fixed_data = None
+
+        # Define optimizer on only the optimizable part
+        optimizer = torch.optim.LBFGS([optimizable_data], lr=lr, max_iter=20)
+
+        class IterationData:
+            best_loss = 1e8
+            best_optimizable_data = optimizable_data.clone().detach()
+
+        iteration = IterationData()
+        self._iteration = iteration
+        # Reconstruct full tensor by combining optimizable and fixed parts
+        self._current_data = torch.zeros_like(data)
+
+        def closure():
+            optimizer.zero_grad()
+
+            iteration = self._iteration
+            current_data = self._current_data.detach()
+
+            # Fill in the optimizable columns
+            current_data[:, columns_to_optimize] = optimizable_data
+
+            # Fill in fixed columns if any exist
+            if fixed_columns:
+                current_data[:, fixed_columns] = fixed_data
+
+            # Compute loss on the full tensor
+            loss = -self.log_prob(current_data).sum()
+
+            if loss<iteration.best_loss:
+                iteration.best_loss=loss
+                iteration.best_optimizable_data=optimizable_data.detach().clone()
+
+            loss.backward()
+
+            return loss
+
+        # Run optimization
+        for i in range(epochs):
+            loss = optimizer.step(closure)
+
+        # Create final result by combining optimized and fixed parts
+        result = torch.zeros_like(data)
+        result[:, columns_to_optimize] = iteration.best_optimizable_data
+
+        # Add back fixed columns if any exist
+        if fixed_columns:
+            result[:, fixed_columns] = fixed_data
+
+        return result, iteration.best_loss
+    
     def log_prob(self, data, steps=None, eps=1e-3,return_separately = False):
         """
-        Jacobian det approx via pairwise L2 distances of perturbed neighbors.
-        Gives exact same result as `full_log_prob` but at **much** lower computational cost.
-        
-        This piece of code is just brilliant, i don't understand myself how i've come up with it,
-        but this stuff perfectly computes log prob of flow matching model at very low cost.
-        
-        return_separately: returns prior_logprob, jacob_log, prior separately
+        Computes log probability using Jacobian determinant approximation via simplex volume ratios.
+
+        This method approximates the log probability using a novel approach based on comparing
+        volumes of simplices before and after transformation. It achieves the same accuracy as
+        full_log_prob but at much lower computational cost by approximating the Jacobian
+        determinant through the ratio of simplex volumes in the data and latent spaces.
+
+        The algorithm works by:
+        1. Creating a small simplex around each data point
+        2. Transforming the simplex vertices through the inverse flow
+        3. Computing the volume ratio between the original and transformed simplices
+        4. Using this ratio as an approximation of the Jacobian determinant
+
+        Args:
+            data (torch.Tensor): Input tensor for which to compute log probability.
+                               Expected shape: [batch_size, input_dim]
+            steps (int, optional): Number of integration steps to use for transformation.
+                                 If None, uses the model's default steps.
+            eps (float): Small epsilon value for simplex perturbation (default: 1e-3)
+            return_separately (bool): If True, returns prior logprob, jacobian logdet,
+                                    and latent variables separately. If False, returns
+                                    the combined log probability (default: False)
+
+        Returns:
+            torch.Tensor or tuple: If return_separately is False, returns combined log
+                                 probability tensor of shape [batch_size]. If True,
+                                 returns a tuple of (prior_logp, logdet_approx, X)
         """
         if not steps: steps = self.default_steps
         Y = data.to(self.device)
-        
+
         # generate N-dimensional simplex
         simplex_points = generate_unit_simplex_vertices(self.in_dim).to(self.device)*eps
-        
+
         # simplex that have some point at origin 0
         shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
 
         # log area of original simplex
         original_simplex_area_log = shifted_simplex.slogdet()[1]
-        
+
         # make shapes match
         simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
-        
+
         # shift Y to sphere points of simplex
         Y_neighbors = Y[...,None,:] + simplex_points  # (B, n_neighbors, ...dim)
-        
+
         # Compute priors for all neighbors
         X_neighbors = self.to_prior(Y_neighbors, steps)
-        
+
         # get area of transformed simplex
         transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
         transformed_simplex_area_log = transformed_simplex.slogdet()[1]
-        
+
         # area ratio is our jacobian determinant approximation
         logdet_approx = transformed_simplex_area_log - original_simplex_area_log + self.in_dim*math.log(self.in_dim)
-        
+
         X = self.to_prior(Y,steps)
         prior_logp = Normal(0,1).log_prob(X).sum(-1)
 
