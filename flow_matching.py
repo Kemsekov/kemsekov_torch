@@ -367,7 +367,7 @@ def generate_unit_simplex_vertices(d):
     # Each row is a vertex; normalize along the last dimension
     return torch.nn.functional.normalize(vertices, p=2, dim=-1)
 
-class LossNormalizer(nn.Module):
+class LossNormalizer1d(nn.Module):
     def __init__(self, in_dim,hidden_dim=32) -> None:
         super().__init__()
         self.expand = nn.Linear(in_dim,hidden_dim)
@@ -476,7 +476,10 @@ class FlowModel1d(nn.Module):
         device = model.device
         if data_generation_model: data_generation_model.eval()
         
-        loss_normalizer = LossNormalizer(model.in_dim,model.hidden_dim).to(device)
+        loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
+        
+        # model.compile()
+        # loss_normalizer.compile()
         
         batch_size = min(batch_size,data.shape[0])
         data = data.to(device)
@@ -603,12 +606,12 @@ class FlowModel1d(nn.Module):
     def reflow(self,
                dataset_size=4096,
                batch_size=512,
-               epochs_per_window_step=10,
-               window_steps=4,
+               epochs_per_window_step=40,
+               window_steps=1,
                lr=0.025,
                debug = False,
-               contrastive_loss_weight=0.1,
-               reruns = 1
+               contrastive_loss_weight=0.05,
+               reruns = 2
         ):
         
         current_model = deepcopy(self).train()
