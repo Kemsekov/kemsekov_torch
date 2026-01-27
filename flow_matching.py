@@ -8,8 +8,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
+from torch.func import vmap, jacrev
 
-def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False):
+def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False, time_transform : nn.Module = nn.Identity()):
     """
     Samples from a flow-matching model with Euler integration.
 
@@ -27,13 +28,19 @@ def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates 
         2. intermediates - Intermediate xt values if return_intermediates is True
     """
     device = list(model.parameters())[0].device
-    if inverse: 
+    if inverse:
         ts = torch.linspace(1, 0, steps, device=device)
     else:
         ts = torch.linspace(0, 1, steps, device=device)
+    ts = time_transform(ts[:,None])[:,0]
+    
+    if len(ts)>1:
+        dt = ts[1]-ts[0]
+    else:
+        dt = min(1-ts[0],ts[0])
+        
     x0 = x0.to(device)
     xt = x0
-    dt = -1/steps if inverse else 1/steps
     
     intermediates = []
     
@@ -57,16 +64,14 @@ def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates 
         return xt, intermediates
     return xt
 
-def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False,base_shift=0.0):
+def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False, time_transform : nn.Module = nn.Identity()):
     device = list(model.parameters())[0].device
-    shift = base_shift/steps
     if inverse:
-        ts = torch.linspace(1-shift, shift, steps+1, device=device)  # steps intervals = steps+1 points
-        dt = ts[1]-ts[0]
+        ts = torch.linspace(1, 0, steps+1, device=device)  # steps intervals = steps+1 points
     else:
-        ts = torch.linspace(shift, 1-shift, steps+1, device=device)
-        dt = ts[1]-ts[0]
-    
+        ts = torch.linspace(0, 1, steps+1, device=device)
+    ts = time_transform(ts[:,None])[:,0]
+    dt = ts[1]-ts[0]
     x0 = x0.to(device)
     xt = x0
     intermediates = []
@@ -124,7 +129,7 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
         return xt, intermediates
     return xt
 
-def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False,interval_shift=0.):
+def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, left = 0.0, right = 1.0):
     device = next(model.parameters()).device
     x0 = x0.to(device)
     xt = x0.clone()
@@ -134,11 +139,11 @@ def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False,in
     # but i expect these values to be altered for flow matching model towards
     # the center by some amount
     if inverse:
-        t_start =   1.0-interval_shift
-        t_end =     0.0+interval_shift
+        t_start =   right
+        t_end =     left
     else:
-        t_start =   0.0+interval_shift
-        t_end =     1.0-interval_shift
+        t_start =   left
+        t_end =     right
     
     
     dt = t_end - t_start  # = -1.0 for reverse, +1.0 for forward
@@ -172,18 +177,18 @@ def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False,in
     
     return (xt_next, intermediates) if return_intermediates else xt_next
 
-def rk2(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False,interval_shift=0.):
+def rk2(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, left = 0.0, right = 1.0):
     device = next(model.parameters()).device
     x0 = x0.to(device)
     xt = x0.clone()
     
     # === THEORETICAL DEFAULTS: Ralston's method (optimal 2-stage RK) ===
     if inverse:
-        t_start =   1.0-interval_shift
-        t_end =     0.0+interval_shift
+        t_start =   right
+        t_end =     left
     else:
-        t_start =   0.0+interval_shift
-        t_end =     1.0-interval_shift
+        t_start =   left
+        t_end =     right
     dt = t_end - t_start
     
     intermediates = []
@@ -213,64 +218,11 @@ def rk2(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False,in
     
     return (xt_next, intermediates) if return_intermediates else xt_next
 
-class FlowMatching:
-    def __init__(self,time_scaler : Callable[[torch.Tensor],torch.Tensor] = None,eps=1e-2):
-        """
-        Initializes a Flow Matching trainer and sampler.
-
-        Parameters
-        ----------
-        time_scaler : Callable[[torch.Tensor], torch.Tensor], optional
-            A function that modulates the ground-truth flow direction as a function of time `t`.
-            It takes a time tensor `t` (shape `[B]` or broadcastable) and returns a scaling factor
-            of the same shape. This scaling is applied to the raw direction vector
-            `(target_domain - input_domain)` during training.
-
-            By default (`time_scaler=None`), the identity scaling is used: `time_scaler(t) = 1`,
-            which corresponds to standard **straight-path flow matching** (i.e., linear interpolation
-            with constant velocity).
-
-            Common alternatives include:
-              - `lambda t: t`: induces time-dependent velocity scaling (e.g., mimicking ODEs from diffusion).
-              - `lambda t: torch.sqrt(t)` or other smooth functions to align with specific generative priors.
-
-            The choice of `time_scaler` defines the **vector field** that the model learns to approximate.
-            It must be consistent between training and sampling: during sampling, the model output is
-            divided by `time_scaler(t) + eps` to invert this scaling and recover the true trajectory.
-
-        eps : float, optional (default: 1e-2)
-            Small positive constant added to the time scaler output during sampling to avoid division
-            by zero when `time_scaler(t)` approaches zero (e.g., at `t=0` if `time_scaler(t) = t`).
-            This ensures numerical stability in the Euler integration step.
-
-        Notes
-        -----
-        - During **training** (`flow_matching_pair` or `contrastive_flow_matching_pair`):
-            The target direction is computed as:
-                `target = (target_domain - input_domain) * time_scaler(t)`
-
-        - During **sampling** (`sample` method):
-            The model's raw output (which approximates the scaled vector field) is corrected by:
-                `pred = model(xt, t) / (time_scaler(t) + eps)`
-            This recovers the unscaled velocity for integration, assuming the model learned
-            `v(x_t, t) ≈ (target - input) * time_scaler(t)`.
-
-        - **Consistency is crucial**: The same `time_scaler` must be used in both training and inference.
-          Mismatched scalers will lead to incorrect trajectories and poor sample quality.
-
-        Example
-        -------
-        To replicate standard straight-path flow matching (constant velocity):
-            fm = FlowMatching()  # uses time_scaler = lambda t: 1
-
-        To use a diffusion-like scaling (velocity vanishes at t=0):
-            fm = FlowMatching(time_scaler=lambda t: t)
-        """
+class FlowMatching(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.time_scaler = lambda x:x
         
-        self.eps = eps
-        if time_scaler is None:
-            time_scaler=lambda x:1
-        self.time_scaler=time_scaler
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
         Generates direction pairs for flow matching model training
@@ -303,14 +255,15 @@ class FlowMatching:
         # generate time in range [0;1]
         if time is None:
             time = torch.rand(input_domain.shape[0],device=input_domain.device)
-        
+        time = self.time_scaler(time)
+            
         time_expand = time[:,*([None]*(target_domain.dim()-1))]
         xt = (1-time_expand)*input_domain+time_expand*target_domain
         
         pred_direction = model(xt,time)
         
         #original
-        target = (target_domain-input_domain)*self.time_scaler(time_expand)
+        target = (target_domain-input_domain)
         
         return pred_direction,target, time_expand
     def contrastive_flow_matching_pair(self, model, input_domain, target_domain, time=None):
@@ -373,21 +326,24 @@ class FlowMatching:
         """
         if time is None:
             time = torch.rand(input_domain.shape[0], device=input_domain.device)
+        
+        time = self.time_scaler(time)
+            
         bsz = input_domain.shape[0]
         time_expand = time[:, *([None] * (target_domain.dim() - 1))]
         xt = (1 - time_expand) * input_domain + time_expand * target_domain
 
         pred_direction = model(xt, time)
 
-        target = (target_domain - input_domain) * self.time_scaler(time_expand)
+        target = (target_domain - input_domain)
 
         # Prepare negative samples by shuffling the batch
         idx = torch.randperm(bsz, device=input_domain.device)
         input_neg = input_domain[idx]
         target_neg = target_domain[idx]
-        time_expand_neg = time_expand[idx]
+        # time_expand_neg = time_expand[idx]
 
-        target_neg_vec = (target_neg - input_neg) * self.time_scaler(time_expand_neg)
+        target_neg_vec = (target_neg - input_neg)
 
         return pred_direction, target, target_neg_vec, time_expand
     def integrate(self,model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False):
@@ -397,7 +353,6 @@ class FlowMatching:
             case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
             case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates)
 
-from torch.func import vmap, jacrev
 
 def generate_unit_simplex_vertices(d):
     # 1. Generate the initial regular simplex
@@ -412,13 +367,33 @@ def generate_unit_simplex_vertices(d):
     # Each row is a vertex; normalize along the last dimension
     return torch.nn.functional.normalize(vertices, p=2, dim=-1)
 
+class LossNormalizer(nn.Module):
+    def __init__(self, in_dim,hidden_dim=32) -> None:
+        super().__init__()
+        self.expand = nn.Linear(in_dim,hidden_dim)
+        self.time = nn.Linear(1,hidden_dim)
+        self.net = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+    def forward(self,x : torch.Tensor,t : torch.Tensor):
+        time = self.time(t)
+        x = self.expand(x)
+        while time.ndim<x.ndim:
+            time = time[:,None]
+        return self.net(x+time).sum(-1)
+
 class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data
     """
     def __init__(self, in_dim,hidden_dim=32,residual_blocks=3,dropout_p=0.0,device='cpu') -> None:
         super().__init__()
+        self.fm = FlowMatching()
         self.in_dim=in_dim
+        self.hidden_dim=hidden_dim
         norm = nn.RMSNorm
         act = nn.GELU
         self.time_emb = nn.Sequential(
@@ -428,7 +403,7 @@ class FlowModel1d(nn.Module):
         )
         self.expand = nn.Linear(in_dim,hidden_dim)
         
-        # self.dropout = nn.Dropout(dropout_p)
+        self.dropout = nn.Dropout(dropout_p)
         
         self.residual_blocks = nn.ModuleList([
             nn.ModuleList([
@@ -445,9 +420,12 @@ class FlowModel1d(nn.Module):
         ])
         
         self.collapse = nn.Linear(hidden_dim,in_dim)
-        self.default_steps=12
+        self.default_steps=16
         self.to(device)
         self.eval()
+        
+        # default time scaler for training
+        self.fm.time_scaler = lambda x: torch.log(9*x+1)/math.log(10)
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         if t.ndim==1: t=t[:,None]
@@ -457,6 +435,7 @@ class FlowModel1d(nn.Module):
 
         expand = self.expand(x)
         x = expand+time
+        x = self.dropout(x)
         for m,temb in self.residual_blocks:
             x = m(x*temb(x))
         
@@ -467,19 +446,20 @@ class FlowModel1d(nn.Module):
         return super().to(device)
     
     def fit(
-        model,
+        self,
         data: torch.Tensor,
         batch_size: int = 512,
         epochs: int = 100,
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
+        normalizer_loss_weight=0.1,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
         prior_dataset : Optional[torch.Tensor] = None,
         reflow_window = 1,
-        lossf = F.mse_loss,
         scheduler = True,
-    ) -> nn.Module:
+        data_generation_model = None
+    ):
         """
         Train on `data` and return best model.
 
@@ -491,12 +471,13 @@ class FlowModel1d(nn.Module):
             lr: AdamW learning rate.
             grad_clip_max_norm: If not None, clip global grad norm to this value. [web:381]
             debug: If True, prints when best loss improves.
-
-        Returns:
-            trained_model: Best model on CPU in eval() mode.
         """
+        model = self
         device = model.device
-
+        if data_generation_model: data_generation_model.eval()
+        
+        loss_normalizer = LossNormalizer(model.in_dim,model.hidden_dim).to(device)
+        
         batch_size = min(batch_size,data.shape[0])
         data = data.to(device)
         
@@ -504,8 +485,8 @@ class FlowModel1d(nn.Module):
             prior_dataset=prior_dataset.to(device)
         
         model.train()
-        fm = FlowMatching()
-        optim = torch.optim.AdamW(model.parameters(), lr=lr)
+        
+        optim = torch.optim.AdamW(list(model.parameters())+list(loss_normalizer.parameters()), lr=lr)
         
         best_loss = float("inf")
         best_r2 = -1e8
@@ -538,22 +519,44 @@ class FlowModel1d(nn.Module):
                     batch = data_shuf[start : start + batch_size]
 
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
+                    
                     prior_batch=torch.randn_like(batch,device=device)
                     time = torch.rand(batch.shape[0],device=device)
                     if prior_dataset is not None:
                         prior_batch = prior_shuf[start : start + batch_size]
                         time*=reflow_window
-                            
+                    if data_generation_model:
+                        with torch.no_grad():
+                            batch = data_generation_model.to_target(prior_batch)
+                    
                     pred_dir,target_dir,contrast_dir,t = \
-                        fm.contrastive_flow_matching_pair(
+                        model.fm.contrastive_flow_matching_pair(
                             model,
                             prior_batch,
                             batch,
                             time=time
                         )
-                    loss = lossf(pred_dir,target_dir)-contrastive_loss_weight*lossf(pred_dir,contrast_dir)
+                    # sample-wise loss
+                    sample_loss = \
+                        F.mse_loss(pred_dir,target_dir,reduction='none')\
+                        -contrastive_loss_weight*F.mse_loss(pred_dir,contrast_dir,reduction='none')+3 #add 3 to avoid negative numbers
+                    sample_loss=sample_loss.mean(-1)
                     
+                    with torch.no_grad():  # Stop-gradient via detach
+                        sg_losses = sample_loss.detach()
+                        log_inv_loss = torch.log(sg_losses.clamp(min=1e-8))  # Numerical stability
+                        target_log_w = -log_inv_loss  # log(1/L)
                     
+                    weights = loss_normalizer(target_dir, t) # it equals to log(1/loss)
+                    
+                    loss_weighted = weights.exp().detach() # it equals to 1/loss
+                    
+                    #scale loss by it's prediction
+                    weighed_loss = (loss_weighted*sample_loss).mean()
+                    
+                    aux_loss = F.mse_loss(weights, target_log_w)
+                    # print(aux_loss)
+                    loss = weighed_loss+normalizer_loss_weight*aux_loss
                     loss.backward()
                     
                     if grad_clip_max_norm is not None:
@@ -562,6 +565,7 @@ class FlowModel1d(nn.Module):
                             max_norm=grad_clip_max_norm,
                             norm_type=2.0,
                         )
+                        
                     optim.step()
                     if scheduler: sch.step()
                     
@@ -579,7 +583,7 @@ class FlowModel1d(nn.Module):
         except KeyboardInterrupt:
             if debug: print("Stop training")
         if debug and improved:
-            print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}")
+            print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}\tbest_r2={best_r2:0.3f}")
         
         # update current model with best checkpoint
         with torch.no_grad():
@@ -601,42 +605,42 @@ class FlowModel1d(nn.Module):
                batch_size=512,
                epochs_per_window_step=10,
                window_steps=4,
-               lr=0.01,
+               lr=0.025,
                debug = False,
-               contrastive_loss_weight=0.02
+               contrastive_loss_weight=0.1,
+               reruns = 1
         ):
+        
         current_model = deepcopy(self).train()
-        for w in torch.linspace(1/window_steps,1,window_steps):
-            if debug: print(f"Training on t=[0.00:{w:0.2f}]")
-            prior = torch.randn((dataset_size,self.in_dim))
-            with torch.no_grad():
-                data = current_model.to_target(prior)
-            self.fit(
-                data=data,
-                prior_dataset=prior,
-                debug=debug,
-                batch_size=batch_size,
-                epochs=epochs_per_window_step,
-                lr=lr,
-                reflow_window=w,
-                # lossf = F.smooth_l1_loss,
-                scheduler=False,
-                contrastive_loss_weight=contrastive_loss_weight
-            )
-        self.default_steps=4
+        for r in range(reruns):
+            for w in torch.linspace(1/window_steps,1,window_steps):
+                if debug: print(f"Training on t=[0.00:{w:0.2f}]")
+                prior = torch.randn((dataset_size,self.in_dim))
+                with torch.no_grad():
+                    data = current_model.to_target(prior)
+                self.fit(
+                    data=data,
+                    prior_dataset=prior,
+                    debug=debug,
+                    batch_size=batch_size,
+                    epochs=epochs_per_window_step,
+                    lr=lr,
+                    reflow_window=w,
+                    scheduler=False,
+                    contrastive_loss_weight=contrastive_loss_weight
+                )
+        self.default_steps=5
         self.eval()
     
     def to_prior(self,data : torch.Tensor,steps=None):
         if not steps: steps = self.default_steps
         input_device = data.device
-        fm = FlowMatching()
-        return fm.integrate(self,data.to(self.device),steps,inverse=True).to(input_device)
+        return self.fm.integrate(self,data.to(self.device),steps,inverse=True).to(input_device)
     
     def to_target(self,normal_noise : torch.Tensor,steps=None):
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
-        fm = FlowMatching()
-        return fm.integrate(self,normal_noise.to(self.device),steps).to(input_device)
+        return self.fm.integrate(self,normal_noise.to(self.device),steps).to(input_device)
     
     def sample(self,num_samples,steps=None):
         if not steps: steps = self.default_steps
@@ -748,7 +752,7 @@ class FlowModel1d(nn.Module):
         This piece of code is just brilliant, i don't understand myself how i've come up with it,
         but this stuff perfectly computes log prob of flow matching model at very low cost.
         
-        return_separately: returns prior_logprob and jacob_log separately
+        return_separately: returns prior_logprob, jacob_log, prior separately
         """
         if not steps: steps = self.default_steps
         Y = data.to(self.device)
@@ -782,7 +786,7 @@ class FlowModel1d(nn.Module):
         prior_logp = Normal(0,1).log_prob(X).sum(-1)
 
         if return_separately:
-            return prior_logp,logdet_approx
+            return prior_logp,logdet_approx,X
         # this stuff perfectly match log prob structure
         return prior_logp+logdet_approx
         
