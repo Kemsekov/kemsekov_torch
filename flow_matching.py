@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.func import vmap, jacrev
 
-def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False, time_transform : nn.Module = nn.Identity()):
+def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False, time_transform : nn.Module = nn.Identity(),no_grad_model=False):
     """
     Samples from a flow-matching model with Euler integration.
 
@@ -44,6 +44,12 @@ def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates 
     
     intermediates = []
     
+    def no_grad_model_pred(xt,t):
+        with torch.no_grad():
+            return model(xt,t)
+    
+    pred_m = no_grad_model_pred if no_grad_model else model
+    
     for i in range(0,steps):
         t = ts[i]
         
@@ -53,7 +59,7 @@ def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates 
             xt = churn_scale * noise + (1 - churn_scale) * xt
         t_expand = t.expand(x0.shape[0])
         
-        pred = model(xt, t_expand)
+        pred = pred_m(xt, t_expand)
         
         # forward or reverse Euler update
         xt = xt + dt * pred
@@ -64,7 +70,7 @@ def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates 
         return xt, intermediates
     return xt
 
-def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False, time_transform : nn.Module = nn.Identity()):
+def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False, time_transform : nn.Module = nn.Identity(),no_grad_model = False):
     device = list(model.parameters())[0].device
     if inverse:
         ts = torch.linspace(1, 0, steps+1, device=device)  # steps intervals = steps+1 points
@@ -78,6 +84,12 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
     
     # Store previous derivative for multi-step method
     prev_pred = None
+    
+    def no_grad_model_pred(xt,t):
+        with torch.no_grad():
+            return model(xt,t)
+    
+    pred = no_grad_model_pred if no_grad_model else model
     
     for i in range(steps):
         t_current = ts[i]
@@ -93,14 +105,14 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
         if i == 0:
             # First step: full Heun evaluation (2 evaluations)
             # Current derivative
-            pred_current = model(xt, t_expand_current)
+            pred_current = pred(xt, t_expand_current)
             
             # Predictor step (Euler)
             x_pred = xt + dt * pred_current
             
             # Evaluate at predicted point
             t_expand_next = t_next.expand(x0.shape[0])
-            pred_next = model(x_pred, t_expand_next)
+            pred_next = pred(x_pred, t_expand_next)
             
             # Corrector step (Heun's method)
             xt = xt + dt * 0.5 * (pred_current + pred_next)
@@ -114,7 +126,7 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
             
             # Evaluate at predicted point (ONLY ONE EVAL PER STEP)
             t_expand_next = t_next.expand(x0.shape[0])
-            pred_next = model(x_pred, t_expand_next)
+            pred_next = pred(x_pred, t_expand_next)
             
             # Corrector step using stored previous derivative
             xt = xt + dt * 0.5 * (prev_pred + pred_next)
@@ -222,6 +234,7 @@ class FlowMatching(nn.Module):
     def __init__(self):
         super().__init__()
         self.time_scaler = lambda x:x
+        self.time_sampler_transform = lambda x:x
         
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
@@ -346,13 +359,13 @@ class FlowMatching(nn.Module):
         target_neg_vec = (target_neg - input_neg)
 
         return pred_direction, target, target_neg_vec, time_expand
-    def integrate(self,model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False):
+    def integrate(self,model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False,no_grad_model =False):
         match steps:
-            case 1: return euler(model,x0,steps,churn_scale,inverse,return_intermediates)
+            case 1: return euler(model,x0,steps,churn_scale,inverse,return_intermediates,time_transform=self.time_sampler_transform,no_grad_model=no_grad_model)
             case 2: return rk2(model,x0,churn_scale,inverse,return_intermediates)
             case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
-            case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates)
-
+            case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_sampler_transform,no_grad_model=no_grad_model)
+        
 
 def generate_unit_simplex_vertices(d):
     # 1. Generate the initial regular simplex
