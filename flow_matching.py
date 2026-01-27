@@ -389,14 +389,14 @@ class LossNormalizer1d(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
+            nn.Linear(hidden_dim, in_dim)
         )
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         time = self.time(t)
         x = self.expand(x)
         while time.ndim<x.ndim:
             time = time[:,None]
-        return self.net(x+time).sum(-1)
+        return self.net(x+time)
 
 class FlowModel1d(nn.Module):
     """
@@ -556,7 +556,7 @@ class FlowModel1d(nn.Module):
                     sample_loss = \
                         F.mse_loss(pred_dir,target_dir,reduction='none')\
                         -contrastive_loss_weight*F.mse_loss(pred_dir,contrast_dir,reduction='none')+3 #add 3 to avoid negative numbers
-                    sample_loss=sample_loss.mean(-1)
+                    sample_loss=sample_loss
                     
                     with torch.no_grad():  # Stop-gradient via detach
                         sg_losses = sample_loss.detach()
