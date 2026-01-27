@@ -709,11 +709,15 @@ def flow_nll_loss(z, jacobians, x, eps: float = 1e-8,sum_dim=-1):
         # safe_abs2 = torch.nn.functional.smooth_l1_loss(jd,torch.zeros_like(jd),reduction='none')+eps
         # avg = (safe_abs1+safe_abs2)/2
         # jd shape matches the transformed subset; sum over all non-batch dims
-        log_det += torch.log(safe_abs1).flatten(1).sum(dim=sum_dim)
+        log_det += torch.log(safe_abs1).flatten(1)
 
     # 2) log p(z) under N(0,1): sum over event dims
     # log N(z;0,1) = -0.5*(z^2 + log(2*pi)) per dimension
-    log_pz = (-0.5 * (z**2 + math.log(2 * math.pi))).flatten(1).sum(dim=sum_dim)
+    log_pz = (-0.5 * (z**2 + math.log(2 * math.pi))).flatten(1)
+    
+    if sum_dim is not None:
+        log_det=log_det.sum(dim=sum_dim)
+        log_pz=log_pz.sum(dim=sum_dim)
 
     # 3) log p(x) = log p(z) + log|det J|
     log_px = log_pz + log_det

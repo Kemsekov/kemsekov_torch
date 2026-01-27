@@ -1,12 +1,33 @@
 from torch.distributions import Normal
 from kemsekov_torch.residual import Residual
-from kemsekov_torch.common_modules import mmd_rbf
+from kemsekov_torch.common_modules import mmd_rbf,Prod
 from typing import Callable, Generator, Literal, Optional
 from copy import deepcopy
 import torch
 import torch.nn as nn
 from invertible_nn import *
 
+class LossNormalizer1d(nn.Module):
+    def __init__(self, in_dim,hidden_dim=32) -> None:
+        super().__init__()
+        self.expand = nn.Linear(in_dim,hidden_dim)
+        self.net = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+    def forward(self,x : torch.Tensor):
+        """
+        Forward pass of the loss normalizer.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape [batch_size, in_dim]
+        Returns:
+            torch.Tensor: Normalized loss weights of shape [batch_size, in_dim]
+        """
+        x = self.expand(x)
+        return self.net(x)[:,0]
 class NormalizingFlow:
     """
     Wrapper around your InvertibleSequential + flow_nll_loss training loop.
@@ -24,7 +45,6 @@ class NormalizingFlow:
 
     def __init__(
         self,
-        *,
         input_dim: int,
         hidden_dim: int = 32,
         layers: int = 3,
@@ -66,22 +86,27 @@ class NormalizingFlow:
         for i in range(self.layers):
             steps = [
                 nn.Linear(half, self.hidden_dim),
-                
-                Residual([
-                    norm(self.hidden_dim),
-                    act(),
-                    nn.Linear(self.hidden_dim, self.hidden_dim),
-                ],init_at_zero=True),
-                Residual([
-                    norm(self.hidden_dim),
-                    act(),
-                    nn.Linear(self.hidden_dim, self.hidden_dim),
-                ],init_at_zero=True),
-                dropout(),
-                
                 norm(self.hidden_dim),
-                act(),
+                # dropout(),
+                Residual([
+                    # norm(self.hidden_dim),
+                    act(),
+                    nn.Linear(self.hidden_dim, self.hidden_dim),
+                ],init_at_zero=True),
+                # Residual([
+                #     # norm(self.hidden_dim),
+                #     act(),
+                #     # dropout(),
+                #     nn.Linear(self.hidden_dim, self.hidden_dim),
+                # ],init_at_zero=True),
 
+                Prod(nn.Sequential(
+                    act(),
+                    nn.Linear(self.hidden_dim, self.hidden_dim),
+                    norm(self.hidden_dim),  
+                    nn.Sigmoid()
+                )),
+                act(),
                 nn.Linear(self.hidden_dim, self.input_dim),
             ]
             if i==self.layers-1 and "Norm" in str(steps[-1]):
@@ -239,14 +264,15 @@ class NormalizingFlow:
     def fit(
         self,
         data: torch.Tensor,
-        data_prior : Optional[torch.Tensor] = None,
         batch_size: int = 512,
         epochs: int = 30,
         data_renoise=0.025,
         lr: float = 1e-2,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
-        scheduler : Literal['exponential','cosine'] = 'cosine'
+        loss_normalizer_weight = 0.1,
+        data_prior : Optional[torch.Tensor] = None,
+        scheduler : Literal['exponential','cosine'] = 'cosine',
     ) -> nn.Module:
         """
         Train on `data` and return best model.
@@ -275,8 +301,9 @@ class NormalizingFlow:
         data_renoise *= data.std(0).median()
 
         self.model.train()
+        loss_normalizer = LossNormalizer1d(self.input_dim,hidden_dim=self.hidden_dim)
         
-        optim = torch.optim.AdamW(self.model.parameters(), lr=lr,weight_decay=1e-4)
+        optim = torch.optim.AdamW(list(self.model.parameters())+list(loss_normalizer.parameters()), lr=lr,weight_decay=1e-4)
         
         self.best_loss = float("inf")
         self.best_trained_model = deepcopy(self.model).to(self.device)
@@ -313,9 +340,17 @@ class NormalizingFlow:
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
                     z,jac = self.model(batch)
                     
-                    nil,log_det = flow_nll_loss(z,jac, batch, sum_dim=-1)
-                    loss = nil.mean()
-
+                    nil,log_det = flow_nll_loss(z,jac, batch, sum_dim=[-1])
+                    nil+=20 # to avoid negative losses
+                    
+                    loss_weight = loss_normalizer(z)
+                    model_loss = (loss_weight.detach().exp()*nil).mean()
+                    
+                    with torch.no_grad():
+                        expected_loss = -nil.clamp(1e-7).log().detach()
+                        
+                    normalizer_loss = torch.nn.functional.mse_loss(expected_loss,loss_weight)
+                    loss = model_loss+normalizer_loss*loss_normalizer_weight
                     if data_prior is not None:
                         prior_batch = prior_shuf[start : start + batch_size]
                         loss+=(z-prior_batch).pow(2).mean()
@@ -331,7 +366,7 @@ class NormalizingFlow:
 
                     optim.step()
                     sch.step()
-                    losses.append(loss)
+                    losses.append(nil.mean())
                 mean_loss = sum(losses)/len(losses)
                 if mean_loss < self.best_loss:
                     self.best_loss = mean_loss.item()

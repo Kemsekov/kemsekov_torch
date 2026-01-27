@@ -88,6 +88,19 @@ def _reshape_to_transformer_input(x : torch.Tensor):
     return x.flatten(2).permute(0,2,1)
 def _restore_shape_of_transformer_output(out,src_shape : List[int]):
     return out.permute(0,2,1).view(src_shape)
+
+
+class Prod(nn.Module):
+    """
+    Returns product of input with output of module of same input.
+    
+    `Prod(nn.Linear(32,32))(x)` is same as `nn.Linear(32,32)(x)*x`
+    """
+    def __init__(self, module) -> None:
+        super().__init__()
+        self.module=module
+    def forward(self,x):
+        return x*self.module(x)
 class FlattenSpatialDimensions(nn.Module):
     """
     Prepares vison-like 1d,2d,3d sequential data into format suitable for transformer
@@ -136,7 +149,6 @@ class Take(nn.Module):
         self.slice=slice
     def forward(self,x):
         return x[self.slice]
-
 class Permute(nn.Module):
     """
     Permutes input tensor with given permutation
@@ -150,7 +162,6 @@ class Permute(nn.Module):
         
     def forward(self,x):
         return x.permute(self.permuitation)
-
 class Transpose(nn.Module):
     """
     Transpose input tensor along given dims
@@ -165,8 +176,6 @@ class Transpose(nn.Module):
         
     def forward(self,x):
         return x.transpose(self.dim1,self.dim2)
-
-
 class Flatten(nn.Module):
     def __init__(self, start_dim,end_dim,submodule):
         """
@@ -200,7 +209,6 @@ class Flatten(nn.Module):
         x_flat = torch.flatten(x,self.start_dim,self.end_dim)
         y = self.m(x_flat)
         return y.reshape(x_shape)
-
 class ConstModule(torch.nn.Module):
     """Module that returns constant"""
     def __init__(self,constant = 0):
