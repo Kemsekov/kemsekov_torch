@@ -442,6 +442,13 @@ class LossNormalizer1d(nn.Module):
         while time.ndim<x.ndim:
             time = time[:,None]
         return self.net(x+time)
+class SoftThresholdTanh(nn.Module):
+    def __init__(self, threshold=3.0):
+        super().__init__()
+        self.threshold = threshold
+    
+    def forward(self, x):
+        return torch.tanh(x) * torch.sigmoid((self.threshold - torch.abs(x)) / 0.5)
 
 class FlowModel1d(nn.Module):
     """
@@ -482,17 +489,19 @@ class FlowModel1d(nn.Module):
         self.expand = nn.Linear(in_dim,hidden_dim)
         
         self.dropout = nn.Dropout(dropout_p)
+        self.norm = norm(hidden_dim)
         
         self.residual_blocks = nn.ModuleList([
             nn.ModuleList([
                 Residual([
-                    norm(hidden_dim),
+                    # norm(hidden_dim),
                     act(),
                     nn.Linear(hidden_dim,hidden_dim),
                 ]),
                 nn.Sequential(
                     nn.Linear(hidden_dim,hidden_dim),
-                    nn.Sigmoid(),
+                    norm(hidden_dim),
+                    nn.Tanh(),
                 )
             ]) for i in range(residual_blocks)
         ])
@@ -514,6 +523,7 @@ class FlowModel1d(nn.Module):
         expand = self.expand(x)
         x = expand+time
         x = self.dropout(x)
+        x = self.norm(x)
         for m,temb in self.residual_blocks:
             x = m(x*temb(x))
         
@@ -541,6 +551,8 @@ class FlowModel1d(nn.Module):
         batch_size: int = 512,
         epochs: int = 100,
         contrastive_loss_weight=0.1,
+        # renoise_start = 0.1,
+        # renoise_end = 0.0,
         lr: float = 0.02,
         normalizer_loss_weight=0.1,
         grad_clip_max_norm: Optional[float] = 1,
@@ -633,6 +645,8 @@ class FlowModel1d(nn.Module):
 
                 losses = []
                 r2s = []
+                # p = (epoch+1)/epochs
+                # renoise_level = (1-p)*renoise_start+p*renoise_end
                 for start in slices:
                     batch = data_shuf[start : start + batch_size]
 
@@ -646,6 +660,9 @@ class FlowModel1d(nn.Module):
                     if data_generation_model:
                         with torch.no_grad():
                             batch = data_generation_model.to_target(prior_batch)
+                    
+                    # if renoise_level>0:
+                    #     batch+=torch.randn_like(batch)*renoise_level
                     
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
