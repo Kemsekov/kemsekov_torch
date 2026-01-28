@@ -756,6 +756,7 @@ class FlowModel1d(nn.Module):
             iterations = 512,
             debug = False,
             lr = 1e-2,
+            grad_clip_max_norm : float|None=1,
             base_model : nn.Module|None = None
         ) -> None:
         """
@@ -825,6 +826,12 @@ class FlowModel1d(nn.Module):
             iw = (-inverse_weight).detach().exp()
             loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss
             loss.backward()
+            if grad_clip_max_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    self.parameters(),
+                    max_norm=grad_clip_max_norm,
+                    norm_type=2.0,
+                )
             opt.step()
             
             if debug:
