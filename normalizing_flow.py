@@ -306,7 +306,8 @@ class NormalizingFlow:
         data: torch.Tensor,
         batch_size: int = 512,
         epochs: int = 30,
-        data_renoise=0.025,
+        data_renoise_start=0.1,
+        data_renoise_end=0.01,
         lr: float = 1e-2,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
@@ -321,7 +322,8 @@ class NormalizingFlow:
             data: Tensor of shape [N, input_dim].
             batch_size: Batch size.
             epochs: Epoch count.
-            data_renoise: dataset renoise factor. This is very important parameter and must be finetuned. Lays in range [0.01,0.1]
+            data_renoise_start: dataset renoise factor. How much renoise training data at the first epochs.
+            data_renoise_end: lowest dataset renoise factor.
             lr: AdamW learning rate.
             grad_clip_max_norm: If not None, clip global grad norm to this value. [web:381]
             debug: If True, prints when best loss improves.
@@ -338,7 +340,8 @@ class NormalizingFlow:
         if data_prior is not None:
             data_prior = data_prior.to(self.device)
         
-        data_renoise *= data.std(0).median()
+        data_renoise_start *= data.std(0).median()
+        data_renoise_end *= data.std(0).median()
 
         self.model.train()
         loss_normalizer = LossNormalizer1d(self.input_dim,hidden_dim=self.hidden_dim)
@@ -360,7 +363,7 @@ class NormalizingFlow:
         try:
             for epoch in range(epochs):
                 if debug and improved:
-                    print(f"Epoch {epoch}: best_loss={best_loss:0.3f}")
+                    print(f"Epoch {(str(epoch)+"   ")[:3]}: best_loss={str(best_loss)[:5]} renoise_level={str(renoise_level.item())[:5]}")
                 improved = False
 
                 # shuffle each epoch
@@ -370,11 +373,13 @@ class NormalizingFlow:
                     prior_shuf = data_prior[perm]
 
                 losses = []
+                part = (epoch+1)/epochs
+                renoise_level = (data_renoise_start*(1-part)+data_renoise_end*part)
                 for start in slices:
                     batch = data_shuf[start : start + batch_size]
                     
-                    if data_renoise>0:
-                        batch=batch+torch.randn_like(batch)*data_renoise
+                    if renoise_level>0:
+                        batch=batch+torch.randn_like(batch)*renoise_level
                     
                     optim.zero_grad(set_to_none=True)
                     z,jac = self.model(batch)
