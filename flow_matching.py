@@ -1,7 +1,7 @@
 from copy import deepcopy
 import math
 from typing import Callable, Optional
-from kemsekov_torch.common_modules import Residual
+from kemsekov_torch.common_modules import Prod, Residual
 from kemsekov_torch.metrics import r2_score
 from kemsekov_torch.common_modules import mmd_rbf
 import torch
@@ -230,11 +230,21 @@ def rk2(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, l
     
     return (xt_next, intermediates) if return_intermediates else xt_next
 
+def one_step(model,x0,weights):
+    """One-step integration"""
+    t=weights[0].unsqueeze(0)
+    pred = model(x0,t)
+    # add bias term
+    return weights[1]*pred+weights[2]*x0+weights[3]*x0*x0
 class FlowMatching(nn.Module):
     def __init__(self):
         super().__init__()
         self.time_scaler = lambda x:x
         self.time_sampler_transform = lambda x:x
+        
+        # weights for one-step integration
+        self.weights     = torch.nn.Parameter(torch.tensor([0.5,  0.5, 1,0,0]))
+        self.weights_inv = torch.nn.Parameter(torch.tensor([0.5,-0.5,1,0,0]))
         
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
@@ -385,7 +395,7 @@ class FlowMatching(nn.Module):
             - Tuple of (final tensor, list of intermediate tensors) if return_intermediates is True
         """
         match steps:
-            case 1: return euler(model,x0,steps,churn_scale,inverse,return_intermediates,time_transform=self.time_sampler_transform,no_grad_model=no_grad_model)
+            case 1: return one_step(model,x0,self.weights_inv if inverse else self.weights)
             case 2: return rk2(model,x0,churn_scale,inverse,return_intermediates)
             case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
             case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_sampler_transform,no_grad_model=no_grad_model)
@@ -739,68 +749,83 @@ class FlowModel1d(nn.Module):
             sampled = self.sample(len(data))
             return mmd_rbf(data.to(self.device),sampled)[0].item()
     
-    def reflow(self,
-               dataset_size=4096,
-               batch_size=512,
-               epochs_per_window_step=40,
-               window_steps=1,
-               lr=0.025,
-               debug = False,
-               contrastive_loss_weight=0.05,
-               reruns = 2
+    def reflow_one_step_fm(
+            self,
+            data : torch.Tensor,
+            batch_size=512,
+            iterations = 256,
+            debug = False,
+            base_model : nn.Module|None = None
         ):
-        """
-        Performs reflow training to straighten the flow and enable using fewer integration steps.
+        if base_model is None: base_model=self
+        with torch.no_grad():
+            x = base_model.to_prior(data)
+            y = data
+        
+        self.train()
+        self.default_steps=1
 
-        Reflow is a technique that retrains the model to make the flow trajectories more direct,
-        allowing for accurate sampling with fewer integration steps. This is achieved by
-        progressively training the model on data generated from itself with increasingly
-        narrow time intervals, which encourages the flow to become more linear.
+        best_loss =1e8
+        best_model = self
 
-        The method trains in time intervals from smaller to larger to preserve the original flow
-        as much as possible. This gradual approach helps maintain the learned characteristics
-        of the original model while improving its efficiency.
-
-        The method works by:
-        1. Generating synthetic data by transforming random noise through the current model
-        2. Retraining the model on this synthetic data with increasingly narrow time windows
-        3. Repeating this process for multiple reruns to refine the model
-
-        Args:
-            dataset_size (int): Size of the synthetic dataset to generate for reflow training
-            batch_size (int): Batch size for training during reflow
-            epochs_per_window_step (int): Number of epochs to train for each window step
-            window_steps (int): Number of time window steps to use (divides [0,1] interval)
-            lr (float): Learning rate for reflow training
-            debug (bool): Whether to print debug information during training
-            contrastive_loss_weight (float): Weight for contrastive loss component during training
-            reruns (int): Number of complete reflow cycles to perform
-
-        Returns:
-            None: Updates the model in-place and reduces the default number of integration steps to 5
-        """
-
-        current_model = deepcopy(self).train()
-        for r in range(reruns):
-            for w in torch.linspace(1/window_steps,1,window_steps):
-                if debug: print(f"Training on t=[0.00:{w:0.2f}]")
-                prior = torch.randn((dataset_size,self.in_dim))
-                with torch.no_grad():
-                    data = current_model.to_target(prior)
-                self.fit(
-                    data=data,
-                    prior_dataset=prior,
-                    debug=debug,
-                    batch_size=batch_size,
-                    epochs=epochs_per_window_step,
-                    lr=lr,
-                    reflow_window=w,
-                    scheduler=False,
-                    contrastive_loss_weight=contrastive_loss_weight
+        
+        loss_normalizer = nn.Sequential(
+            nn.Linear(self.in_dim*2,self.hidden_dim),
+            nn.LayerNorm(self.hidden_dim),
+            Residual([
+                nn.SiLU(),
+                nn.Linear(self.hidden_dim,self.hidden_dim),
+            ]),
+            Prod(
+                nn.Sequential(
+                    nn.Linear(self.hidden_dim,self.hidden_dim),
+                    nn.LayerNorm(self.hidden_dim),
+                    nn.Tanh(),
                 )
-        self.default_steps=5
+            ),
+            nn.LayerNorm(self.hidden_dim),
+            nn.SiLU(),
+            nn.Linear(self.hidden_dim,2),
+        )
+        
+        opt = torch.optim.Adam(list(self.parameters())+list(loss_normalizer.parameters()),lr=1e-2,fused=True)
+        mse = torch.nn.functional.mse_loss
+        for i in range(iterations):
+            opt.zero_grad(True)
+            ind = torch.randperm(x.shape[0])[:batch_size]
+            xbatch = x[ind]
+            ybatch = y[ind]
+            
+            y_pred = self.to_target(xbatch)
+            x_pred = self.to_prior(ybatch)
+            
+            eps = 0.1
+            forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)+eps
+            inverse_loss = mse(xbatch,x_pred,reduction='none').mean(-1)+eps
+            
+            prediction_loss = forward_loss.mean()+inverse_loss.mean()-2*eps
+            
+            forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch-x_pred,ybatch-y_pred],-1).detach()).chunk(2,-1)
+            forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
+            normalizer_loss = mse(forward_weight,forward_loss.detach().log())+mse(inverse_weight,inverse_loss.detach().log())
+            
+            fw = (-forward_weight).detach().exp()
+            iw = (-inverse_weight).detach().exp()
+            loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss
+            loss.backward()
+            
+            opt.step()
+            if prediction_loss<best_loss:
+                loss_pred_r2 = (r2_score(forward_weight.exp(),forward_loss)+r2_score(inverse_weight.exp(),inverse_loss))/2
+                best_loss=prediction_loss
+                best_model = deepcopy(self)
+                if debug:
+                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.item())[:8]} forward_r2={str(r2_score(ybatch,y_pred))[:6]} inverse_r2={str(r2_score(xbatch,x_pred))[:6]} loss_pred_r2={str(loss_pred_r2)[:6]}")
+        with torch.no_grad():
+            for a,b in zip(self.parameters(),best_model.parameters()):
+                a.copy_(b)
         self.eval()
-    
+  
     def to_prior(self,data : torch.Tensor,steps=None):
         """
         Transforms data from the target distribution back to the prior (noise) distribution.
