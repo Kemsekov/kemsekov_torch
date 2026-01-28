@@ -1076,7 +1076,7 @@ class FlowModel1d(nn.Module):
 
         return result, iteration.best_loss
     
-    def log_prob(self, data, steps=None, eps=1e-3,return_separately = False):
+    def log_prob(self, data, steps=None, eps=1e-3,return_separately = False,max_vectors = 32):
         """
         Computes log probability using Jacobian determinant approximation via simplex volume ratios.
 
@@ -1100,12 +1100,15 @@ class FlowModel1d(nn.Module):
             return_separately (bool): If True, returns prior logprob, jacobian logdet,
                                     and latent variables separately. If False, returns
                                     the combined log probability (default: False)
+            max_vectors: Maximum number of vectors to use for simplex determinant approximation.
 
         Returns:
             torch.Tensor or tuple: If return_separately is False, returns combined log
                                  probability tensor of shape [batch_size]. If True,
                                  returns a tuple of (prior_logp, logdet_approx, X)
         """
+        
+        
         if not steps: steps = self.default_steps
         Y = data.to(self.device)
 
@@ -1116,20 +1119,20 @@ class FlowModel1d(nn.Module):
         shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
 
         # log area of original simplex
-        original_simplex_area_log = shifted_simplex.slogdet()[1]
+        original_simplex_area_log = shifted_simplex[:max_vectors,:max_vectors].slogdet()[1]
 
         # make shapes match
         simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
 
         # shift Y to sphere points of simplex
-        Y_neighbors = Y[...,None,:] + simplex_points  # (B, n_neighbors, ...dim)
+        Y_neighbors = Y[...,None,:] + simplex_points[:max_vectors]  # (B, n_neighbors, ...dim)
 
         # Compute priors for all neighbors
         X_neighbors = self.to_prior(Y_neighbors, steps)
 
         # get area of transformed simplex
         transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
-        transformed_simplex_area_log = transformed_simplex.slogdet()[1]
+        transformed_simplex_area_log = transformed_simplex[...,:max_vectors,:max_vectors].slogdet()[1]
 
         # area ratio is our jacobian determinant approximation
         logdet_approx = transformed_simplex_area_log - original_simplex_area_log + self.in_dim*math.log(self.in_dim)
