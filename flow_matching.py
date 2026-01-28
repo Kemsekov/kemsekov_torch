@@ -421,10 +421,13 @@ class LossNormalizer1d(nn.Module):
         self.expand = nn.Linear(in_dim,hidden_dim)
         self.time = nn.Linear(1,hidden_dim)
         self.net = nn.Sequential(
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, in_dim)
+            Residual([
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, in_dim),
+            ]),
+            nn.Softplus()
         )
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         """
