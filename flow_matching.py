@@ -752,11 +752,26 @@ class FlowModel1d(nn.Module):
     def reflow_one_step_fm(
             self,
             data : torch.Tensor,
-            batch_size=512,
-            iterations = 256,
+            batch_size=256,
+            iterations = 512,
             debug = False,
+            lr = 1e-2,
             base_model : nn.Module|None = None
-        ):
+        ) -> None:
+        """
+        Distill a teacher flow model into one-step generation via bidirectional ReFlow training.
+        
+        This method performs online knowledge distillation by training the current model (`self`) 
+        to match a teacher model's (`base_model.to_target/to_prior`) one-step mappings using:
+        
+        Args:
+            data (torch.Tensor): Target data tensor of shape [N, input_dim] from teacher distribution
+            batch_size (int): Mini-batch size for training (default: 512)
+            iterations (int): Total training iterations
+            debug (bool): Print training progress and R² metrics (default: False)
+            base_model (Optional[nn.Module]): Teacher model with `to_prior()`/`to_target()` methods. 
+                                            If None, uses `self` (self-distillation, default: None)
+        """
         if base_model is None: base_model=self
         with torch.no_grad():
             x = base_model.to_prior(data)
@@ -764,9 +779,6 @@ class FlowModel1d(nn.Module):
         
         self.train()
         self.default_steps=1
-
-        best_loss =1e8
-        best_model = self
 
         
         loss_normalizer = nn.Sequential(
@@ -788,7 +800,7 @@ class FlowModel1d(nn.Module):
             nn.Linear(self.hidden_dim,2),
         )
         
-        opt = torch.optim.Adam(list(self.parameters())+list(loss_normalizer.parameters()),lr=1e-2,fused=True)
+        opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True)
         mse = torch.nn.functional.mse_loss
         for i in range(iterations):
             opt.zero_grad(True)
@@ -813,17 +825,11 @@ class FlowModel1d(nn.Module):
             iw = (-inverse_weight).detach().exp()
             loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss
             loss.backward()
-            
             opt.step()
-            if prediction_loss<best_loss:
+            
+            if debug:
                 loss_pred_r2 = (r2_score(forward_weight.exp(),forward_loss)+r2_score(inverse_weight.exp(),inverse_loss))/2
-                best_loss=prediction_loss
-                best_model = deepcopy(self)
-                if debug:
-                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.item())[:8]} forward_r2={str(r2_score(ybatch,y_pred))[:6]} inverse_r2={str(r2_score(xbatch,x_pred))[:6]} loss_pred_r2={str(loss_pred_r2)[:6]}")
-        with torch.no_grad():
-            for a,b in zip(self.parameters(),best_model.parameters()):
-                a.copy_(b)
+                print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.item())[:8]} forward_r2={str(r2_score(ybatch,y_pred))[:6]} inverse_r2={str(r2_score(xbatch,x_pred))[:6]} loss_pred_r2={str(loss_pred_r2)[:6]}")
         self.eval()
   
     def to_prior(self,data : torch.Tensor,steps=None):

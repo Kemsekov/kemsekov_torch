@@ -63,8 +63,6 @@ class NormalizingFlowScaler:
         
         data = (data-self.mean)/self.std
         return data.reshape(input_shape)
-        
-        
 class NormalizingFlow:
     """
     Wrapper around your InvertibleSequential + flow_nll_loss training loop.
