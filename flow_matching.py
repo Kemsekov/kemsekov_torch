@@ -554,8 +554,6 @@ class FlowModel1d(nn.Module):
         batch_size: int = 512,
         epochs: int = 100,
         contrastive_loss_weight=0.1,
-        # renoise_start = 0.1,
-        # renoise_end = 0.0,
         lr: float = 0.02,
         normalizer_loss_weight=0.1,
         grad_clip_max_norm: Optional[float] = 1,
@@ -608,9 +606,6 @@ class FlowModel1d(nn.Module):
         
         loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
         
-        # model.compile()
-        # loss_normalizer.compile()
-        
         batch_size = min(batch_size,data.shape[0])
         data = data.to(device)
         
@@ -648,8 +643,6 @@ class FlowModel1d(nn.Module):
 
                 losses = []
                 r2s = []
-                # p = (epoch+1)/epochs
-                # renoise_level = (1-p)*renoise_start+p*renoise_end
                 for start in slices:
                     batch = data_shuf[start : start + batch_size]
 
@@ -663,9 +656,6 @@ class FlowModel1d(nn.Module):
                     if data_generation_model:
                         with torch.no_grad():
                             batch = data_generation_model.to_target(prior_batch)
-                    
-                    # if renoise_level>0:
-                    #     batch+=torch.randn_like(batch)*renoise_level
                     
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
