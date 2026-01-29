@@ -430,14 +430,26 @@ class LossNormalizer1d(nn.Module):
         super().__init__()
         self.expand = nn.Linear(in_dim,hidden_dim)
         self.time = nn.Linear(1,hidden_dim)
+        norm = nn.RMSNorm
         self.net = nn.Sequential(
+            norm(hidden_dim),
             Residual([
-                nn.ReLU(),
+                nn.SiLU(),
                 nn.Linear(hidden_dim, hidden_dim),
-                nn.ReLU(),
-                nn.Linear(hidden_dim, in_dim),
+                norm(hidden_dim),
+                nn.SiLU(),
+                nn.Linear(hidden_dim, hidden_dim),
             ]),
-            nn.Softplus()
+            Prod(
+                nn.Sequential(
+                    nn.Linear(hidden_dim,hidden_dim),
+                    norm(hidden_dim),
+                    nn.Tanh(),
+                )
+            ),
+            norm(hidden_dim),
+            nn.Linear(hidden_dim, in_dim),
+            # nn.Softplus()
         )
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         """
@@ -566,12 +578,10 @@ class FlowModel1d(nn.Module):
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
         normalizer_loss_weight=0.1,
+        distribution_sharpness=0.5,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
-        prior_dataset : Optional[torch.Tensor] = None,
-        reflow_window = 1,
         scheduler = True,
-        data_generation_model = None
     ):
         """
         Trains the flow matching model on the provided data using contrastive flow matching.
@@ -596,6 +606,7 @@ class FlowModel1d(nn.Module):
             lr (float): Learning rate for the AdamW optimizer (default: 0.02).
             normalizer_loss_weight (float): Weight for the auxiliary loss that trains
                                           the loss normalizer network (default: 0.1).
+            distribution_sharpness: how close to original data distributed resulting flow must be. When set to 1, model will try to match distribution exactly, when close to 0, will shift distribution closer to mode. I advice you left it with 0.5.
             grad_clip_max_norm (Optional[float]): Maximum gradient norm for clipping.
                                                 If None, no clipping is applied (default: 1).
             debug (bool): Whether to print training progress and best loss updates (default: False).
@@ -612,15 +623,11 @@ class FlowModel1d(nn.Module):
         """
         model = self
         device = model.device
-        if data_generation_model: data_generation_model.eval()
         
         loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
         
         batch_size = min(batch_size,data.shape[0])
         data = data.to(device)
-        
-        if prior_dataset is not None:
-            prior_dataset=prior_dataset.to(device)
         
         model.train()
         
@@ -648,8 +655,6 @@ class FlowModel1d(nn.Module):
                 perm = torch.randperm(n, device=device)
                 data_shuf = data[perm]
                 
-                if prior_dataset is not None:
-                    prior_shuf = prior_dataset[perm]
 
                 losses = []
                 r2s = []
@@ -660,12 +665,6 @@ class FlowModel1d(nn.Module):
                     
                     prior_batch=torch.randn_like(batch,device=device)
                     time = torch.rand(batch.shape[0],device=device)
-                    if prior_dataset is not None:
-                        prior_batch = prior_shuf[start : start + batch_size]
-                        time*=reflow_window
-                    if data_generation_model:
-                        with torch.no_grad():
-                            batch = data_generation_model.to_target(prior_batch)
                     
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
@@ -674,26 +673,31 @@ class FlowModel1d(nn.Module):
                             batch,
                             time=time
                         )
+                    pred_loss = F.mse_loss(pred_dir,target_dir,reduction='none')+1
+                    contrastive_loss = F.mse_loss(pred_dir,contrast_dir,reduction='none')
+                    
+                    # make it negative
+                    contrastive_loss-=contrastive_loss.max().detach()+1e-4
+                    contrastive_loss=contrastive_loss/contrastive_loss.abs().mean().detach()*pred_loss.abs().mean().detach()
+                    
+                    # scale it
+                    contrastive_loss = contrastive_loss_weight*contrastive_loss
+                    
                     # sample-wise loss
-                    sample_loss = \
-                        F.mse_loss(pred_dir,target_dir,reduction='none')\
-                        -contrastive_loss_weight*F.mse_loss(pred_dir,contrast_dir,reduction='none')+3 #add 3 to avoid negative numbers
-                    sample_loss=sample_loss
+                    sample_loss = pred_loss-contrastive_loss #add 3 to avoid negative numbers
                     
                     with torch.no_grad():  # Stop-gradient via detach
-                        sg_losses = sample_loss.detach()
-                        log_inv_loss = torch.log(sg_losses.clamp(min=1e-8))  # Numerical stability
-                        target_log_w = -log_inv_loss  # log(1/L)
+                        sg_log_losses = pred_loss.detach().log()
+                        target_log_w = -sg_log_losses  # log(1/L)
                     
                     weights = loss_normalizer(target_dir, t) # it equals to log(1/loss)
-                    
-                    loss_weighted = weights.exp().detach() # it equals to 1/loss
+                    loss_weighted = (weights*distribution_sharpness).exp().detach() # it equals to 1/loss
                     
                     #scale loss by it's prediction
                     weighed_loss = (loss_weighted*sample_loss).mean()
-                    
                     aux_loss = F.mse_loss(weights, target_log_w)
-                    # print(aux_loss)
+                    # print(r2_score(weights, (1/sample_loss).log()))
+                    # print(weighed_loss)
                     loss = weighed_loss+normalizer_loss_weight*aux_loss
                     loss.backward()
                     
