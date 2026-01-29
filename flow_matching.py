@@ -817,10 +817,13 @@ class FlowModel1d(nn.Module):
             x_pred = self.to_prior(ybatch)
             
             eps = 0.1
-            forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)+eps
-            inverse_loss = mse(xbatch,x_pred,reduction='none').mean(-1)+eps
+            forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)
+            forward_loss-=forward_loss.min().detach()-1e-3
             
-            prediction_loss = forward_loss.mean()+inverse_loss.mean()-2*eps
+            inverse_loss = mse(xbatch,x_pred,reduction='none').mean(-1)
+            inverse_loss-=inverse_loss.min().detach()-1e-3
+            
+            prediction_loss = forward_loss.mean()+inverse_loss.mean()#-2*eps
             
             forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch-x_pred,ybatch-y_pred],-1).detach()).chunk(2,-1)
             forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
