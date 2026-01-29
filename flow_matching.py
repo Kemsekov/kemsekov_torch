@@ -1,6 +1,6 @@
 from copy import deepcopy
 import math
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 from kemsekov_torch.common_modules import Prod, Residual
 from kemsekov_torch.metrics import r2_score
 from kemsekov_torch.common_modules import mmd_rbf
@@ -189,39 +189,31 @@ def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, l
     
     return (xt_next, intermediates) if return_intermediates else xt_next
 
-def rk2(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, left = 0.0, right = 1.0):
+def rk2(model, x0, weights, return_intermediates=False):
     device = next(model.parameters()).device
     x0 = x0.to(device)
     xt = x0.clone()
     
-    # === THEORETICAL DEFAULTS: Ralston's method (optimal 2-stage RK) ===
-    if inverse:
-        t_start =   right
-        t_end =     left
-    else:
-        t_start =   left
-        t_end =     right
-    dt = t_end - t_start
+    
+    left = weights[0]
+    dt = weights[1]
+    weight_k1 = weights[2]
+    weight_k2 = weights[3]
+    model_eval_t = weights[4]
+    
+    t_start =   left
     
     intermediates = []
     
-    if churn_scale > 0:
-        noise = xt.std() * torch.randn_like(xt) + xt.mean()
-        xt = churn_scale * noise + (1 - churn_scale) * xt
-    
     # === First evaluation (k1 at start) - weight = 1/4 ===
-    t_expand_start = torch.tensor([t_start], device=device).expand(x0.shape[0])
-    k1 = model(xt, t_expand_start)
+    
+    k1 = model(xt, model_eval_t.unsqueeze(0))
     
     # === Second evaluation (k2 at 2/3 point) - Ralston's optimal point ===
-    t_ralston = t_start + (2/3) * dt  # = 1/3 for reverse, 2/3 for forward
-    x_ralston = xt + (2/3) * dt * k1
-    t_expand_ralston = torch.tensor([t_ralston], device=device).expand(x0.shape[0])
+    t_ralston = t_start + weights[4] * dt  # = 1/3 for reverse, 2/3 for forward
+    x_ralston = xt + weights[5] * dt * k1
+    t_expand_ralston = t_ralston.expand(x0.shape[0])
     k2 = model(x_ralston, t_expand_ralston)
-    
-    # === Ralston's weights - proven minimum error bound ===
-    weight_k1 = 1/4
-    weight_k2 = 3/4
     
     xt_next = xt + dt * (weight_k1 * k1 + weight_k2 * k2)
     
@@ -241,11 +233,15 @@ class FlowMatching(nn.Module):
         super().__init__()
         self.time_scaler = lambda x:x
         self.time_sampler_transform = lambda x:x
-        
+        self.reset_weights()
         # weights for one-step integration
-        self.weights     = torch.nn.Parameter(torch.tensor([0.5,  0.5, 1,0,0]))
-        self.weights_inv = torch.nn.Parameter(torch.tensor([0.5,-0.5,1,0,0]))
-        
+    def reset_weights(self):
+        with torch.no_grad():
+            self.one_weights     = torch.nn.Parameter(torch.tensor([0.5,  0.5, 1,0,0]))
+            self.one_weights_inv = torch.nn.Parameter(torch.tensor([0.5,-0.5,1,0,0]))
+            self.rk2_weights     = torch.nn.Parameter(torch.tensor([0,1,1/4,3/4,2/3,2/3,0.0]))
+            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1,-1,1/4,3/4,2/3,2/3,1.0]))
+    
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
         Generates direction pairs for flow matching model training
@@ -364,7 +360,6 @@ class FlowMatching(nn.Module):
         idx = torch.randperm(bsz, device=input_domain.device)
         input_neg = input_domain[idx]
         target_neg = target_domain[idx]
-        # time_expand_neg = time_expand[idx]
 
         target_neg_vec = (target_neg - input_neg)
 
@@ -395,11 +390,10 @@ class FlowMatching(nn.Module):
             - Tuple of (final tensor, list of intermediate tensors) if return_intermediates is True
         """
         match steps:
-            case 1: return one_step(model,x0,self.weights_inv if inverse else self.weights)
-            case 2: return rk2(model,x0,churn_scale,inverse,return_intermediates)
+            case 1: return one_step(model,x0,self.one_weights_inv if inverse else self.one_weights)
+            case 2: return rk2(model,x0,self.rk2_weights_inv if inverse else self.rk2_weights,return_intermediates)
             case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
             case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_sampler_transform,no_grad_model=no_grad_model)
-        
 
 def generate_unit_simplex_vertices(d):
     # 1. Generate the initial regular simplex
@@ -578,7 +572,7 @@ class FlowModel1d(nn.Module):
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
         normalizer_loss_weight=0.1,
-        distribution_sharpness=0.5,
+        distribution_matching=0.5,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
         scheduler = True,
@@ -606,17 +600,11 @@ class FlowModel1d(nn.Module):
             lr (float): Learning rate for the AdamW optimizer (default: 0.02).
             normalizer_loss_weight (float): Weight for the auxiliary loss that trains
                                           the loss normalizer network (default: 0.1).
-            distribution_sharpness: how close to original data distributed resulting flow must be. When set to 1, model will try to match distribution exactly, when close to 0, will shift distribution closer to mode. I advice you left it with 0.5.
+            distribution_matching: how close to original data distributed resulting flow must be. When set to 1, model will try to match distribution exactly, when close to 0, will shift distribution closer to mode. I advice you left it with 0.5.
             grad_clip_max_norm (Optional[float]): Maximum gradient norm for clipping.
                                                 If None, no clipping is applied (default: 1).
             debug (bool): Whether to print training progress and best loss updates (default: False).
-            prior_dataset (Optional[torch.Tensor]): Custom prior dataset to use instead of
-                                                   standard Gaussian noise. If provided,
-                                                   must have the same shape as the data (default: None).
-            reflow_window (float): Time window parameter for reflow training, controlling
-                                  the range of time values used during training (default: 1).
             scheduler (bool): Whether to use a cosine annealing learning rate scheduler (default: True).
-            data_generation_model: Optional model to transform prior samples before training (default: None).
 
         Returns:
             None: Modifies the model in-place, retaining the best checkpoint based on validation loss.
@@ -654,7 +642,6 @@ class FlowModel1d(nn.Module):
                 # shuffle each epoch
                 perm = torch.randperm(n, device=device)
                 data_shuf = data[perm]
-                
 
                 losses = []
                 r2s = []
@@ -691,7 +678,7 @@ class FlowModel1d(nn.Module):
                         target_log_w = -sg_log_losses  # log(1/L)
                     
                     weights = loss_normalizer(target_dir, t) # it equals to log(1/loss)
-                    loss_weighted = (weights*distribution_sharpness).exp().detach() # it equals to 1/loss
+                    loss_weighted = (weights*distribution_matching).exp().detach() # it equals to 1/loss
                     
                     #scale loss by it's prediction
                     weighed_loss = (loss_weighted*sample_loss).mean()
@@ -753,9 +740,10 @@ class FlowModel1d(nn.Module):
             sampled = self.sample(len(data))
             return mmd_rbf(data.to(self.device),sampled)[0].item()
     
-    def reflow_one_step_fm(
+    def reflow(
             self,
             data : torch.Tensor,
+            steps : Literal[1,2] = 1,
             batch_size=256,
             iterations = 512,
             debug = False,
@@ -781,9 +769,10 @@ class FlowModel1d(nn.Module):
         with torch.no_grad():
             x = base_model.to_prior(data)
             y = data
-        
+        assert steps in [1,2],"steps parameter must be one of [1,2]"
+        self.fm.reset_weights()
         self.train()
-        self.default_steps=1
+        self.default_steps=steps
 
         
         loss_normalizer = nn.Sequential(
