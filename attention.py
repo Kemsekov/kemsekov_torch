@@ -210,7 +210,6 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         result = attn
         if self.add_gating:
             result=result*self.scale(query_source)
-        result = query_source + result
         #--------------------
         # print("mlp + reshape",time.time()-start)
         
