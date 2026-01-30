@@ -502,6 +502,7 @@ class FlowModel1d(nn.Module):
         act = nn.GELU
         self.time_emb = nn.Sequential(
             nn.Linear(1,hidden_dim),
+            norm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim,hidden_dim),
         )
@@ -518,6 +519,7 @@ class FlowModel1d(nn.Module):
                     nn.Linear(hidden_dim,hidden_dim),
                 ]),
                 nn.Sequential(
+                    # norm(hidden_dim),
                     nn.Linear(hidden_dim,hidden_dim),
                     norm(hidden_dim),
                     nn.Tanh(),
@@ -525,7 +527,11 @@ class FlowModel1d(nn.Module):
             ]) for i in range(residual_blocks)
         ])
         
-        self.collapse = nn.Linear(hidden_dim,in_dim)
+        self.collapse = nn.Sequential(
+            norm(hidden_dim),
+            # act(),
+            nn.Linear(hidden_dim,in_dim)
+        )
         self.default_steps=16
         self.to(device)
         self.eval()
@@ -571,8 +577,7 @@ class FlowModel1d(nn.Module):
         epochs: int = 100,
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
-        normalizer_loss_weight=0.1,
-        distribution_matching=0.5,
+        distribution_matching=0.0,
         grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
         scheduler = True,
@@ -600,7 +605,7 @@ class FlowModel1d(nn.Module):
             lr (float): Learning rate for the AdamW optimizer (default: 0.02).
             normalizer_loss_weight (float): Weight for the auxiliary loss that trains
                                           the loss normalizer network (default: 0.1).
-            distribution_matching: how close to original data distributed resulting flow must be. When set to 1, model will try to match distribution exactly, when close to 0, will shift distribution closer to mode. I advice you left it with 0.5.
+            distribution_matching: how close to original data distributed resulting flow must be. When set to 1, model will try to match distribution exactly, when close to 0, will shift distribution closer to mode. I advice you left it with 0.0.
             grad_clip_max_norm (Optional[float]): Maximum gradient norm for clipping.
                                                 If None, no clipping is applied (default: 1).
             debug (bool): Whether to print training progress and best loss updates (default: False).
@@ -685,7 +690,7 @@ class FlowModel1d(nn.Module):
                     aux_loss = F.mse_loss(weights, target_log_w)
                     # print(r2_score(weights, (1/sample_loss).log()))
                     # print(weighed_loss)
-                    loss = weighed_loss+normalizer_loss_weight*aux_loss
+                    loss = weighed_loss+distribution_matching*aux_loss
                     loss.backward()
                     
                     if grad_clip_max_norm is not None:
@@ -748,6 +753,7 @@ class FlowModel1d(nn.Module):
             iterations = 512,
             debug = False,
             lr = 1e-2,
+            distribution_matching = 0,
             grad_clip_max_norm : float|None=1,
             base_model : nn.Module|None = None
         ) -> None:
@@ -818,9 +824,9 @@ class FlowModel1d(nn.Module):
             forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
             normalizer_loss = mse(forward_weight,forward_loss.detach().log())+mse(inverse_weight,inverse_loss.detach().log())
             
-            fw = (-forward_weight).detach().exp()
-            iw = (-inverse_weight).detach().exp()
-            loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss
+            fw = (-forward_weight*distribution_matching).detach().exp()
+            iw = (-inverse_weight*distribution_matching).detach().exp()
+            loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss*distribution_matching
             loss.backward()
             if grad_clip_max_norm is not None:
                 torch.nn.utils.clip_grad_norm_(
