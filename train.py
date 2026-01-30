@@ -26,7 +26,7 @@ def _print_blue(text: str) -> None:
     print(f"\033[1;34m{text}\033[0m")
 
 def train(
-        model,
+        model : torch.nn.Module,
         train_loader,
         test_loader,
         compute_loss_and_metric,
@@ -110,10 +110,11 @@ def train(
     accelerate_args: dict 
         contains arguments passed to accelerator. Default is None. For available arguments see https://huggingface.co/docs/accelerate/en/package_reference/accelerator\n
         `device_placement`: bool = True,\n
-        `split_batches`: bool = _split_batches,\n
-        `mixed_precision`: PrecisionType | str | None = None,\n
+        `dynamo_backend`: DynamoBackend, `['inductor','eager']`\n
+        `mixed_precision`: PrecisionType, `['fp16','bf16','fp8']`\n
         `gradient_accumulation_steps`: int = 1,\n
         `cpu`: bool = False,\n
+        `split_batches`: bool = _split_batches,\n
         `dataloader_config`: DataLoaderConfiguration | None = None,\n
         `deepspeed_plugin`: DeepSpeedPlugin | dict[str, DeepSpeedPlugin] | None = None,\n
         `fsdp_plugin`: FullyShardedDataParallelPlugin | None = None,\n
@@ -125,7 +126,6 @@ def train(
         `gradient_accumulation_plugin`: GradientAccumulationPlugin | None = None,\n
         `step_scheduler_with_optimizer`: bool = True,\n
         `kwargs_handlers`: list[KwargsHandler] | None = None,\n
-        `dynamo_backend`: DynamoBackend | str | None = None,\n
         `deepspeed_plugins`: DeepSpeedPlugin | dict[str, DeepSpeedPlugin] | None = None\n
     ema_args: dict
         contains arguments passed to the EMA wrapper. If set to `None`, EMA is not used.\n
@@ -262,7 +262,8 @@ def train(
         scheduler = accelerate.utils.DummyScheduler(optimizer)
     
     if optimizer is None:
-        optimizer = torch.optim.AdamW(model.parameters())
+        _print_blue("Using default fused AdamW optimizer")
+        optimizer = torch.optim.AdamW(model.parameters(),fused=True)
     total_parameters = sum([v.numel() for v in model.parameters()])/1000/1000
     _print_blue(f"Total model parameters {total_parameters:0.2f} M")
     save_last_dir = os.path.join(save_results_dir,"last")
@@ -352,7 +353,6 @@ def train(
     if skip_n_epochs_before_checkpoint>start_epoch:
         _print_green(f"Will skip checkpoint saving at first {skip_n_epochs_before_checkpoint} epochs")
     model=model_acc
-
     def backward_loss(acc,loss):
         """Returns true if computed backwards"""
         is_nan = False

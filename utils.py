@@ -1,9 +1,38 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import math
+import os
 import numpy as np
 import torch
 import tqdm
 
+class PrefetchDataset(torch.utils.data.Dataset):
+    def __init__(self, dataset, folder):
+        super().__init__()
+        self.dataset = dataset
+        self.folder = folder
+        
+        # 1. Create the cache folder if it doesn't exist
+        os.makedirs(self.folder, exist_ok=True)
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, index):
+        # Define the unique file path for this index
+        file_path = os.path.join(self.folder, f"{index}.obj")
+        
+        # 2. If the file exists, load it from disk
+        if os.path.exists(file_path):
+            return torch.load(file_path, weights_only=False)
+        
+        # 3. If not, generate the item from the original dataset
+        item = self.dataset[index]
+        
+        # 4. Save to the cache folder for future use
+        torch.save(item, file_path)
+        
+        return item
+    
 class BinBySizeDataset(torch.utils.data.Dataset):
     """
     A PyTorch Dataset wrapper that groups (bins) dataset samples by the shape of their tensor input.

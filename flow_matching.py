@@ -496,6 +496,9 @@ class FlowModel1d(nn.Module):
     def __init__(self, in_dim,hidden_dim=32,residual_blocks=3,dropout_p=0.0,device='cpu') -> None:
         super().__init__()
         self.fm = FlowMatching()
+        # default time scaler for training
+        self.fm.time_scaler = lambda x: torch.log(9*x+1)/math.log(10)
+        
         self.in_dim=in_dim
         self.hidden_dim=hidden_dim
         norm = nn.RMSNorm
@@ -536,8 +539,7 @@ class FlowModel1d(nn.Module):
         self.to(device)
         self.eval()
         
-        # default time scaler for training
-        self.fm.time_scaler = lambda x: torch.log(9*x+1)/math.log(10)
+
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         if t.ndim==1: t=t[:,None]
@@ -676,7 +678,7 @@ class FlowModel1d(nn.Module):
                     contrastive_loss = contrastive_loss_weight*contrastive_loss
                     
                     # sample-wise loss
-                    sample_loss = pred_loss-contrastive_loss #add 3 to avoid negative numbers
+                    sample_loss = pred_loss-contrastive_loss
                     
                     with torch.no_grad():  # Stop-gradient via detach
                         sg_log_losses = pred_loss.detach().log()
@@ -856,7 +858,7 @@ class FlowModel1d(nn.Module):
                                  If None, uses the model's default steps.
 
         Returns:
-            torch.Tensor: Transformed tensor in the prior distribution space.
+            torch.Tensor: Transformed tensor in the prior distribution  ace.
                          Same shape as input tensor.
         """
         if not steps: steps = self.default_steps

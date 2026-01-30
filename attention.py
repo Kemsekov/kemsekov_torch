@@ -7,11 +7,9 @@ class LinearSelfAttentionBlock(torch.nn.Module):
     def __init__(
         self,
         input_dim,
-        mlp_dim,
         heads=8,
         dropout=0.1,
         device=None,
-        activation=torch.nn.GELU,
         local_attention_dimensions=-1,
         add_zero_token=False,
         add_rotary_emb=False,
@@ -45,7 +43,7 @@ class LinearSelfAttentionBlock(torch.nn.Module):
         rotary_emb_base: rotary emb base
         """
         super().__init__()
-        self.attn = LinearCrossAttentionBlock(input_dim,mlp_dim,heads,dropout,device,activation,local_attention_dimensions=local_attention_dimensions,add_rotary_emb=add_rotary_emb,add_zero_token=add_zero_token,rotary_emb_base=rotary_emb_base,use_classic_attention=use_classic_attention,add_gating=add_gating)
+        self.attn = LinearCrossAttentionBlock(input_dim,heads,dropout,device,local_attention_dimensions=local_attention_dimensions,add_rotary_emb=add_rotary_emb,add_zero_token=add_zero_token,rotary_emb_base=rotary_emb_base,use_classic_attention=use_classic_attention,add_gating=add_gating)
     def forward(self,x):
         return self.attn(x,x)
 
@@ -86,10 +84,9 @@ class LinearCrossAttentionBlock(torch.nn.Module):
     def __init__(
         self,
         input_dim,
-        mlp_dim,heads=8,
+        heads=8,
         dropout=0.1,
         device=None,
-        activation=torch.nn.GELU,
         local_attention_dimensions=-1,
         add_zero_token=False,
         add_rotary_emb=False,
@@ -162,19 +159,12 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             rotary_emb_base=rotary_emb_base,
             use_classic_attention=use_classic_attention
         )
-        self.attn_norm = nn.LayerNorm(input_dim,device=device)
-        
-        self.mlp=Residual([
-            nn.Linear(input_dim,mlp_dim,device=device),
-            nn.LayerNorm(mlp_dim),
-            nn.Dropout(dropout,inplace=True),
-            activation(),
-            nn.Linear(mlp_dim,input_dim,device=device),
-        ])
+        self.attn_norm = nn.RMSNorm(input_dim,device=device)
+
         self.scale = nn.Sequential(
             nn.Linear(input_dim,input_dim),
-            nn.LayerNorm(input_dim),
-            TanhKernel()
+            nn.RMSNorm(input_dim),
+            nn.Tanh()
         )
         self._add_local_attention=local_attention_dimensions>0
         self.add_gating=add_gating
@@ -217,7 +207,7 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # print("total attn",time.time()-start)
         # start = time.time()
         
-        result = self.mlp(attn)
+        result = attn
         if self.add_gating:
             result=result*self.scale(query_source)
         result = query_source + result
@@ -225,7 +215,6 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # print("mlp + reshape",time.time()-start)
         
         return result
-
 
 class LinearAttention(nn.Module):
     """
@@ -270,29 +259,6 @@ class LinearAttention(nn.Module):
         denominator = torch.einsum('blhd,bhd->blh', phi_Q, K_sum).unsqueeze_(-1) + self.eps
         out = numerator / denominator  # [B, L, H, D]
         return out, linear_attn
-
-class TanhKernel(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self,x):
-        return torch.nn.functional.tanh(x)+1
-class EluKernel(nn.Module):
-    def __init__(self):
-        super().__init__()
-    def forward(self,x):
-        return torch.nn.functional.elu(x)+1
-class LogKernel(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.c = torch.nn.Parameter(torch.tensor(1.0))
-    def forward(self,x):
-        c = self.c.abs()+1e-6
-        return torch.log(1+torch.exp(-x*c))/c+x
-class XReLUKernel(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-    def forward(self,x):
-        return torch.relu(x)*x
 
 def compute_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
     """
@@ -630,5 +596,5 @@ class EfficientSpatialChannelAttention(nn.Module):
         )
 
     def forward(self, x):
-        spatian_attn = 1+self.spatial_attn(x)
+        spatian_attn = self.spatial_attn(x)
         return x*spatian_attn
