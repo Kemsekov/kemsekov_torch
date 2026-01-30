@@ -159,13 +159,24 @@ class LinearCrossAttentionBlock(torch.nn.Module):
             rotary_emb_base=rotary_emb_base,
             use_classic_attention=use_classic_attention
         )
-        self.attn_norm = nn.RMSNorm(input_dim,device=device)
+        self.attn_combine = nn.Sequential(
+            nn.Linear(2*input_dim,input_dim),
+            nn.RMSNorm(input_dim)
+        )
+        # self.attn_norm = nn.RMSNorm(input_dim,device=device)
+        self.mlp=Residual([
+            nn.GELU(),
+            nn.Linear(input_dim,input_dim,device=device),
+            nn.RMSNorm(input_dim),
+        ])
 
         self.scale = nn.Sequential(
+            nn.SiLU(),
             nn.Linear(input_dim,input_dim),
             nn.RMSNorm(input_dim),
             nn.Tanh()
         )
+        
         self._add_local_attention=local_attention_dimensions>0
         self.add_gating=add_gating
         
@@ -193,28 +204,19 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         Q = self.Q(query_source)
         K = self.K(context)
         V = self.V(context)
-        # Q,K = self.add_rotary_emb(Q,K)
-        # Q,K,V = self.flatten_qkv(Q,K,V)
         
         attn = self.attn(Q,K,V)[0]
-        # attn=self.attn_combine(torch.concat([attn,query_source],-1))
-        attn = attn + query_source
+        attn = self.attn_combine(torch.concat([attn,query_source],-1))
         
-        attn=self.attn_norm(attn)
         if self._add_local_attention:
             attn = attn*self.local_attention(attn)
         
-        #--------------------
-        # print("total attn",time.time()-start)
-        # start = time.time()
-        
-        result = attn
+        attn=self.mlp(attn)
         if self.add_gating:
-            result=result*self.scale(query_source)
-        #--------------------
-        # print("mlp + reshape",time.time()-start)
-        
-        return result
+            attn=attn*self.scale(attn)
+
+        return attn+query_source
+
 
 class LinearAttention(nn.Module):
     """
