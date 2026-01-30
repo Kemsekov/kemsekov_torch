@@ -70,7 +70,7 @@ class _LocalAttention(torch.nn.Module):
             xt=xt.unsqueeze(-1)
         
         # out: [batch,channels,(...)]
-        out = torch.tanh(self.local_attention(xt))+1
+        out = torch.tanh(self.local_attention(xt))
         
         # out: [batch,(...),channels]
         out = out.transpose(1,-1)
@@ -197,9 +197,10 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         # Q,K,V = self.flatten_qkv(Q,K,V)
         
         attn = self.attn(Q,K,V)[0]
-        attn=self.attn_norm(attn)
         # attn=self.attn_combine(torch.concat([attn,query_source],-1))
         attn = attn + query_source
+        
+        attn=self.attn_norm(attn)
         if self._add_local_attention:
             attn = attn*self.local_attention(attn)
         
