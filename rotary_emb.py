@@ -256,7 +256,7 @@ class RotEmb(nn.Module):
         return torch.cat([x_h1r, x_h2r, x_w1r, x_w2r, x_d1r, x_d2r], dim=-1)
 
     def get_3d_freqs(self, x, base : int, B : int, H : int, W : int, D : int, d_quarter : int):
-        key = str((B, H, W, D, d_quarter))
+        key = str((H, W, D, d_quarter))
         if not self.training and key in self.eval_freq_cache_3d:
             sin_h,cos_h,sin_w,cos_w,sin_d,cos_d = [v.to(x.device) for v in self.eval_freq_cache_3d[key]]
             return sin_h,cos_h,sin_w,cos_w,sin_d,cos_d
