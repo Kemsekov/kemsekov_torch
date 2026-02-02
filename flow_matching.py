@@ -535,13 +535,14 @@ class FlowModel1d(nn.Module):
             # act(),
             nn.Linear(hidden_dim,in_dim)
         )
+        self.gamma = nn.Parameter(torch.tensor([0.0]))
         self.default_steps=16
         self.to(device)
         self.eval()
-        
 
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
+        x_orig = x
         if t.ndim==1: t=t[:,None]
         time = self.time_emb(t)
         while time.ndim<x.ndim:
@@ -554,7 +555,7 @@ class FlowModel1d(nn.Module):
         for m,temb in self.residual_blocks:
             x = m(x*temb(x))
         
-        return self.collapse(x)
+        return self.collapse(x)+x_orig*self.gamma
     
     def to(self,device):
         """

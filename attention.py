@@ -161,17 +161,15 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         )
         self.attn_combine = nn.Sequential(
             nn.Linear(2*input_dim,input_dim),
-            nn.RMSNorm(input_dim)
         )
-        # self.attn_norm = nn.RMSNorm(input_dim,device=device)
+        self.attn_norm = nn.RMSNorm(input_dim,device=device)
         self.mlp=Residual([
+            nn.RMSNorm(input_dim),
             nn.GELU(),
             nn.Linear(input_dim,input_dim,device=device),
-            nn.RMSNorm(input_dim),
         ])
 
         self.scale = nn.Sequential(
-            nn.SiLU(),
             nn.Linear(input_dim,input_dim),
             nn.RMSNorm(input_dim),
             nn.Tanh()
@@ -206,12 +204,14 @@ class LinearCrossAttentionBlock(torch.nn.Module):
         V = self.V(context)
         
         attn = self.attn(Q,K,V)[0]
-        attn = self.attn_combine(torch.concat([attn,query_source],-1))
+        attn = self.attn_combine(torch.concat([self.attn_norm(attn),query_source],-1))
+        
+        
+        attn=self.mlp(attn)
         
         if self._add_local_attention:
             attn = attn*self.local_attention(attn)
         
-        attn=self.mlp(attn)
         if self.add_gating:
             attn=attn*self.scale(attn)
 

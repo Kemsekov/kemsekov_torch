@@ -32,10 +32,27 @@ class AddPositionalEmbeddingPermute(torch.nn.Module):
         """
         super().__init__()
         self.emb = PositionalEncodingPermute(channels,freq=freq)
-        self.gamma = torch.nn.Parameter(torch.tensor(0.0))
+        # self.gamma = torch.nn.Parameter(torch.tensor(0.0))
         
     def forward(self,x):
         return self.emb(x)+x
+    
+class AddPositionalEmbedding(torch.nn.Module):
+    """
+    Adds input with shape (batch_size, ch, ...N dimensions...) to positional embedding
+    """
+    def __init__(self,channels,freq=10000):
+        """
+        channels: input channels
+        freq: embedding frequency, must equal to around input size
+        """
+        super().__init__()
+        self.emb = PositionalEncoding(channels,freq=freq)
+        # self.gamma = torch.nn.Parameter(torch.tensor(0.0))
+        
+    def forward(self,x):
+        return self.emb(x)+x
+    
 
 def get_emb(sin_inp):
     """
