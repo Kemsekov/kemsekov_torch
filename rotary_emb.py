@@ -1,19 +1,65 @@
 from __future__ import annotations
+import math
 from typing import Dict, Tuple
 import torch
 from torch import nn
-
+def _compute_yarn_inv_freq(base: int, dim: int, alpha: float, beta: float,current_len : int, train_len: int):
+    """
+    Returns interpolated inverse frequencies using YaRN's wavelength cutoff.
+    
+    Args:
+        base: Original RoPE base (e.g., 10000)
+        dim: Half-dimension (e.g., head_dim // 2 for 1D)
+        alpha: Extension factor (L_target / L_train)
+        beta: Wavelength cutoff ratio (typically 0.75)
+        train_len: Training context length (L_train)
+    
+    Returns:
+        inv_freq: Tensor of shape (dim,) with selectively interpolated frequencies
+    """
+    scale = current_len/train_len
+    i = torch.arange(dim, dtype=torch.float32)  # dimension indices [0, 1, ..., dim-1]
+    freq = (base ** (i / dim))
+    
+    # Compute wavelengths: λ_d = 2π / θ_d = 2π * base^(i/dim)
+    wavelengths = 2 * math.pi * freq  # shape: (dim,)
+    
+    # Compute r(d) = L_train / λ_d
+    r = train_len / wavelengths  # shape: (dim,)
+    # Ramp function γ(r)
+    gamma = torch.zeros_like(freq)
+    middle = (r>=alpha) & (r<=beta)
+    gamma[r < alpha] = 0
+    gamma[r > beta] = 1
+    gamma[middle] = (r[middle]-alpha)/(beta-alpha)
+    
+    # gamma = (torch.linspace(1+alpha,-1+alpha,len(gamma))*beta).sigmoid()
+    freq_scaler = ((1 - gamma) / scale + gamma)
+    
+    freq_scaler=freq_scaler/freq_scaler.mean()/scale
+    freq_scaler = torch.flip(freq_scaler,[-1])
+    
+    print(freq_scaler.numpy().round(3),1/scale)
+    
+    # these two must look similar
+    # print(freq_scaler,1/scale)
+    
+    return 1/freq*freq_scaler
 class RotEmb(nn.Module):
     """
     (B, (...dims...), Heads, D)
     
     """
-    def __init__(self,base : int=10000,scale_interpolation_power:float=1.0):
+    def __init__(self,base : int=10000):
         """
         base: base frequency used for ROPE
-        scale_interpolation_power: powers scale on inference. Common values are 1 or 0.5
         """
         super().__init__()
+        
+        # empirically found values
+        self.yarn_alpha = 0
+        self.yarn_beta = 4
+        
         dummy_tensor = torch.zeros(1)
         self.freq_cache_1d = torch.jit.annotate(Dict[str, Tuple[torch.Tensor,torch.Tensor]], {
             "_dummy": (dummy_tensor, dummy_tensor)
@@ -39,7 +85,6 @@ class RotEmb(nn.Module):
         self.max_seq_len1d = 1
         self.max_2d_shape = (1,1)
         self.max_3d_shape = (1,1,1)
-        self.scale_interpolation_power=float(scale_interpolation_power)
         
     def forward(self,x):
         dims = len(list(x.shape[1:-2]))
@@ -105,7 +150,7 @@ class RotEmb(nn.Module):
             self.max_seq_len1d = max(self.max_seq_len1d,seqlen)
         else:
             scale=max(1.0,seqlen/self.max_seq_len1d)
-            scale=scale**self.scale_interpolation_power
+            scale=scale
         freqs = torch.einsum("i,j->ij", t, inv_freq/scale)  # (seq_len, half_dim)
         
         # Create sinusoidal embeddings
@@ -182,28 +227,25 @@ class RotEmb(nn.Module):
             return sin_h,cos_h,sin_w,cos_w
         
         if key in self.freq_cache_2d:
-            sin_h,cos_h,sin_w,cos_w = [v.to(x.device) for v in self.freq_cache_2d[key]]
+            sin_h,cos_h,sin_w,cos_w= [v.to(x.device) for v in self.freq_cache_2d[key]]
             return sin_h,cos_h,sin_w,cos_w
-        freq_seq = torch.arange(0, D_quarter, device=x.device).float()
-        inv_freq = 1.0 / (base ** (freq_seq / D_quarter))
+        
+        # freq_seq = torch.arange(0, D_quarter, device=x.device).float()
+        # inv_freq = 1.0 / (base ** (freq_seq / D_quarter))
 
         h_pos = torch.arange(H, device=x.device).float()
         w_pos = torch.arange(W, device=x.device).float()
         
-        scale_h=1.0
-        scale_w=1.0
         if self.training:
             self.max_2d_shape=(max(self.max_2d_shape[0],H),max(self.max_2d_shape[1],W))
-        else:
-            scale_h = max(1.0,H/self.max_2d_shape[0])
-            scale_w = max(1.0,W/self.max_2d_shape[1])
-            scale_w=scale_w**self.scale_interpolation_power
-            scale_h=scale_h**self.scale_interpolation_power
         
-        sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq/scale_h))  # (H, D/4)
-        cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq/scale_h))
-        sin_w = torch.sin(torch.einsum("i,j->ij", w_pos, inv_freq/scale_w))  # (W, D/4)
-        cos_w = torch.cos(torch.einsum("i,j->ij", w_pos, inv_freq/scale_w))
+        inv_freq_h = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_2d_shape[0]).to(x.device)
+        inv_freq_w = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_2d_shape[1]).to(x.device)
+        
+        sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq_h))  # (H, D/4)
+        cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq_h))
+        sin_w = torch.sin(torch.einsum("i,j->ij", w_pos, inv_freq_w))  # (W, D/4)
+        cos_w = torch.cos(torch.einsum("i,j->ij", w_pos, inv_freq_w))
 
         # Correct shapes for broadcasting: (1, H, 1, 1, D/4) and (1, 1, W, 1, D/4)
         sin_h = sin_h[None, :, None, None, :]  # (1, H, 1, 1, D/4)
@@ -282,9 +324,9 @@ class RotEmb(nn.Module):
             scale_h = max(1.0,H/self.max_3d_shape[0])
             scale_w = max(1.0,W/self.max_3d_shape[1])
             scale_d = max(1.0,D/self.max_3d_shape[2])
-            scale_h=scale_h**self.scale_interpolation_power
-            scale_w=scale_w**self.scale_interpolation_power
-            scale_d=scale_d**self.scale_interpolation_power
+            scale_h=scale_h
+            scale_w=scale_w
+            scale_d=scale_d
             
         # RoPE sin/cos for each axis
         # *** Note the leading None on sin_h/cos_h so dim0==1 (batch) ***

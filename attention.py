@@ -19,7 +19,7 @@ def zero_module(module):
 
 class SelfAttention(nn.Module):
     """
-    Self-attention block for vision model bottlenecks (e.g., 16x16 spatial size).
+    Self-attention block for vision model bottlenecks.
     Input/Output: [B, C, ...]
     """
     def __init__(
@@ -32,6 +32,15 @@ class SelfAttention(nn.Module):
         add_rotary_embedding = False,
         linear=False
     ):
+        """
+        dim: input dimensions
+        heads: heads count. For ViT 8-12 heads is optimal.
+        head_dim: dims per head. For ViT 64 is gold standard.
+        dropout: attention dropout. Optimal value depends, but for visual tasks 0.1 is good.
+        dimensions: expected input dimensions
+        add_rotary_embedding: add rotary embedding to input or not. By default all three spacial resolutions are supported, so proper 1,2,3-dimensional rotary embedding is applied
+        linear: whether to use custom-linear attention or not. Current linear attention although works, but is not optimized and default non-linear attention works a lot faster.
+        """
         super().__init__()
         self.heads = heads
         self.head_dim = head_dim
@@ -247,30 +256,6 @@ class LinearAttention(nn.Module):
         out = numerator / denominator  # [B, L, H, D]
         return out, linear_attn
 
-def compute_attention(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """
-    Computes scaled dot-product attention.
-
-    Args:
-        q, k, v: Tensors of shape [batch_size, seq_length, num_heads, head_dim]
-
-    Returns:
-        Tensor of shape [batch_size, seq_length, num_heads, head_dim]
-    """
-
-    # Permute to [batch_size, num_heads, seq_length, head_dim]
-    q = q.permute(0, 2, 1, 3)
-    k = k.permute(0, 2, 1, 3)
-    v = v.permute(0, 2, 1, 3)
-
-    # Compute attention
-    attn_output = F.scaled_dot_product_attention(q, k, v)
-
-    # Permute back to [batch_size, seq_length, num_heads, head_dim]
-    attn_output = attn_output.permute(0, 2, 1, 3)
-
-    return attn_output
-
 def g(x):
     return torch.nn.functional.softplus(x,5)**2
     return torch.relu(x)*x
@@ -351,6 +336,7 @@ class EfficientSpatialChannelAttention(nn.Module):
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         
         groups = max(1,channels//32)
+        if groups==1: groups=2
         
         self.spatial_attn = nn.Sequential(
             conv(channels,channels,3,padding=1,groups=groups),
