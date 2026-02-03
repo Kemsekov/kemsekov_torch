@@ -461,14 +461,15 @@ class LossNormalizer1d(nn.Module):
         while time.ndim<x.ndim:
             time = time[:,None]
         return self.net(x+time)
-class SoftThresholdTanh(nn.Module):
-    def __init__(self, threshold=3.0):
-        super().__init__()
-        self.threshold = threshold
-    
-    def forward(self, x):
-        return torch.tanh(x) * torch.sigmoid((self.threshold - torch.abs(x)) / 0.5)
 
+def zero_module(module):
+    """
+    Zero out the parameters of a module and return it to implement Re-Zero
+    """
+    with torch.no_grad():
+        for p in module.parameters():
+            p.zero_()
+    return module
 class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data.
@@ -507,8 +508,9 @@ class FlowModel1d(nn.Module):
             nn.Linear(1,hidden_dim),
             norm(hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim,hidden_dim),
+            nn.Linear(hidden_dim,hidden_dim*2),
         )
+        
         self.expand = nn.Linear(in_dim,hidden_dim)
         
         self.dropout = nn.Dropout(dropout_p)
@@ -547,9 +549,12 @@ class FlowModel1d(nn.Module):
         time = self.time_emb(t)
         while time.ndim<x.ndim:
             time = time[:,None]
-
         expand = self.expand(x)
-        x = expand+time
+        
+        # add time embedding
+        time_scale,time_shift = time.chunk(2,-1)
+        x = expand*(1+time_scale)+time_shift
+        
         x = self.dropout(x)
         x = self.norm(x)
         for m,temb in self.residual_blocks:
