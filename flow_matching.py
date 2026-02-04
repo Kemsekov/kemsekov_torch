@@ -494,7 +494,7 @@ class FlowModel1d(nn.Module):
         default_steps (int): Default number of integration steps for sampling
         device (str): Device on which the model is located
     """
-    def __init__(self, in_dim,hidden_dim=32,residual_blocks=3,dropout_p=0.0,device='cpu') -> None:
+    def __init__(self, in_dim,hidden_dim=64,residual_blocks=3,dropout_p=0.0,device='cpu') -> None:
         super().__init__()
         self.fm = FlowMatching()
         # default time scaler for training
@@ -581,8 +581,8 @@ class FlowModel1d(nn.Module):
     def fit(
         self,
         data: torch.Tensor,
-        batch_size: int = 512,
-        epochs: int = 100,
+        batch_size: int = 256,
+        epochs: int = 64,
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
         distribution_matching=0.0,
@@ -666,6 +666,10 @@ class FlowModel1d(nn.Module):
                     prior_batch=torch.randn_like(batch,device=device)
                     time = torch.rand(batch.shape[0],device=device)
                     
+                    # def run_model(xt,t):
+                    #     noise = torch.randn_like(xt)*0.01
+                    #     return model(xt+noise,t)
+                    
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
                             model,
@@ -686,16 +690,19 @@ class FlowModel1d(nn.Module):
                     # sample-wise loss
                     sample_loss = pred_loss-contrastive_loss
                     
-                    with torch.no_grad():  # Stop-gradient via detach
-                        sg_log_losses = pred_loss.detach().log()
-                        target_log_w = -sg_log_losses  # log(1/L)
-                    
-                    weights = loss_normalizer(target_dir, t) # it equals to log(1/loss)
-                    loss_weighted = (weights*distribution_matching).exp().detach() # it equals to 1/loss
-                    
+                    if distribution_matching>0:
+                        with torch.no_grad():  # Stop-gradient via detach
+                            sg_log_losses = pred_loss.detach().log()
+                            target_log_w = -sg_log_losses  # log(1/L)
+                        
+                        weights = loss_normalizer(target_dir, t) # it equals to log(1/loss)
+                        loss_weighted = (weights*distribution_matching).exp().detach() # it equals to 1/loss
+                        aux_loss = F.mse_loss(weights, target_log_w)
+                    else:
+                        loss_weighted=1
+                        aux_loss=0
                     #scale loss by it's prediction
                     weighed_loss = (loss_weighted*sample_loss).mean()
-                    aux_loss = F.mse_loss(weights, target_log_w)
                     # print(r2_score(weights, (1/sample_loss).log()))
                     # print(weighed_loss)
                     loss = weighed_loss+distribution_matching*aux_loss
