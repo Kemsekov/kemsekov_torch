@@ -135,7 +135,7 @@ class SelfAttention(nn.Module):
         self.linear = linear
         self.dimensions=dimensions
         
-        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=0.75)
+        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=0.0)
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = RotEmb()

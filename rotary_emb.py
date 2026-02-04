@@ -78,9 +78,9 @@ class RotEmb(nn.Module):
         })
         
         self.base = base
-        self.max_seq_len1d = 1
-        self.max_2d_shape = (1,1)
-        self.max_3d_shape = (1,1,1)
+        self.register_buffer('max_seq_len1d',torch.tensor([1]))
+        self.register_buffer('max_2d_shape',torch.tensor([1,1]))
+        self.register_buffer('max_3d_shape',torch.tensor([1,1,1]))
         
     def forward(self,x):
         dims = len(list(x.shape[1:-2]))
@@ -137,7 +137,7 @@ class RotEmb(nn.Module):
         
         # Create position indices
         if self.training:
-            self.max_seq_len1d = max(self.max_seq_len1d,seqlen)
+            self.max_seq_len1d[0] = max(self.max_seq_len1d,seqlen) - self.max_seq_len1d
         
         inv_freq = _compute_yarn_inv_freq(base,half_dim,self.yarn_alpha,self.yarn_beta,seqlen,self.max_seq_len1d,device=x.device)
         
@@ -225,10 +225,11 @@ class RotEmb(nn.Module):
         w_pos = torch.arange(W, device=x.device).float()
         
         if self.training:
-            self.max_2d_shape=(max(self.max_2d_shape[0],H),max(self.max_2d_shape[1],W))
+            self.max_2d_shape[0]=max(self.max_2d_shape[0],H)
+            self.max_2d_shape[1]=max(self.max_2d_shape[1],W)
         
         # try to use max_dim for interpolation
-        max_dim = max(self.max_2d_shape)
+        # max_dim = max(self.max_2d_shape)
         
         inv_freq_h = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_2d_shape[0],device=x.device)
         inv_freq_w = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_2d_shape[1],device=x.device)
@@ -304,7 +305,9 @@ class RotEmb(nn.Module):
         d_pos = torch.arange(D, device=x.device, dtype=torch.float32)
 
         if self.training:
-            self.max_3d_shape=(max(self.max_3d_shape[0],H),max(self.max_3d_shape[1],W),max(self.max_3d_shape[2],D))
+            self.max_3d_shape[0]=max(self.max_3d_shape[0],H)
+            self.max_3d_shape[1]=max(self.max_3d_shape[1],W)
+            self.max_3d_shape[2]=max(self.max_3d_shape[2],D)
         
         inv_freq_h = _compute_yarn_inv_freq(self.base,d_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_3d_shape[0],device=x.device)
         inv_freq_w = _compute_yarn_inv_freq(self.base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[1],device=x.device)
