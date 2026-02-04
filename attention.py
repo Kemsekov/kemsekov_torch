@@ -16,13 +16,14 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
     applied during training encourages relative positional awareness.
     Supports 1D/2D/3D inputs.
     """
-    def __init__(self, x_dim,dimensions : Literal[1,2,3] = 2,cape_shift=1.0,cape_scale=2.0) -> None:
+    def __init__(self, x_dim,dimensions : Literal[1,2,3] = 2,cape_shift=1.0,cape_scale=2.0,jit_prob = 0.75) -> None:
         """
         Args:
             x_dim: Input channel dimension.
             dimensions: Spatial dimensionality (1, 2 or 3).
             cape_shift: Max uniform shift for position augmentation [-shift, +shift].
             cape_scale: Max scale factor for position augmentation [0, scale].
+            jit_prob: probability of applying augmentation
         """
         super().__init__()
         self.dimensions=dimensions
@@ -33,50 +34,62 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
         )
         self.cape_shift=cape_shift
         self.cape_scale=cape_scale
+        self.jit_prob=jit_prob
         self.pos_gamma = nn.Parameter(torch.tensor([0.0]))
-        self.register_buffer("cached_grid", torch.tensor([0]), persistent=False)
-        self.register_buffer("max_dim_size", torch.tensor([0]), persistent=True)
+        self.register_buffer("cached_grid", torch.tensor([0]),persistent=False)
+        self.register_buffer("max_dim_size", torch.tensor([0]))
         
     def forward(self,x):
         DIMS = x.shape[2:]
         dims_len = len(DIMS)
-        max_dim = max(DIMS)
+        
         if self.training:
-            max_dim_size = max(max_dim,self.max_dim_size)
-            self.max_dim_size=max_dim_size
+            max_dim_size = max(max(DIMS),self.max_dim_size)
+            self.max_dim_size+=max_dim_size-self.max_dim_size
         
         if DIMS == self.cached_grid.shape[:-1]:
             POS_IND = self.cached_grid
         else:
             if dims_len==1:
-                POS_IND = torch.arange(0,DIMS[0],device=x.device)[:,None]
+                POS_IND = torch.arange(0,DIMS[0],device=x.device)[:,None]-DIMS[0]/2
             
             if dims_len==2:
-                X = torch.arange(0,DIMS[0],device=x.device)
-                Y = torch.arange(0,DIMS[1],device=x.device)
+                X = torch.arange(0,DIMS[0],device=x.device)-DIMS[0]/2
+                Y = torch.arange(0,DIMS[1],device=x.device)-DIMS[1]/2
                 POS_IND = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
             
             if dims_len==3:
-                X = torch.arange(0,DIMS[0],device=x.device)
-                Y = torch.arange(0,DIMS[1],device=x.device)
-                Z = torch.arange(0,DIMS[2],device=x.device)
+                X = torch.arange(0,DIMS[0],device=x.device)-DIMS[0]/2
+                Y = torch.arange(0,DIMS[1],device=x.device)-DIMS[1]/2
+                Z = torch.arange(0,DIMS[2],device=x.device)-DIMS[2]/2
                 POS_IND = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
 
-            # pos ind always centered at zero, and be in range [-1,1]
-            POS_IND=(POS_IND-(POS_IND*1.0).mean(-1,keepdim=True))*2/self.max_dim_size
+            POS_IND=POS_IND*2
             self.cached_grid = POS_IND
-    
+        
+        
+        # pos ind always centered at zero, and be in range [-1,1]
+        POS_IND=POS_IND[None,:]/self.max_dim_size
+        
         # apply CAPE Augmentation Transformations 
-        if self.training:
+        if self.training and self.jit_prob>0:
+            # for more stable gradients, apply transformations batch-wise
+            B = x.shape[0]
+            
             #randomly shift in range [-cape_shift,cape_shift]
-            pos_ind_shift = (torch.rand([1]*(POS_IND.ndim-1)+[self.dimensions],device=x.device)*2-1)*self.cape_shift
+            pos_ind_shift = (torch.rand([B]+[1]*(POS_IND.ndim-1)+[self.dimensions],device=x.device)*2-1)*self.cape_shift
             #randomly scale in range [0,cape_scale]
-            pos_ind_scale = torch.rand([1]*(POS_IND.ndim-1)+[self.dimensions],device=x.device)*self.cape_scale
+            pos_ind_scale = torch.rand([B]+[1]*(POS_IND.ndim-1)+[self.dimensions],device=x.device)*self.cape_scale
+            
+            # with probability (1-jit) choose batches that are not going to be augmented
+            if self.jit_prob<1:
+                batches_not_to_augment = torch.rand((B,),device=x.device)>self.jit_prob
+                pos_ind_scale[batches_not_to_augment]=1
+                pos_ind_shift[batches_not_to_augment]=0
             # shift and scale positions to make attention work on relative positions rather than fixed
             POS_IND=POS_IND*pos_ind_scale+pos_ind_shift
-
         #apply gamma to make at the training start this transformation work as identity
-        pos_scale,pos_shift = (self.pos_gamma*self.absolute_pos(POS_IND)).transpose(0,-1)[None,:].chunk(2,1)
+        pos_scale,pos_shift = (self.pos_gamma*self.absolute_pos(POS_IND)).transpose(1,-1).squeeze(-1).chunk(2,1)
         
         # apply proposed positions embedding in following way
         return x*(1+pos_scale)+pos_shift
@@ -122,7 +135,7 @@ class SelfAttention(nn.Module):
         self.linear = linear
         self.dimensions=dimensions
         
-        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions)
+        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=0.75)
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = RotEmb()
