@@ -92,6 +92,7 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
         pos_scale,pos_shift = (self.pos_gamma*self.absolute_pos(POS_IND)).transpose(1,-1).squeeze(-1).chunk(2,1)
         
         # apply proposed positions embedding in following way
+        # print(x.shape,pos_scale.shape)
         return x*(1+pos_scale)+pos_shift
 
 def zero_module(module):
@@ -106,6 +107,7 @@ def zero_module(module):
 class SelfAttention(nn.Module):
     """
     Self-attention block for vision model bottlenecks.
+    
     Input/Output: [B, C, ...]
     """
     def __init__(
@@ -135,7 +137,7 @@ class SelfAttention(nn.Module):
         self.linear = linear
         self.dimensions=dimensions
         
-        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=0.0)
+        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=0.75)
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = RotEmb()
@@ -210,7 +212,10 @@ class SelfAttention(nn.Module):
 class CrossAttention(nn.Module):
     """
     Cross-attention block. 
+    
     Queries come from `x`, Keys/Values come from `memory`.
+    
+    Input/Output: [B, C, ...]
     """
     def __init__(
         self, 
