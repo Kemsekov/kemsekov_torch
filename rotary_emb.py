@@ -220,15 +220,15 @@ class RotEmb(nn.Module):
         if key in self.freq_cache_2d:
             sin_h,cos_h,sin_w,cos_w= [v.to(x.device) for v in self.freq_cache_2d[key]]
             return sin_h,cos_h,sin_w,cos_w
-        
-        # freq_seq = torch.arange(0, D_quarter, device=x.device).float()
-        # inv_freq = 1.0 / (base ** (freq_seq / D_quarter))
 
         h_pos = torch.arange(H, device=x.device).float()
         w_pos = torch.arange(W, device=x.device).float()
         
         if self.training:
             self.max_2d_shape=(max(self.max_2d_shape[0],H),max(self.max_2d_shape[1],W))
+        
+        # try to use max_dim for interpolation
+        max_dim = max(self.max_2d_shape)
         
         inv_freq_h = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_2d_shape[0],device=x.device)
         inv_freq_w = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_2d_shape[1],device=x.device)

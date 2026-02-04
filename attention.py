@@ -8,6 +8,79 @@ import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.rotary_emb import RotEmb
 
+class AbsoluteRelativePositionalEmbedding(nn.Module):
+    """
+    Learnable positional embedding with CAPE-inspired augmentation.
+    Encodes normalized spatial coordinates via MLP and injects them using
+    FiLM-style modulation (x·(1+scale) + shift). Augmentation (shift/scale)
+    applied during training encourages relative positional awareness.
+    Supports 1D/2D/3D inputs.
+    """
+    def __init__(self, x_dim,dimensions : Literal[1,2,3] = 2,cape_shift=1.0,cape_scale=2.0) -> None:
+        """
+        Args:
+            x_dim: Input channel dimension.
+            dimensions: Spatial dimensionality (1, 2 or 3).
+            cape_shift: Max uniform shift for position augmentation [-shift, +shift].
+            cape_scale: Max scale factor for position augmentation [0, scale].
+        """
+        super().__init__()
+        self.dimensions=dimensions
+        self.absolute_pos = nn.Sequential(
+            nn.Linear(dimensions,x_dim),
+            nn.SiLU(),
+            nn.Linear(x_dim,2*x_dim),
+        )
+        self.cape_shift=cape_shift
+        self.cape_scale=cape_scale
+        self.pos_gamma = nn.Parameter(torch.tensor([0.0]))
+        self.register_buffer("cached_grid", torch.tensor([0]), persistent=False)
+        self.register_buffer("max_dim_size", torch.tensor([0]), persistent=True)
+        
+    def forward(self,x):
+        DIMS = x.shape[2:]
+        dims_len = len(DIMS)
+        max_dim = max(DIMS)
+        if self.training:
+            max_dim_size = max(max_dim,self.max_dim_size)
+            self.max_dim_size=max_dim_size
+        
+        if DIMS == self.cached_grid.shape[:-1]:
+            POS_IND = self.cached_grid
+        else:
+            if dims_len==1:
+                POS_IND = torch.arange(0,DIMS[0],device=x.device)[:,None]
+            
+            if dims_len==2:
+                X = torch.arange(0,DIMS[0],device=x.device)
+                Y = torch.arange(0,DIMS[1],device=x.device)
+                POS_IND = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
+            
+            if dims_len==3:
+                X = torch.arange(0,DIMS[0],device=x.device)
+                Y = torch.arange(0,DIMS[1],device=x.device)
+                Z = torch.arange(0,DIMS[2],device=x.device)
+                POS_IND = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
+
+            # pos ind always centered at zero, and be in range [-1,1]
+            POS_IND=(POS_IND-(POS_IND*1.0).mean(-1,keepdim=True))*2/self.max_dim_size
+            self.cached_grid = POS_IND
+    
+        # apply CAPE Augmentation Transformations 
+        if self.training:
+            #randomly shift in range [-cape_shift,cape_shift]
+            pos_ind_shift = (torch.rand([1]*(POS_IND.ndim-1)+[self.dimensions],device=x.device)*2-1)*self.cape_shift
+            #randomly scale in range [0,cape_scale]
+            pos_ind_scale = torch.rand([1]*(POS_IND.ndim-1)+[self.dimensions],device=x.device)*self.cape_scale
+            # shift and scale positions to make attention work on relative positions rather than fixed
+            POS_IND=POS_IND*pos_ind_scale+pos_ind_shift
+
+        #apply gamma to make at the training start this transformation work as identity
+        pos_scale,pos_shift = (self.pos_gamma*self.absolute_pos(POS_IND)).transpose(0,-1)[None,:].chunk(2,1)
+        
+        # apply proposed positions embedding in following way
+        return x*(1+pos_scale)+pos_shift
+
 def zero_module(module):
     """
     Zero out the parameters of a module and return it to implement Re-Zero
@@ -47,13 +120,9 @@ class SelfAttention(nn.Module):
         self.dropout=dropout
         inner_dim = heads * head_dim
         self.linear = linear
+        self.dimensions=dimensions
         
-        self.absolute_pos = nn.Sequential(
-            nn.Linear(dimensions,dim),
-            nn.SiLU(),
-            nn.Linear(dim,2*dim),
-        )
-        self.pos_gamma = nn.Parameter(torch.tensor([0.0]))
+        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions)
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = RotEmb()
@@ -71,8 +140,7 @@ class SelfAttention(nn.Module):
         
         # Zero-initialized output projection
         self.to_out = zero_module(conv(inner_dim, dim, 1, bias=True))
-        
-        self.register_buffer("cached_grid", torch.tensor([0]), persistent=False)
+
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -80,42 +148,10 @@ class SelfAttention(nn.Module):
         Returns: Tensor same shaped as `x` with residual connection
         """
         identity = x
-        
-        DIMS = x.shape[2:]
-        dims_len = len(DIMS)
-        max_dim = max(DIMS)
-        if dims_len==1:
-            if DIMS == self.cached_grid.shape[:-1]:
-                X = self.cached_grid
-            else:
-                X = torch.arange(0,DIMS[0],device=x.device)[:,None]/max_dim
-                self.cached_grid = X
-            pos_scale,pos_shift = self.absolute_pos(X).transpose(0,-1)[None,:].chunk(2,1)
-        if dims_len==2:
-            if DIMS == self.cached_grid.shape[:-1]:
-                XY = self.cached_grid
-            else:
-                X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-                Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
-                XY = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
-                self.cached_grid = XY
-            pos_scale,pos_shift = self.absolute_pos(XY).transpose(0,-1)[None,:].chunk(2,1)
-        if dims_len==3:
-            if DIMS == self.cached_grid.shape[:-1]:
-                XYZ = self.cached_grid
-            else:
-                X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-                Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
-                Z = torch.arange(0,DIMS[2],device=x.device)/max_dim
-                XYZ = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
-                self.cached_grid = XYZ
-            pos_scale,pos_shift = self.absolute_pos(XYZ).transpose(0,-1)[None,:].chunk(2,1)
-                    
-        
         B = x.shape[0]
         
         # 1. Pre-normalization (GroupNorm)
-        x = self.norm(x*(1+self.pos_gamma*pos_scale)+self.pos_gamma*pos_shift)
+        x = self.norm(self.abs_emb(x))
         
         # 2. QKV projection via 1x1 conv
         qkv = self.to_qkv(x)
@@ -182,12 +218,8 @@ class CrossAttention(nn.Module):
         self.linear = linear
         inner_dim = heads * head_dim
         context_dim = context_dim if context_dim is not None else dim
-        self.absolute_pos = nn.Sequential(
-            nn.Linear(dimensions,dim),
-            nn.SiLU(),
-            nn.Linear(dim,2*dim),
-        )
-        self.pos_gamma = nn.Parameter(torch.tensor([0.0]))
+        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions)
+        
         self.add_rotary_embedding = add_rotary_embedding
         self.rotary_emb = RotEmb()
         
@@ -203,46 +235,14 @@ class CrossAttention(nn.Module):
         self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=True)
         
         self.to_out = zero_module(conv(inner_dim, dim, 1, bias=True))
-        self.register_buffer("cached_grid", torch.tensor([0]), persistent=False)
         
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
         identity = x
         B = x.shape[0]
         
-        DIMS = x.shape[2:]
-        dims_len = len(DIMS)
-        max_dim = max(DIMS)
-        if dims_len==1:
-            if DIMS == self.cached_grid.shape[:-1]:
-                X = self.cached_grid
-            else:
-                X = torch.arange(0,DIMS[0],device=x.device)[:,None]/max_dim
-                self.cached_grid = X
-            pos_scale,pos_shift = self.absolute_pos(X).transpose(0,-1)[None,:].chunk(2,1)
-        if dims_len==2:
-            if DIMS == self.cached_grid.shape[:-1]:
-                XY = self.cached_grid
-            else:
-                X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-                Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
-                XY = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
-                self.cached_grid = XY
-            pos_scale,pos_shift = self.absolute_pos(XY).transpose(0,-1)[None,:].chunk(2,1)
-        if dims_len==3:
-            if DIMS == self.cached_grid.shape[:-1]:
-                XYZ = self.cached_grid
-            else:
-                X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-                Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
-                Z = torch.arange(0,DIMS[2],device=x.device)/max_dim
-                XYZ = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
-                self.cached_grid = XYZ
-            pos_scale,pos_shift = self.absolute_pos(XYZ).transpose(0,-1)[None,:].chunk(2,1)
-                    
-             
         # 1. Pre-normalization
-        x = self.norm(x*(1+self.pos_gamma*pos_scale)+self.pos_gamma*pos_shift)
+        x = self.norm(self.abs_emb(x))
         memory = self.norm_context(memory)
         
         # 2. Project Q and KV

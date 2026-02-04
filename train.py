@@ -680,7 +680,6 @@ def cast_to_dtype(inputs,dtype):
         return {v:cast_to_dtype(inputs[v],dtype) for v in inputs}
     
     return inputs
-    
 
 dtype_map = {
     'float32': torch.float32,
@@ -698,7 +697,7 @@ dtype_map = {
 }
 
 def load_best_checkpoint(model,base_path,log = True,device_map=None):
-    return load_checkpoint(model,base_path,-1,log,device_map=device_map)
+    return load_checkpoint(model,base_path,-1,log,device_map=device_map).eval()
 
 def load_last_checkpoint(model,base_path,log=True,device_map=None):
     report = os.path.join(base_path,'last','report.json')
@@ -708,7 +707,7 @@ def load_last_checkpoint(model,base_path,log=True,device_map=None):
     
     checkpoint = os.path.join(base_path,'last','state')
     model = load_checkpoint_and_dispatch(model,checkpoint,device_map=device_map)
-    return model
+    return model.eval()
 
 def load_checkpoint(model,base_path,checkpoint_index,log=True,device_map=None):
     checkpoints = os.path.join(base_path,'checkpoints')
@@ -718,7 +717,7 @@ def load_checkpoint(model,base_path,checkpoint_index,log=True,device_map=None):
     if log:
         print("loading",checkpoint)
     model = load_checkpoint_and_dispatch(model,checkpoint,device_map=device_map)
-    return model
+    return model.eval()
 
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
@@ -780,8 +779,6 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
         train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor,pin_memory=pin_memory,drop_last=drop_last)
         print("Train items",len(dataset))
         return dataset,[],train_loader,[]
-        
-
 class EpochSplittedDataloader:
     def __init__(self, dataset, batch_size, num_parts, shuffle=False, **dataloader_kwargs):
         """

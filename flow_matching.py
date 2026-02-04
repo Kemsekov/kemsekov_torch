@@ -235,6 +235,7 @@ class FlowMatching(nn.Module):
         self.time_sampler_transform = lambda x:x
         self.reset_weights()
         # weights for one-step integration
+    
     def reset_weights(self):
         with torch.no_grad():
             self.one_weights     = torch.nn.Parameter(torch.tensor([0.5,  0.5, 1,0,0]))
