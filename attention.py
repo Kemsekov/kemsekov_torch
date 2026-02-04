@@ -48,6 +48,13 @@ class SelfAttention(nn.Module):
         inner_dim = heads * head_dim
         self.linear = linear
         
+        self.absolute_pos = nn.Sequential(
+            nn.Linear(dimensions,dim),
+            nn.SiLU(),
+            nn.Linear(dim,2*dim),
+        )
+        self.pos_gamma = nn.Parameter(torch.tensor([0.0]))
+        
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = RotEmb()
         
@@ -71,10 +78,30 @@ class SelfAttention(nn.Module):
         Returns: Tensor same shaped as `x` with residual connection
         """
         identity = x
+        
+        DIMS = x.shape[2:]
+        dims_len = len(DIMS)
+        max_dim = max(DIMS)
+        if dims_len==1:
+            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+            pos_scale,pos_shift = self.absolute_pos(X[:,None]).transpose(0,-1)[None,:].chunk(2,1)
+        if dims_len==2:
+            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+            Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
+            XY = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
+            pos_scale,pos_shift = self.absolute_pos(XY).transpose(0,-1)[None,:].chunk(2,1)
+        if dims_len==3:
+            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+            Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
+            Z = torch.arange(0,DIMS[2],device=x.device)/max_dim
+            XYZ = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
+            pos_scale,pos_shift = self.absolute_pos(XYZ).transpose(0,-1)[None,:].chunk(2,1)
+                    
+        
         B = x.shape[0]
         
         # 1. Pre-normalization (GroupNorm)
-        x = self.norm(x)
+        x = self.norm(x*(1+self.pos_gamma*pos_scale)+self.pos_gamma*pos_shift)
         
         # 2. QKV projection via 1x1 conv
         qkv = self.to_qkv(x)
@@ -141,7 +168,12 @@ class CrossAttention(nn.Module):
         self.linear = linear
         inner_dim = heads * head_dim
         context_dim = context_dim if context_dim is not None else dim
-        
+        self.absolute_pos = nn.Sequential(
+            nn.Linear(dimensions,dim),
+            nn.SiLU(),
+            nn.Linear(dim,2*dim),
+        )
+        self.pos_gamma = nn.Parameter(torch.tensor([0.0]))
         self.add_rotary_embedding = add_rotary_embedding
         self.rotary_emb = RotEmb()
         
@@ -162,8 +194,26 @@ class CrossAttention(nn.Module):
         identity = x
         B = x.shape[0]
         
+        DIMS = x.shape[2:]
+        dims_len = len(DIMS)
+        max_dim = max(DIMS)
+        if dims_len==1:
+            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+            pos_scale,pos_shift = self.absolute_pos(X[:,None]).transpose(0,-1)[None,:].chunk(2,1)
+        if dims_len==2:
+            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+            Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
+            XY = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
+            pos_scale,pos_shift = self.absolute_pos(XY).transpose(0,-1)[None,:].chunk(2,1)
+        if dims_len==3:
+            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+            Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
+            Z = torch.arange(0,DIMS[2],device=x.device)/max_dim
+            XYZ = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
+            pos_scale,pos_shift = self.absolute_pos(XYZ).transpose(0,-1)[None,:].chunk(2,1)
+        
         # 1. Pre-normalization
-        x = self.norm(x)
+        x = self.norm(x*(1+self.pos_gamma*pos_scale)+self.pos_gamma*pos_shift)
         memory = self.norm_context(memory)
         
         # 2. Project Q and KV
@@ -330,7 +380,7 @@ class EfficientSpatialChannelAttention(nn.Module):
     that modulate channel responses based on spatial structure, improving
     feature representation with minimal overhead.
     """
-    def __init__(self, channels,groups='auto',dimensions=2):
+    def __init__(self, channels,groups='auto',dimensions=2,kernel_size=3):
         super().__init__()
         assert dimensions in [1,2,3],f"dimensions must be one of [1,2,3], but got {dimensions}"
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
@@ -339,7 +389,7 @@ class EfficientSpatialChannelAttention(nn.Module):
         if groups==1: groups=2
         
         self.spatial_attn = nn.Sequential(
-            conv(channels,channels,3,padding=1,groups=groups),
+            conv(channels,channels,kernel_size,padding=kernel_size//2,groups=groups),
             nn.Tanh()
         )
 

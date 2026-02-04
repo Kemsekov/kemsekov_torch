@@ -3,7 +3,7 @@ import math
 from typing import Dict, Tuple
 import torch
 from torch import nn
-def _compute_yarn_inv_freq(base: int, dim: int, alpha: float, beta: float,current_len : int, train_len: int):
+def _compute_yarn_inv_freq(base: int, dim: int, alpha: float, beta: float,current_len : int, train_len: int,device = None):
     """
     Returns interpolated inverse frequencies using YaRN's wavelength cutoff.
     
@@ -18,7 +18,7 @@ def _compute_yarn_inv_freq(base: int, dim: int, alpha: float, beta: float,curren
         inv_freq: Tensor of shape (dim,) with selectively interpolated frequencies
     """
     scale = current_len/train_len
-    i = torch.arange(dim, dtype=torch.float32)  # dimension indices [0, 1, ..., dim-1]
+    i = torch.arange(dim, dtype=torch.float32,device=device)  # dimension indices [0, 1, ..., dim-1]
     freq = (base ** (i / dim))
     
     # Compute wavelengths: λ_d = 2π / θ_d = 2π * base^(i/dim)
@@ -139,7 +139,7 @@ class RotEmb(nn.Module):
         if self.training:
             self.max_seq_len1d = max(self.max_seq_len1d,seqlen)
         
-        inv_freq = _compute_yarn_inv_freq(base,half_dim,self.yarn_alpha,self.yarn_beta,seqlen,self.max_seq_len1d)
+        inv_freq = _compute_yarn_inv_freq(base,half_dim,self.yarn_alpha,self.yarn_beta,seqlen,self.max_seq_len1d,device=x.device)
         
         t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
         freqs = torch.einsum("i,j->ij", t, inv_freq)  # (seq_len, half_dim)
@@ -230,8 +230,8 @@ class RotEmb(nn.Module):
         if self.training:
             self.max_2d_shape=(max(self.max_2d_shape[0],H),max(self.max_2d_shape[1],W))
         
-        inv_freq_h = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_2d_shape[0]).to(x.device)
-        inv_freq_w = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_2d_shape[1]).to(x.device)
+        inv_freq_h = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_2d_shape[0],device=x.device)
+        inv_freq_w = _compute_yarn_inv_freq(self.base,D_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_2d_shape[1],device=x.device)
         
         sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq_h))  # (H, D/4)
         cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq_h))
@@ -306,9 +306,9 @@ class RotEmb(nn.Module):
         if self.training:
             self.max_3d_shape=(max(self.max_3d_shape[0],H),max(self.max_3d_shape[1],W),max(self.max_3d_shape[2],D))
         
-        inv_freq_h = _compute_yarn_inv_freq(self.base,d_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_3d_shape[0]).to(x.device)
-        inv_freq_w = _compute_yarn_inv_freq(self.base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[1]).to(x.device)
-        inv_freq_d = _compute_yarn_inv_freq(self.base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[2]).to(x.device)
+        inv_freq_h = _compute_yarn_inv_freq(self.base,d_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_3d_shape[0],device=x.device)
+        inv_freq_w = _compute_yarn_inv_freq(self.base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[1],device=x.device)
+        inv_freq_d = _compute_yarn_inv_freq(self.base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[2],device=x.device)
         
             
         # RoPE sin/cos for each axis
