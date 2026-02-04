@@ -71,6 +71,8 @@ class SelfAttention(nn.Module):
         
         # Zero-initialized output projection
         self.to_out = zero_module(conv(inner_dim, dim, 1, bias=True))
+        
+        self.register_buffer("cached_grid", torch.tensor([0]), persistent=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -83,18 +85,30 @@ class SelfAttention(nn.Module):
         dims_len = len(DIMS)
         max_dim = max(DIMS)
         if dims_len==1:
-            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-            pos_scale,pos_shift = self.absolute_pos(X[:,None]).transpose(0,-1)[None,:].chunk(2,1)
+            if DIMS == self.cached_grid.shape[:-1]:
+                X = self.cached_grid
+            else:
+                X = torch.arange(0,DIMS[0],device=x.device)[:,None]/max_dim
+                self.cached_grid = X
+            pos_scale,pos_shift = self.absolute_pos(X).transpose(0,-1)[None,:].chunk(2,1)
         if dims_len==2:
-            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-            Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
-            XY = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
+            if DIMS == self.cached_grid.shape[:-1]:
+                XY = self.cached_grid
+            else:
+                X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+                Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
+                XY = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
+                self.cached_grid = XY
             pos_scale,pos_shift = self.absolute_pos(XY).transpose(0,-1)[None,:].chunk(2,1)
         if dims_len==3:
-            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-            Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
-            Z = torch.arange(0,DIMS[2],device=x.device)/max_dim
-            XYZ = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
+            if DIMS == self.cached_grid.shape[:-1]:
+                XYZ = self.cached_grid
+            else:
+                X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+                Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
+                Z = torch.arange(0,DIMS[2],device=x.device)/max_dim
+                XYZ = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
+                self.cached_grid = XYZ
             pos_scale,pos_shift = self.absolute_pos(XYZ).transpose(0,-1)[None,:].chunk(2,1)
                     
         
@@ -189,6 +203,8 @@ class CrossAttention(nn.Module):
         self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=True)
         
         self.to_out = zero_module(conv(inner_dim, dim, 1, bias=True))
+        self.register_buffer("cached_grid", torch.tensor([0]), persistent=False)
+        
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
         identity = x
@@ -198,20 +214,33 @@ class CrossAttention(nn.Module):
         dims_len = len(DIMS)
         max_dim = max(DIMS)
         if dims_len==1:
-            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-            pos_scale,pos_shift = self.absolute_pos(X[:,None]).transpose(0,-1)[None,:].chunk(2,1)
+            if DIMS == self.cached_grid.shape[:-1]:
+                X = self.cached_grid
+            else:
+                X = torch.arange(0,DIMS[0],device=x.device)[:,None]/max_dim
+                self.cached_grid = X
+            pos_scale,pos_shift = self.absolute_pos(X).transpose(0,-1)[None,:].chunk(2,1)
         if dims_len==2:
-            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-            Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
-            XY = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
+            if DIMS == self.cached_grid.shape[:-1]:
+                XY = self.cached_grid
+            else:
+                X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+                Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
+                XY = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
+                self.cached_grid = XY
             pos_scale,pos_shift = self.absolute_pos(XY).transpose(0,-1)[None,:].chunk(2,1)
         if dims_len==3:
-            X = torch.arange(0,DIMS[0],device=x.device)/max_dim
-            Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
-            Z = torch.arange(0,DIMS[2],device=x.device)/max_dim
-            XYZ = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
+            if DIMS == self.cached_grid.shape[:-1]:
+                XYZ = self.cached_grid
+            else:
+                X = torch.arange(0,DIMS[0],device=x.device)/max_dim
+                Y = torch.arange(0,DIMS[1],device=x.device)/max_dim
+                Z = torch.arange(0,DIMS[2],device=x.device)/max_dim
+                XYZ = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
+                self.cached_grid = XYZ
             pos_scale,pos_shift = self.absolute_pos(XYZ).transpose(0,-1)[None,:].chunk(2,1)
-        
+                    
+             
         # 1. Pre-normalization
         x = self.norm(x*(1+self.pos_gamma*pos_scale)+self.pos_gamma*pos_shift)
         memory = self.norm_context(memory)
