@@ -82,6 +82,39 @@ class ViT(nn.Module):
             x = r(xt)
         return self.up(x)
 
+
+def compute_subspace_log_volume(x: torch.Tensor, eps: float = 1e-8):
+    """
+    Computes the log-volume of the k-dimensional parallelepiped formed by 
+    k vectors in N-dimensional space.
+    
+    Args:
+        x: Tensor of shape [B, k, N]
+        eps: Small constant for numerical stability in log
+        
+    Returns:
+        log_vol: Tensor of shape [B] representing the log-volume
+    """
+    # 1. Transpose to [B, N, k] because QR decomposes columns
+    # We want to find the volume spanned by the 'k' vectors.
+    x_t = x.transpose(-1, -2)
+    
+    # 2. Perform QR decomposition
+    # Q: [B, N, k] (orthogonal basis)
+    # R: [B, k, k] (upper triangular matrix)
+    # 'reduced' mode is faster and sufficient here
+    Q, R = torch.linalg.qr(x_t, mode='reduced')
+    
+    # 3. The volume is the product of the absolute diagonal elements of R
+    # We take the diagonal of the last two dimensions [B, k]
+    diag_r = torch.diagonal(R, dim1=-2, dim2=-1)
+    
+    # 4. Compute log-volume for numerical stability
+    # log(product(diag)) = sum(log(abs(diag)))
+    log_vol = torch.sum(torch.log(torch.abs(diag_r) + eps), dim=-1)
+    
+    return log_vol
+
 class FlowModel2d(nn.Module):
     def __init__(self, in_channels,hidden_dim = 256,attention_layers=10,head_dim=64,compression_ratio=4) -> None:
         super().__init__()
@@ -221,50 +254,33 @@ class FlowModel2d(nn.Module):
 
         return final_x
 
-    def log_prob(self, data, steps=None, eps=1e-2,return_separately = False):
+    def log_prob(self, data, eps=1e-3,vectors_count=32):
         """
-        Computes log probability using Jacobian determinant approximation via simplex volume ratios.
-
-        This method is my attempt to port same-named method from 1-dimensional flow matching model, yet
-        the resulting log-probabilities is not very useful, the pixel-wise 
+        Computes log-probability of passed data. This is very rough adaptation of exact log-prob estimation from flow_matching.py file.
+        
+        Accepts inputs in shape `[BATCH,C,H,W]`, returns `[BATCH]`. The larger returned value, the more likely given image to be from data distribution
         """
         model = self
+        device = model.device
         Y = data.to(model.device)
-
-        # generate N-dimensional simplex
-        simplex_points = generate_unit_simplex_vertices(self.in_channels).to(self.device)*eps
-
-        # simplex that have some point at origin 0
-        shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
         
-        # log area of original simplex
-        original_simplex_area_log = shifted_simplex.slogdet()[1]
+        Y_flat = Y.flatten(1)
         
-        # make shapes match
-        simplex_points = simplex_points.view(simplex_points.shape[0],1,simplex_points.shape[1],*([1]*(Y.ndim-2)),)
-
-        # shift Y to sphere points of simplex
-        Y_neighbors = Y[None,:] + simplex_points  # (B, n_neighbors, ...dim)
-        Y_neighbors_shape = Y_neighbors.shape
-
-        # Compute priors for all neighbors
-        X_neighbors = self.to_prior(Y_neighbors.view(-1,*Y_neighbors_shape[2:]), steps).view(Y_neighbors_shape)
-
-        # get area of transformed simplex
-        transformed_simplex = X_neighbors[:-1,]-X_neighbors[[-1],:]
+        # generate vectors on unit sphere
+        vectors = torch.randn((1,vectors_count,Y_flat.shape[-1]),device=device)
+        vectors = vectors*eps
+        volume_before_transformation = compute_subspace_log_volume(vectors)
         
-        transformed_simplex=transformed_simplex.permute(1,3,4,0,2)
+        Y_flat=Y_flat[:,None]+vectors
+        Y_flat_batched = Y_flat.view(-1,Y_flat.shape[-1]) #merge added vectors and batch dimension
+        Y_batched = Y_flat_batched.view(Y_flat_batched.shape[0],*Y.shape[1:]) #expand dimensions
+        X_batched = self.to_prior(Y_batched).view(Y_flat_batched.shape).view(Y_flat.shape)
         
-        transformed_simplex_area_log = transformed_simplex.slogdet()[1]
+        #X_batched of shape [BATCH,vectors_count,C*H*W]
+        volume_after_transformation = compute_subspace_log_volume(X_batched)
+        logdet_approx = (volume_after_transformation-volume_before_transformation)/vectors_count
+        # print(volume_before_transformation,volume_after_transformation)
 
-        # area ratio is our jacobian determinant approximation
-        logdet_approx = transformed_simplex_area_log - original_simplex_area_log + self.in_channels*math.log(self.in_channels)
-
-
-        X = self.to_prior(Y,steps)
-        prior_logp = Normal(0,1).log_prob(X).sum(1)
-
-        if return_separately:
-            return prior_logp,logdet_approx,X
-        
-        return prior_logp+logdet_approx
+        X = self.to_prior(Y)
+        prior_logp = Normal(0,1).log_prob(X).mean([-1,-2,-3])
+        return logdet_approx+prior_logp
