@@ -228,11 +228,19 @@ class RotEmb(nn.Module):
             self.max_2d_shape[0]=max(self.max_2d_shape[0],H)
             self.max_2d_shape[1]=max(self.max_2d_shape[1],W)
         
-        # try to use max_dim for interpolation
-        # max_dim = max(self.max_2d_shape)
+        #----------------------
+        min_dim = min(H,W)
+        inv_freq_h = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_2d_shape[0],device=x.device)*self.max_2d_shape[0]/H
+        inv_freq_w = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_2d_shape[1],device=x.device)*self.max_2d_shape[1]/W
+        #----------------------
         
-        inv_freq_h = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_2d_shape[0],device=x.device)
-        inv_freq_w = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_2d_shape[1],device=x.device)
+        
+        #----------------------
+        # inv_freq_h = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_2d_shape[0],device=x.device)
+        # inv_freq_w = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_2d_shape[1],device=x.device)
+        #----------------------
+        
+        
         
         sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq_h))  # (H, D/4)
         cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq_h))
@@ -309,9 +317,18 @@ class RotEmb(nn.Module):
             self.max_3d_shape[1]=max(self.max_3d_shape[1],W)
             self.max_3d_shape[2]=max(self.max_3d_shape[2],D)
         
-        inv_freq_h = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_3d_shape[0],device=x.device)
-        inv_freq_w = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[1],device=x.device)
-        inv_freq_d = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[2],device=x.device)
+        #---------------------------------
+        # inv_freq_h = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_3d_shape[0],device=x.device)
+        # inv_freq_w = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[1],device=x.device)
+        # inv_freq_d = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[2],device=x.device)
+        #---------------------------------
+        
+        #---------------------------------
+        min_dim = min(H,W,D)
+        inv_freq_h = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_3d_shape[0],device=x.device)*self.max_3d_shape[0]/H
+        inv_freq_w = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_3d_shape[1],device=x.device)*self.max_3d_shape[1]/W
+        inv_freq_d = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_3d_shape[2],device=x.device)*self.max_3d_shape[2]/D
+        #---------------------------------
         
             
         # RoPE sin/cos for each axis
