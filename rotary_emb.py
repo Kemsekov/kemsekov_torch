@@ -139,7 +139,7 @@ class RotEmb(nn.Module):
         if self.training:
             self.max_seq_len1d[0] = max(self.max_seq_len1d,seqlen) - self.max_seq_len1d
         
-        inv_freq = _compute_yarn_inv_freq(base,half_dim,self.yarn_alpha,self.yarn_beta,seqlen,self.max_seq_len1d,device=x.device)
+        inv_freq = _compute_yarn_inv_freq(base,half_dim,self.yarn_alpha,self.yarn_beta,seqlen,self.max_seq_len1d,device=x.device)*self.max_seq_len1d/seqlen
         
         t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
         freqs = torch.einsum("i,j->ij", t, inv_freq)  # (seq_len, half_dim)
