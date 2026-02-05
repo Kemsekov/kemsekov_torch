@@ -3,44 +3,17 @@ import math
 from typing import Dict, Tuple
 import torch
 from torch import nn
-def _compute_yarn_inv_freq(base: int, dim: int, alpha: float, beta: float,current_len : int, train_len: int,device = None):
+def _compute_inv_freq(base: int, dim: int,device = None,freq_scaler_argument=1.5):
     """
-    Returns interpolated inverse frequencies using YaRN's wavelength cutoff.
-    
-    Args:
-        base: Original RoPE base (e.g., 10000)
-        dim: Half-dimension (e.g., head_dim // 2 for 1D)
-        alpha: Extension factor (L_target / L_train)
-        beta: Wavelength cutoff ratio (typically 0.75)
-        train_len: Training context length (L_train)
-    
-    Returns:
-        inv_freq: Tensor of shape (dim,) with selectively interpolated frequencies
+    Returns interpolated inverse frequencies.
     """
-    scale = current_len/train_len
+    # scale = current_len/train_len
     i = torch.arange(dim, dtype=torch.float32,device=device)  # dimension indices [0, 1, ..., dim-1]
     freq = (base ** (i / dim))
+    if freq_scaler_argument!=1:
+        freq*=torch.linspace(1,freq_scaler_argument,len(i),device=device)**0.5
     
-    # Compute wavelengths: λ_d = 2π / θ_d = 2π * base^(i/dim)
-    wavelengths = 2 * math.pi * freq  # shape: (dim,)
-    
-    # Compute r(d) = L_train / λ_d
-    r = train_len / wavelengths  # shape: (dim,)
-    # Ramp function γ(r)
-    gamma = torch.zeros_like(freq)
-    middle = (r>=alpha) & (r<=beta)
-    gamma[r < alpha] = 0
-    gamma[r > beta] = 1
-    gamma[middle] = (r[middle]-alpha)/(beta-alpha)
-    
-    freq_scaler = ((1 - gamma) / scale + gamma)
-    
-    freq_scaler=freq_scaler/freq_scaler.mean()/scale
-    freq_scaler = torch.flip(freq_scaler,[-1])
-    
-    # print(freq_scaler.numpy().round(3),1/scale)
-    
-    return 1/freq*freq_scaler
+    return 1/freq*freq_scaler_argument
 class RotEmb(nn.Module):
     """
     (B, (...dims...), Heads, D)
@@ -51,10 +24,6 @@ class RotEmb(nn.Module):
         base: base frequency used for ROPE
         """
         super().__init__()
-        
-        # empirically found values
-        self.yarn_alpha = 0
-        self.yarn_beta = 4
         
         dummy_tensor = torch.zeros(1)
         self.freq_cache_1d = torch.jit.annotate(Dict[str, Tuple[torch.Tensor,torch.Tensor]], {
@@ -138,8 +107,9 @@ class RotEmb(nn.Module):
         # Create position indices
         if self.training:
             self.max_seq_len1d[0] = max(self.max_seq_len1d,seqlen) - self.max_seq_len1d
+        scale=self.max_seq_len1d/seqlen
         
-        inv_freq = _compute_yarn_inv_freq(base,half_dim,self.yarn_alpha,self.yarn_beta,seqlen,self.max_seq_len1d,device=x.device)*self.max_seq_len1d/seqlen
+        inv_freq = _compute_inv_freq(base,half_dim,device=x.device,freq_scaler_argument=scale)
         
         t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
         freqs = torch.einsum("i,j->ij", t, inv_freq)  # (seq_len, half_dim)
@@ -227,20 +197,15 @@ class RotEmb(nn.Module):
         if self.training:
             self.max_2d_shape[0]=max(self.max_2d_shape[0],H)
             self.max_2d_shape[1]=max(self.max_2d_shape[1],W)
+
+        scale_h=self.max_2d_shape[0]/H
+        scale_w=self.max_2d_shape[1]/W
         
+        # scale_h=scale_w=1
         #----------------------
-        min_dim = min(H,W)
-        inv_freq_h = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_2d_shape[0],device=x.device)*self.max_2d_shape[0]/H
-        inv_freq_w = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_2d_shape[1],device=x.device)*self.max_2d_shape[1]/W
+        inv_freq_h = _compute_inv_freq(base,D_quarter,device=x.device,freq_scaler_argument=scale_h)
+        inv_freq_w = _compute_inv_freq(base,D_quarter,device=x.device,freq_scaler_argument=scale_w)
         #----------------------
-        
-        
-        #----------------------
-        # inv_freq_h = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_2d_shape[0],device=x.device)
-        # inv_freq_w = _compute_yarn_inv_freq(base,D_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_2d_shape[1],device=x.device)
-        #----------------------
-        
-        
         
         sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq_h))  # (H, D/4)
         cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq_h))
@@ -317,17 +282,14 @@ class RotEmb(nn.Module):
             self.max_3d_shape[1]=max(self.max_3d_shape[1],W)
             self.max_3d_shape[2]=max(self.max_3d_shape[2],D)
         
-        #---------------------------------
-        # inv_freq_h = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,H,self.max_3d_shape[0],device=x.device)
-        # inv_freq_w = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[1],device=x.device)
-        # inv_freq_d = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,W,self.max_3d_shape[2],device=x.device)
-        #---------------------------------
+        scale_h=self.max_3d_shape[0]/H
+        scale_w=self.max_3d_shape[1]/W
+        scale_d=self.max_3d_shape[2]/D
         
         #---------------------------------
-        min_dim = min(H,W,D)
-        inv_freq_h = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_3d_shape[0],device=x.device)*self.max_3d_shape[0]/H
-        inv_freq_w = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_3d_shape[1],device=x.device)*self.max_3d_shape[1]/W
-        inv_freq_d = _compute_yarn_inv_freq(base,d_quarter,self.yarn_alpha,self.yarn_beta,min_dim,self.max_3d_shape[2],device=x.device)*self.max_3d_shape[2]/D
+        inv_freq_h = _compute_inv_freq(base,d_quarter,device=x.device,freq_scaler_argument=scale_h)
+        inv_freq_w = _compute_inv_freq(base,d_quarter,device=x.device,freq_scaler_argument=scale_w)
+        inv_freq_d = _compute_inv_freq(base,d_quarter,device=x.device,freq_scaler_argument=scale_d)
         #---------------------------------
         
             
