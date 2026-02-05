@@ -390,6 +390,8 @@ class FlowMatching(nn.Module):
             - Final sample tensor if return_intermediates is False
             - Tuple of (final tensor, list of intermediate tensors) if return_intermediates is True
         """
+        if isinstance(steps,torch.Tensor):
+            steps=steps.int().item()
         match steps:
             case 1: return one_step(model,x0,self.one_weights_inv if inverse else self.one_weights)
             case 2: return rk2(model,x0,self.rk2_weights_inv if inverse else self.rk2_weights,return_intermediates)
@@ -1094,7 +1096,7 @@ class FlowModel1d(nn.Module):
         self._current_data = torch.zeros_like(data)
 
         def closure():
-            optimizer.zero_grad()
+            optimizer.zero_grad(True)
 
             iteration = self._iteration
             current_data = self._current_data.detach()

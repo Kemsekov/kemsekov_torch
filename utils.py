@@ -4,12 +4,32 @@ import os
 import numpy as np
 import torch
 import tqdm
+class FolderDataset(torch.utils.data.Dataset):
+    def __init__(self, folder):
+        super().__init__()
+        self.folder = folder
+        
+        # Filter for .obj files and store their paths
+        # We sort them to ensure a consistent index-to-file mapping
+        self.file_names = sorted(
+            [f for f in os.listdir(folder) if f.endswith('.obj')],
+            key=lambda x: int(x.split('.')[0]) if x.split('.')[0].isdigit() else x
+        )
 
+    def __len__(self):
+        return len(self.file_names)
+
+    def __getitem__(self, index):
+        file_path = os.path.join(self.folder, self.file_names[index])
+        
+        # weights_only=True is recommended for security if you only saved tensors
+        return torch.load(file_path, weights_only=False)
 class PrefetchDataset(torch.utils.data.Dataset):
-    def __init__(self, dataset, folder):
+    def __init__(self, dataset, folder,transform = None):
         super().__init__()
         self.dataset = dataset
         self.folder = folder
+        self.transform = transform or (lambda x:x)
         
         # 1. Create the cache folder if it doesn't exist
         os.makedirs(self.folder, exist_ok=True)
@@ -26,7 +46,7 @@ class PrefetchDataset(torch.utils.data.Dataset):
             return torch.load(file_path, weights_only=False)
         
         # 3. If not, generate the item from the original dataset
-        item = self.dataset[index]
+        item = self.transform(self.dataset[index])
         
         # 4. Save to the cache folder for future use
         torch.save(item, file_path)
