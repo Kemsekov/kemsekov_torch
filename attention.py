@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from kemsekov_torch.common_modules import Prod
 from kemsekov_torch.residual import Residual
 import torch.nn.functional as F
 from typing import Literal, Optional
@@ -8,6 +9,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.rotary_emb import RotEmb
 
+def zero_module(module):
+    """
+    Zero out the parameters of a module and return it to implement Re-Zero
+    """
+    with torch.no_grad():
+        for p in module.parameters():
+            p.zero_()
+    return module
 class AbsoluteRelativePositionalEmbedding(nn.Module):
     """
     Learnable positional embedding with CAPE-inspired augmentation.
@@ -16,7 +25,7 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
     applied during training encourages relative positional awareness.
     Supports 1D/2D/3D inputs.
     """
-    def __init__(self, x_dim,dimensions : Literal[1,2,3] = 2,cape_shift=1.0,cape_scale=2.0,jit_prob = 0.75) -> None:
+    def __init__(self, x_dim,dimensions : Literal[1,2,3] = 2,cape_shift=1.0,cape_scale=2.0,jit_prob = 0.5) -> None:
         """
         Args:
             x_dim: Input channel dimension.
@@ -27,15 +36,17 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
         """
         super().__init__()
         self.dimensions=dimensions
+        
+        # this is very costly function to compute
         self.absolute_pos = nn.Sequential(
             nn.Linear(dimensions,x_dim),
             nn.SiLU(),
-            nn.Linear(x_dim,2*x_dim),
+            zero_module(nn.Linear(x_dim,x_dim*2)),
         )
+        
         self.cape_shift=cape_shift
         self.cape_scale=cape_scale
         self.jit_prob=jit_prob
-        self.pos_gamma = nn.Parameter(torch.tensor([0.0]))
         self.register_buffer("cached_grid", torch.tensor([0]),persistent=False)
         self.register_buffer("max_dim_size", torch.tensor([0]))
         
@@ -89,20 +100,10 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
             # shift and scale positions to make attention work on relative positions rather than fixed
             POS_IND=POS_IND*pos_ind_scale+pos_ind_shift
         #apply gamma to make at the training start this transformation work as identity
-        pos_scale,pos_shift = (self.pos_gamma*self.absolute_pos(POS_IND)).transpose(1,-1).squeeze(-1).chunk(2,1)
+        pos_scale,pos_shift = self.absolute_pos(POS_IND).transpose(1,-1).squeeze(-1).chunk(2,1)
         
         # apply proposed positions embedding in following way
-        # print(x.shape,pos_scale.shape)
         return x*(1+pos_scale)+pos_shift
-
-def zero_module(module):
-    """
-    Zero out the parameters of a module and return it to implement Re-Zero
-    """
-    with torch.no_grad():
-        for p in module.parameters():
-            p.zero_()
-    return module
 
 class SelfAttention(nn.Module):
     """
@@ -137,7 +138,7 @@ class SelfAttention(nn.Module):
         self.linear = linear
         self.dimensions=dimensions
         
-        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=0.75)
+        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions)
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = RotEmb()
