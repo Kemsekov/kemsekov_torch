@@ -17,12 +17,11 @@ class ViT(nn.Module):
     def __init__(
             self, 
             in_channels,
-            hidden_dim=64,
-            expand_dim=256,
+            hidden_dim=512,
             layers = 3,
-            heads=8,
             head_dim=64,
-            compression = 4
+            compression = 4,
+            dropout=0.0
         ) -> None:
         super().__init__()
         groups = max(1,hidden_dim//32)
@@ -38,43 +37,50 @@ class ViT(nn.Module):
         # my self and cross attention works on conv2d-shaped tensors
         # [B,C,H,W] where H,W is actual tokens
         act = nn.SiLU
-        self.residuals = nn.ModuleList(
-            [
-                nn.ModuleList([
+        self.residuals = nn.ModuleList([
+            nn.ModuleList([
+                nn.Sequential(
+                    # self-attention already returns init-zeroed residual
                     Residual([
-                        SelfAttention(hidden_dim,heads=heads,head_dim=head_dim,add_rotary_embedding=True,dropout=0.0),
-                        nn.GroupNorm(groups,hidden_dim), #self-attn return re-zeroed residual, so here we don't need norm
-                        EfficientSpatialChannelAttention(hidden_dim,kernel_size=3), # merge nearby pixels a bit
+                        SelfAttention(
+                            hidden_dim,
+                            heads=min(4,hidden_dim//head_dim), # use at least 4 heads
+                            head_dim=head_dim,
+                            add_rotary_embedding=True,
+                            dropout=dropout,
+                            output_bias=False,
+                            abs_pos_jit_prob=0.5,
+                        ),
+                        nn.GroupNorm(32,hidden_dim),
+                        EfficientSpatialChannelAttention(hidden_dim,kernel_size=3),
                         act(),
-                        conv(hidden_dim,expand_dim,1), # bias before group norm is unnecessary
-                        nn.GroupNorm(32,expand_dim),
-                        EfficientSpatialChannelAttention(expand_dim,kernel_size=3),
-                        act(),
-                        zero_module(conv(expand_dim,hidden_dim,1)),
+                        zero_module(conv(hidden_dim,hidden_dim,1,bias=False)),
                     ],init_at_zero=False),
-                    nn.Sequential(
-                        nn.Linear(1,hidden_dim),
-                        Prod(nn.Sequential(
-                            nn.RMSNorm(hidden_dim),
-                            nn.Linear(hidden_dim,hidden_dim),
-                            nn.Tanh(),
-                        )),
-                        act(),
-                        zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
-                    )
-                ])
-                for i in range(layers)
-            ]
-        )
+                ),
+                nn.Sequential(
+                    nn.Linear(1,hidden_dim),
+                    Prod(nn.Sequential(
+                        nn.RMSNorm(hidden_dim),
+                        nn.Linear(hidden_dim,hidden_dim),
+                        nn.Tanh(),
+                    )),
+                    act(),
+                    zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
+                )
+            ])
+            for i in range(layers)
+        ])
         
         self.up = nn.Sequential(
             nn.GroupNorm(groups,hidden_dim),
+            EfficientSpatialChannelAttention(hidden_dim,kernel_size=3),
             conv(hidden_dim,in_channels*(compression**2),1),
             nn.PixelShuffle(compression),
         )
+        self.orig_x_gamma = nn.Parameter(torch.tensor([0.0]))
         
     def forward(self,x,t):
-        # x_orig = x
+        x_orig = x
         while t.ndim==1:
             t = t.unsqueeze(-1)
         
@@ -83,7 +89,7 @@ class ViT(nn.Module):
             time_scale,time_shift = time_emb(t)[:,:,None,None].chunk(2,1)
             xt = x*(1+time_scale)+time_shift
             x = r(xt)
-        return self.up(x)
+        return self.up(x)+self.orig_x_gamma*x_orig
 
 class LossNormalizer2d(nn.Module):
     def __init__(self, in_channels,hidden_dim) -> None:
@@ -174,7 +180,7 @@ def compute_subspace_log_volume(x: torch.Tensor, eps: float = 1e-8):
     return log_vol
 
 class FlowModel2d(nn.Module):
-    def __init__(self, in_channels,hidden_dim = 256,expand_dim=1024,attention_layers=10,head_dim=64,compression_ratio=4) -> None:
+    def __init__(self, in_channels,hidden_dim = 256,attention_layers=10,head_dim=64,compression_ratio=4) -> None:
         super().__init__()
         self.register_buffer('default_steps',torch.tensor([16]))
         self.fm = FlowMatching()
@@ -183,12 +189,11 @@ class FlowModel2d(nn.Module):
         self.vit = ViT(
             in_channels,
             hidden_dim=hidden_dim,
-            expand_dim=expand_dim,
             layers=attention_layers,
             head_dim=head_dim,
             compression=compression_ratio
         )
-        # self.ln = LossNormalizer2d(in_channels,256)
+        self.ln = LossNormalizer2d(in_channels,256)
         self.device='cpu'
     
     def forward(self,x,t):
@@ -362,7 +367,7 @@ class FlowModel2d(nn.Module):
             'r2':(r2_t+r2_p)/2
         }
         
-    def train_loss_and_metric(self,images : torch.Tensor,contrastive_loss_weight=0.1):
+    def train_loss_and_metric(self,images : torch.Tensor,contrastive_loss_weight=0.1,loss_normalization_power=0):
         """
         Computes loss and metric for given images batch.
         images: of shape [B,C,H,W]
@@ -370,7 +375,7 @@ class FlowModel2d(nn.Module):
         """
         
         model = self
-        # ln = model.ln
+        ln = model.ln
         
         x0 = torch.randn_like(images)
         pred_dir,target_dir,contrast_dir,t = model.fm.contrastive_flow_matching_pair(
@@ -390,17 +395,19 @@ class FlowModel2d(nn.Module):
         # sample-wise loss
         sample_loss = pred_loss-contrastive_loss
         
-        # pred_log_loss = ln(pred_dir,t)
-        # loss_normalizer_target = -(sample_loss.detach()+1e-4).log()
-        # loss_normalizer_loss = F.mse_loss(pred_log_loss,loss_normalizer_target)
-        
-        # weight = pred_log_loss.exp().detach()**loss_normalization_power
-        
+        if loss_normalization_power>0:
+            pred_log_loss = ln(target_dir,t)
+            loss_normalizer_target = -(sample_loss.detach()+1e-4).log()
+            loss_normalizer_loss = F.mse_loss(pred_log_loss,loss_normalizer_target)
+            weight = pred_log_loss.exp().detach()**loss_normalization_power
+        else:
+            weight = 1
+            loss_normalizer_loss=0  
         #scale loss by it's prediction
-        weighed_loss = (1*sample_loss).mean()
-        loss = weighed_loss#+loss_normalizer_loss
+        weighed_loss = (weight*sample_loss).mean()
+        loss = weighed_loss+loss_normalizer_loss
         
         return loss,{
             "r2":r2_score(pred_dir,target_dir),
-            # "r2_loss":r2_score(pred_log_loss,loss_normalizer_target),
+            "r2_loss":r2_score(pred_log_loss,loss_normalizer_target) if loss_normalization_power>0 else 0
         }

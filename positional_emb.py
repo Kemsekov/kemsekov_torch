@@ -3,6 +3,40 @@ import numpy as np
 import torch
 import torch.nn as nn
 from kemsekov_torch.common_modules import get_normalization_from_name
+
+
+def get_continuous_pos_embedding(t, N, base=10000):
+    """
+    Args:
+        t: Tensor of shape [BATCH] with values in range [0, 1]
+        N: The dimension count for the embedding (must be even)
+        base: The base for the frequency scales (default: 10000)
+    
+    Returns:
+        Tensor of shape [BATCH, N]
+    """
+    device = t.device
+    
+    # 1. Create the indices for the dimensions (0, 2, 4, ..., N-2)
+    # We use N//2 because each index creates both a sin and a cos entry
+    indices = torch.arange(0, N, 2, device=device).float()
+    
+    # 2. Calculate the exponential frequency scales
+    # factor = 1 / (base ** (2i / N))
+    inv_freq = 1.0 / (base ** (indices / N))
+    
+    # 3. Compute the argument for the trig functions (outer product)
+    # Shape: [BATCH, N/2]
+    # t[:, None] unsqueezes [BATCH] to [BATCH, 1] to allow broadcasting
+    args = t[:, None] * inv_freq[None, :]
+    
+    # 4. Create the final embedding by interleaving sin and cos
+    pos_emb = torch.zeros((t.shape[0], N), device=device)
+    pos_emb[:, 0::2] = torch.sin(args)
+    pos_emb[:, 1::2] = torch.cos(args)
+    
+    return pos_emb
+
 class ConcatPositionalEmbeddingPermute(torch.nn.Module):
     """
     Concat input with shape (batch_size, ch, ...N dimensions...) to positional embedding

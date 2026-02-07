@@ -88,9 +88,9 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
             B = x.shape[0]
             
             #randomly shift in range [-cape_shift,cape_shift]
-            pos_ind_shift = (torch.rand([B]+[1]*(POS_IND.ndim-1)+[self.dimensions],device=x.device)*2-1)*self.cape_shift
+            pos_ind_shift = (torch.rand([B]+[1]*(POS_IND.ndim-2)+[self.dimensions],device=x.device)*2-1)*self.cape_shift
             #randomly scale in range [0,cape_scale]
-            pos_ind_scale = torch.rand([B]+[1]*(POS_IND.ndim-1)+[self.dimensions],device=x.device)*self.cape_scale
+            pos_ind_scale = torch.rand([B]+[1]*(POS_IND.ndim-2)+[self.dimensions],device=x.device)*self.cape_scale
             
             # with probability (1-jit) choose batches that are not going to be augmented
             if self.jit_prob<1:
@@ -119,7 +119,9 @@ class SelfAttention(nn.Module):
         dropout=0.0,
         dimensions : Literal[1,2,3] = 2,
         add_rotary_embedding = False,
-        linear=False
+        linear=False,
+        output_bias = True,
+        abs_pos_jit_prob = 0.5,
     ):
         """
         dim: input dimensions
@@ -129,6 +131,7 @@ class SelfAttention(nn.Module):
         dimensions: expected input dimensions
         add_rotary_embedding: add rotary embedding to input or not. By default all three spacial resolutions are supported, so proper 1,2,3-dimensional rotary embedding is applied
         linear: whether to use custom-linear attention or not. Current linear attention although works, but is not optimized and default non-linear attention works a lot faster.
+        output_bias: add bias to output conv or not. If you use GroupNorm after self-attention, i advice you to set this value to False
         """
         super().__init__()
         self.heads = heads
@@ -138,7 +141,7 @@ class SelfAttention(nn.Module):
         self.linear = linear
         self.dimensions=dimensions
         
-        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions)
+        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = RotEmb()
@@ -155,8 +158,7 @@ class SelfAttention(nn.Module):
         self.to_qkv = conv(dim, inner_dim * 3, 1, bias=True)
         
         # Zero-initialized output projection
-        self.to_out = zero_module(conv(inner_dim, dim, 1, bias=True))
-
+        self.to_out = zero_module(conv(inner_dim, dim, 1, bias=output_bias))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -438,6 +440,7 @@ class EfficientSpatialChannelAttention(nn.Module):
         
         self.spatial_attn = nn.Sequential(
             conv(channels,channels,kernel_size,padding=kernel_size//2,groups=groups),
+            # nn.GroupNorm(groups,channels),
             nn.Tanh()
         )
 
