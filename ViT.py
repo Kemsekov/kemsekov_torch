@@ -46,11 +46,11 @@ class ViT(nn.Module):
                         nn.GroupNorm(groups,hidden_dim), #self-attn return re-zeroed residual, so here we don't need norm
                         EfficientSpatialChannelAttention(hidden_dim,kernel_size=3), # merge nearby pixels a bit
                         act(),
-                        conv(hidden_dim,expand_dim,1,bias=False), # bias before group norm is unnecessary
+                        conv(hidden_dim,expand_dim,1), # bias before group norm is unnecessary
                         nn.GroupNorm(32,expand_dim),
-                        EfficientSpatialChannelAttention(expand_dim,kernel_size=1),
+                        EfficientSpatialChannelAttention(expand_dim,kernel_size=3),
                         act(),
-                        zero_module(conv(expand_dim,hidden_dim,1,bias=False)),
+                        zero_module(conv(expand_dim,hidden_dim,1)),
                     ],init_at_zero=False),
                     nn.Sequential(
                         nn.Linear(1,hidden_dim),
@@ -188,7 +188,7 @@ class FlowModel2d(nn.Module):
             head_dim=head_dim,
             compression=compression_ratio
         )
-        self.ln = LossNormalizer2d(in_channels,256)
+        # self.ln = LossNormalizer2d(in_channels,256)
         self.device='cpu'
     
     def forward(self,x,t):
@@ -362,7 +362,7 @@ class FlowModel2d(nn.Module):
             'r2':(r2_t+r2_p)/2
         }
         
-    def train_loss_and_metric(self,images : torch.Tensor,contrastive_loss_weight=0.1,loss_normalization_power = 1):
+    def train_loss_and_metric(self,images : torch.Tensor,contrastive_loss_weight=0.1):
         """
         Computes loss and metric for given images batch.
         images: of shape [B,C,H,W]
@@ -370,7 +370,7 @@ class FlowModel2d(nn.Module):
         """
         
         model = self
-        ln = model.ln
+        # ln = model.ln
         
         x0 = torch.randn_like(images)
         pred_dir,target_dir,contrast_dir,t = model.fm.contrastive_flow_matching_pair(
@@ -390,17 +390,17 @@ class FlowModel2d(nn.Module):
         # sample-wise loss
         sample_loss = pred_loss-contrastive_loss
         
-        pred_log_loss = ln(pred_dir,t)
-        loss_normalizer_target = -(sample_loss.detach()+1e-4).log()
-        loss_normalizer_loss = F.mse_loss(pred_log_loss,loss_normalizer_target)
+        # pred_log_loss = ln(pred_dir,t)
+        # loss_normalizer_target = -(sample_loss.detach()+1e-4).log()
+        # loss_normalizer_loss = F.mse_loss(pred_log_loss,loss_normalizer_target)
         
-        weight = pred_log_loss.exp().detach()**loss_normalization_power
+        # weight = pred_log_loss.exp().detach()**loss_normalization_power
         
         #scale loss by it's prediction
-        weighed_loss = (weight*sample_loss).mean()
-        loss = weighed_loss+loss_normalizer_loss
+        weighed_loss = (1*sample_loss).mean()
+        loss = weighed_loss#+loss_normalizer_loss
         
         return loss,{
             "r2":r2_score(pred_dir,target_dir),
-            "r2_loss":r2_score(pred_log_loss,loss_normalizer_target),
+            # "r2_loss":r2_score(pred_log_loss,loss_normalizer_target),
         }
