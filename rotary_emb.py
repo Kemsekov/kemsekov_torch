@@ -3,6 +3,12 @@ import math
 from typing import Dict, Tuple
 import torch
 from torch import nn
+
+
+PARAM = {
+    0:0
+}
+
 def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval_length = 1):
     """
     Returns interpolated inverse frequencies.
@@ -13,14 +19,19 @@ def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval
     base_freq = base ** (-i / dim)  # Standard inverse frequencies
     return base_freq/scale
     
-    # ==================== idk ====================
+    # ==================== YaRN ====================
     # scale = eval_length / trained_length
-    # power = 1 if scale==1 else 1.085
-    # scale = (power**torch.linspace(0,1,dim,device=device))*scale
+    # i = torch.arange(0, dim, dtype=torch.float32, device=device)  # Shape: [dim//2]
+    # base_freq = base ** (-i / dim)          # Standard inverse frequencies [dim//2]
     
-    # i = torch.arange(0, dim, dtype=torch.float32, device=device)
-    # base_freq = base ** (-i / dim)  # Standard inverse frequencies
-    # return base_freq/scale
+    # if scale!=1:
+    #     # good approximation
+    #     # parameter = math.log2(dim)-0.15*math.sqrt(dim)-1+PARAM[0]
+    #     parameter = math.log2(dim)-1-math.sqrt(dim)
+    #     gamma = (parameter* i) / (dim - parameter)  # Shape: [dim//2], ranges from ~0 to ~2
+    #     scaled_freq = base_freq * (scale ** (-gamma))  # YaRN scaling applied per dimension
+    #     return scaled_freq
+    # return base_freq
     
     
 
