@@ -49,7 +49,6 @@ class ViT(nn.Module):
                             add_rotary_embedding=True,
                             dropout=dropout,
                             output_bias=False,
-                            abs_pos_jit_prob=0.5,
                             add_absolute_pos=True
                         ),
                         nn.GroupNorm(32,hidden_dim),

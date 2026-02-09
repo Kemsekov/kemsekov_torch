@@ -5,9 +5,6 @@ import torch
 from torch import nn
 
 
-PARAM = {
-    0:0
-}
 
 def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval_length = 1):
     """
@@ -20,16 +17,18 @@ def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval
     return base_freq/scale
     
     # ==================== YaRN ====================
+    # it works very good for 1-dim data, but for some reason just completely fails at images domain
     # scale = eval_length / trained_length
     # i = torch.arange(0, dim, dtype=torch.float32, device=device)  # Shape: [dim//2]
     # base_freq = base ** (-i / dim)          # Standard inverse frequencies [dim//2]
-    
     # if scale!=1:
-    #     # good approximation
-    #     # parameter = math.log2(dim)-0.15*math.sqrt(dim)-1+PARAM[0]
-    #     parameter = math.log2(dim)-1-math.sqrt(dim)
-    #     gamma = (parameter* i) / (dim - parameter)  # Shape: [dim//2], ranges from ~0 to ~2
-    #     scaled_freq = base_freq * (scale ** (-gamma))  # YaRN scaling applied per dimension
+    #     # print(scale)
+    #     # good finetuned approximation
+    #     parameter = math.log2(dim)-0.15*math.sqrt(dim)-1
+    #     parameter = math.log2(dim)-math.sqrt(dim)
+    #     parameter = 2
+    #     gamma = (parameter* i) / (dim - parameter)
+    #     scaled_freq = base_freq * (scale ** (-gamma))
     #     return scaled_freq
     # return base_freq
     
