@@ -814,8 +814,8 @@ class FlowModel1d(nn.Module):
             nn.LayerNorm(self.hidden_dim),
             Residual([
                 nn.SiLU(),
-                nn.Linear(self.hidden_dim,self.hidden_dim),
-            ]),
+                zero_module(nn.Linear(self.hidden_dim,self.hidden_dim)),
+            ],init_at_zero=False),
             Prod(
                 nn.Sequential(
                     nn.Linear(self.hidden_dim,self.hidden_dim),
@@ -840,14 +840,13 @@ class FlowModel1d(nn.Module):
             x_pred = self.to_prior(ybatch)
             
             forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)
-            forward_loss-=forward_loss.min().detach()-1e-3
-            
+            forward_loss-=forward_loss.min().detach()-1e-2
             inverse_loss = mse(xbatch,x_pred,reduction='none').mean(-1)
-            inverse_loss-=inverse_loss.min().detach()-1e-3
+            inverse_loss-=inverse_loss.min().detach()-1e-2
             
             prediction_loss = forward_loss.mean()+inverse_loss.mean()
             
-            forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch-x_pred,ybatch-y_pred],-1).detach()).chunk(2,-1)
+            forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch,ybatch],-1)).chunk(2,-1)
             forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
             normalizer_loss = mse(forward_weight,forward_loss.detach().log())+mse(inverse_weight,inverse_loss.detach().log())
             
@@ -864,7 +863,7 @@ class FlowModel1d(nn.Module):
             opt.step()
             
             if debug:
-                loss_pred_r2 = (r2_score(forward_weight.exp(),forward_loss)+r2_score(inverse_weight.exp(),inverse_loss))/2
+                loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
                 print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.item())[:8]} forward_r2={str(r2_score(ybatch,y_pred))[:6]} inverse_r2={str(r2_score(xbatch,x_pred))[:6]} loss_pred_r2={str(loss_pred_r2)[:6]}")
         self.eval()
   
