@@ -83,7 +83,7 @@ class ViT(nn.Module):
         #     zero_module(nn.Linear(32,in_channels)),
         # )
         
-        self.orig_x_gamma = nn.Parameter(torch.tensor([0.0]))
+        # self.orig_x_gamma = nn.Parameter(torch.tensor([0.0]))
         
     def forward(self,x,t):
         x_orig = x
@@ -95,9 +95,7 @@ class ViT(nn.Module):
             time_scale,time_shift = time_emb(t)[:,:,None,None].chunk(2,1)
             xt = x*(1+time_scale)+time_shift
             x = r(xt)
-        # tscale = self.orig_x_gamma(t)[:,:,None,None]
-        tscale = self.orig_x_gamma
-        return self.up(x)+tscale*x_orig
+        return self.up(x)
 
 class LossNormalizer2d(nn.Module):
     def __init__(self, in_channels,hidden_dim) -> None:

@@ -507,11 +507,22 @@ class FlowModel1d(nn.Module):
         self.hidden_dim=hidden_dim
         norm = nn.RMSNorm
         act = nn.GELU
+        # self.time_emb = nn.Sequential(
+        #     nn.Linear(1,hidden_dim),
+        #     norm(hidden_dim),
+        #     nn.SiLU(),
+        #     nn.Linear(hidden_dim,hidden_dim*2),
+        # )
+        
         self.time_emb = nn.Sequential(
             nn.Linear(1,hidden_dim),
-            norm(hidden_dim),
+            Prod(nn.Sequential(
+                nn.RMSNorm(hidden_dim),
+                nn.Linear(hidden_dim,hidden_dim),
+                nn.Tanh(),
+            )),
             nn.SiLU(),
-            nn.Linear(hidden_dim,hidden_dim*2),
+            zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
         )
         
         self.expand = nn.Linear(in_dim,hidden_dim)
@@ -524,8 +535,8 @@ class FlowModel1d(nn.Module):
                 Residual([
                     # norm(hidden_dim),
                     act(),
-                    nn.Linear(hidden_dim,hidden_dim),
-                ]),
+                    zero_module(nn.Linear(hidden_dim,hidden_dim)),
+                ],init_at_zero=False),
                 nn.Sequential(
                     # norm(hidden_dim),
                     nn.Linear(hidden_dim,hidden_dim),
@@ -540,7 +551,7 @@ class FlowModel1d(nn.Module):
             # act(),
             nn.Linear(hidden_dim,in_dim)
         )
-        self.gamma = nn.Parameter(torch.tensor([0.0]))
+        # self.gamma = nn.Parameter(torch.tensor([0.0]))
         self.default_steps=16
         self.to(device)
         self.eval()
@@ -548,10 +559,9 @@ class FlowModel1d(nn.Module):
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         x_orig = x
-        if t.ndim==1: t=t[:,None]
+        while t.ndim<x.ndim:
+            t = t[:,None]
         time = self.time_emb(t)
-        while time.ndim<x.ndim:
-            time = time[:,None]
         expand = self.expand(x)
         
         # add time embedding
@@ -563,7 +573,7 @@ class FlowModel1d(nn.Module):
         for m,temb in self.residual_blocks:
             x = m(x*temb(x))
         
-        return self.collapse(x)+x_orig*self.gamma
+        return self.collapse(x)#+x_orig*self.gamma
     
     def to(self,device):
         """
