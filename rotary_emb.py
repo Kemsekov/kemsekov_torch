@@ -6,14 +6,24 @@ from torch import nn
 def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval_length = 1):
     """
     Returns interpolated inverse frequencies.
-    
     """
+    # ==================== Linear ====================
     scale = eval_length / trained_length
-    i = torch.arange(0, dim, dtype=torch.float32, device=device)  # Shape: [dim//2]
-    gamma = (2.0 * i) / (dim - 2.0)  # Shape: [dim//2], ranges from ~0 to ~2
-    base_freq = base ** (-i / dim)          # Standard inverse frequencies [dim//2]
-    scaled_freq = base_freq * (scale ** (-gamma))  # YaRN scaling applied per dimension
-    return scaled_freq
+    i = torch.arange(0, dim, dtype=torch.float32, device=device)
+    base_freq = base ** (-i / dim)  # Standard inverse frequencies
+    return base_freq/scale
+    
+    # ==================== idk ====================
+    # scale = eval_length / trained_length
+    # power = 1 if scale==1 else 1.085
+    # scale = (power**torch.linspace(0,1,dim,device=device))*scale
+    
+    # i = torch.arange(0, dim, dtype=torch.float32, device=device)
+    # base_freq = base ** (-i / dim)  # Standard inverse frequencies
+    # return base_freq/scale
+    
+    
+
 
 class RotEmb(nn.Module):
     """
@@ -108,15 +118,19 @@ class RotEmb(nn.Module):
         # Create position indices
         if self.training:
             self.max_seq_len1d[0] = max(self.max_seq_len1d[0],seqlen)
-        
-        inv_freq = _compute_inv_freq(base,half_dim,device=x.device,trained_length=self.max_seq_len1d[0],eval_length=seqlen)
+        train_length = self.max_seq_len1d[0]
+        inv_freq = _compute_inv_freq(base,half_dim,device=x.device,trained_length=train_length,eval_length=seqlen)
         
         t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
         freqs = torch.einsum("i,j->ij", t, inv_freq)  # (seq_len, half_dim)
         
+        # temp = 1
+        # if seqlen>train_length:
+        #     temp = math.sqrt(1.0+math.log(seqlen/train_length)*half_dim/(half_dim-2))
+        
         # Create sinusoidal embeddings
-        sin = torch.sin(freqs)[None, :, None, :]  # (1, seq_len, 1, half_dim)
-        cos = torch.cos(freqs)[None, :, None, :]
+        sin = torch.sin(freqs)[None, :, None, :]#*temp  # (1, seq_len, 1, half_dim)
+        cos = torch.cos(freqs)[None, :, None, :]#*temp
         if self.training:
             self.freq_cache_1d[key] = sin,cos
         else:
@@ -203,9 +217,9 @@ class RotEmb(nn.Module):
         inv_freq_w = _compute_inv_freq(base,D_quarter,device=x.device,trained_length=self.max_2d_shape[1],eval_length=W)
         #----------------------
         
-        sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq_h))  # (H, D/4)
+        sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq_h))
         cos_h = torch.cos(torch.einsum("i,j->ij", h_pos, inv_freq_h))
-        sin_w = torch.sin(torch.einsum("i,j->ij", w_pos, inv_freq_w))  # (W, D/4)
+        sin_w = torch.sin(torch.einsum("i,j->ij", w_pos, inv_freq_w))
         cos_w = torch.cos(torch.einsum("i,j->ij", w_pos, inv_freq_w))
 
         # Correct shapes for broadcasting: (1, H, 1, 1, D/4) and (1, 1, W, 1, D/4)
