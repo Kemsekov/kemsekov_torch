@@ -122,6 +122,7 @@ class SelfAttention(nn.Module):
         linear=False,
         output_bias = True,
         abs_pos_jit_prob = 0.5,
+        add_absolute_pos = False
     ):
         """
         dim: input dimensions
@@ -132,6 +133,7 @@ class SelfAttention(nn.Module):
         add_rotary_embedding: add rotary embedding to input or not. By default all three spacial resolutions are supported, so proper 1,2,3-dimensional rotary embedding is applied
         linear: whether to use custom-linear attention or not. Current linear attention although works, but is not optimized and default non-linear attention works a lot faster.
         output_bias: add bias to output conv or not. If you use GroupNorm after self-attention, i advice you to set this value to False
+        add_absolute_pos: add absolute position embedding
         """
         super().__init__()
         self.heads = heads
@@ -140,8 +142,10 @@ class SelfAttention(nn.Module):
         inner_dim = heads * head_dim
         self.linear = linear
         self.dimensions=dimensions
-        
-        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
+        if add_absolute_pos:
+            self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
+        else:
+            self.abs_emb = nn.Identity()
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = RotEmb()

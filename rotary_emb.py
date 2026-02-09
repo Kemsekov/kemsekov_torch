@@ -3,17 +3,18 @@ import math
 from typing import Dict, Tuple
 import torch
 from torch import nn
-def _compute_inv_freq(base: int, dim: int,device = None,freq_scaler_argument=1.5):
+def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval_length = 1):
     """
     Returns interpolated inverse frequencies.
-    """
-    # scale = current_len/train_len
-    i = torch.arange(dim, dtype=torch.float32,device=device)  # dimension indices [0, 1, ..., dim-1]
-    freq = (base ** (i / dim))
-    if freq_scaler_argument!=1:
-        freq*=torch.linspace(1,freq_scaler_argument,len(i),device=device)**0.5
     
-    return 1/freq*freq_scaler_argument
+    """
+    scale = eval_length / trained_length
+    i = torch.arange(0, dim, dtype=torch.float32, device=device)  # Shape: [dim//2]
+    gamma = (2.0 * i) / (dim - 2.0)  # Shape: [dim//2], ranges from ~0 to ~2
+    base_freq = base ** (-i / dim)          # Standard inverse frequencies [dim//2]
+    scaled_freq = base_freq * (scale ** (-gamma))  # YaRN scaling applied per dimension
+    return scaled_freq
+
 class RotEmb(nn.Module):
     """
     (B, (...dims...), Heads, D)
@@ -106,10 +107,9 @@ class RotEmb(nn.Module):
         
         # Create position indices
         if self.training:
-            self.max_seq_len1d[0] = max(self.max_seq_len1d,seqlen) - self.max_seq_len1d
-        scale=self.max_seq_len1d/seqlen
+            self.max_seq_len1d[0] = max(self.max_seq_len1d[0],seqlen)
         
-        inv_freq = _compute_inv_freq(base,half_dim,device=x.device,freq_scaler_argument=scale)
+        inv_freq = _compute_inv_freq(base,half_dim,device=x.device,trained_length=self.max_seq_len1d[0],eval_length=seqlen)
         
         t = torch.arange(seqlen, device=x.device, dtype=torch.float32)  # (seq_len,)
         freqs = torch.einsum("i,j->ij", t, inv_freq)  # (seq_len, half_dim)
@@ -198,13 +198,9 @@ class RotEmb(nn.Module):
             self.max_2d_shape[0]=max(self.max_2d_shape[0],H)
             self.max_2d_shape[1]=max(self.max_2d_shape[1],W)
 
-        scale_h=self.max_2d_shape[0]/H
-        scale_w=self.max_2d_shape[1]/W
-        
-        # scale_h=scale_w=1
         #----------------------
-        inv_freq_h = _compute_inv_freq(base,D_quarter,device=x.device,freq_scaler_argument=scale_h)
-        inv_freq_w = _compute_inv_freq(base,D_quarter,device=x.device,freq_scaler_argument=scale_w)
+        inv_freq_h = _compute_inv_freq(base,D_quarter,device=x.device,trained_length=self.max_2d_shape[0],eval_length=H)
+        inv_freq_w = _compute_inv_freq(base,D_quarter,device=x.device,trained_length=self.max_2d_shape[1],eval_length=W)
         #----------------------
         
         sin_h = torch.sin(torch.einsum("i,j->ij", h_pos, inv_freq_h))  # (H, D/4)
@@ -282,14 +278,10 @@ class RotEmb(nn.Module):
             self.max_3d_shape[1]=max(self.max_3d_shape[1],W)
             self.max_3d_shape[2]=max(self.max_3d_shape[2],D)
         
-        scale_h=self.max_3d_shape[0]/H
-        scale_w=self.max_3d_shape[1]/W
-        scale_d=self.max_3d_shape[2]/D
-        
         #---------------------------------
-        inv_freq_h = _compute_inv_freq(base,d_quarter,device=x.device,freq_scaler_argument=scale_h)
-        inv_freq_w = _compute_inv_freq(base,d_quarter,device=x.device,freq_scaler_argument=scale_w)
-        inv_freq_d = _compute_inv_freq(base,d_quarter,device=x.device,freq_scaler_argument=scale_d)
+        inv_freq_h = _compute_inv_freq(base,d_quarter,device=x.device,trained_length=self.max_3d_shape[0],eval_length=H)
+        inv_freq_w = _compute_inv_freq(base,d_quarter,device=x.device,trained_length=self.max_3d_shape[1],eval_length=W)
+        inv_freq_d = _compute_inv_freq(base,d_quarter,device=x.device,trained_length=self.max_3d_shape[2],eval_length=D)
         #---------------------------------
         
             
