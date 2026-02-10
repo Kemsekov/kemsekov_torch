@@ -542,12 +542,7 @@ class FlowModel1d(nn.Module):
         self.in_dim=in_dim
         self.hidden_dim=hidden_dim
         norm = nn.RMSNorm
-        # self.time_emb = nn.Sequential(
-        #     nn.Linear(1,hidden_dim),
-        #     norm(hidden_dim),
-        #     nn.SiLU(),
-        #     nn.Linear(hidden_dim,hidden_dim*2),
-        # )
+
         
         self.time_emb = nn.Sequential(
             nn.Linear(1,hidden_dim),
@@ -562,7 +557,7 @@ class FlowModel1d(nn.Module):
         
         self.expand = nn.Linear(in_dim,hidden_dim)
         
-        self.dropout = nn.Dropout(dropout_p)
+        self.dropout = nn.Dropout(dropout_p) if dropout_p>0 else nn.Identity()
         self.norm = norm(hidden_dim)
         
         self.residual_blocks = nn.ModuleList([
