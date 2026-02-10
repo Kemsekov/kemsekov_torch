@@ -709,13 +709,13 @@ class FlowModel1d(nn.Module):
                     
                     prior_batch.normal_()
                     time.uniform_()
-                    
+                    B = batch.shape[0]
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
                             model,
-                            prior_batch[:batch.shape[0]],
+                            prior_batch[:B],
                             batch,
-                            time=time[:batch.shape[0]]
+                            time=time[:B]
                         )
                     
                     pred_loss = F.mse_loss(pred_dir,target_dir,reduction='none')+1
