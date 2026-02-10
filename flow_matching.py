@@ -1,5 +1,7 @@
 from copy import deepcopy
+import gc
 import math
+import os
 from typing import Callable, Literal, Optional
 from kemsekov_torch.common_modules import Prod, Residual
 from kemsekov_torch.metrics import r2_score
@@ -286,6 +288,7 @@ class FlowMatching(nn.Module):
         target = (target_domain-input_domain)
         
         return pred_direction,target, time_expand
+
     def contrastive_flow_matching_pair(self, model, input_domain, target_domain, time=None):
         """
         Generates flow matching training pairs along with contrastive pairs for 
@@ -351,7 +354,8 @@ class FlowMatching(nn.Module):
             
         bsz = input_domain.shape[0]
         time_expand = time[:, *([None] * (target_domain.dim() - 1))]
-        xt = (1 - time_expand) * input_domain + time_expand * target_domain
+        xt = torch.lerp(input_domain,target_domain,time_expand)
+        # xt = (1 - time_expand) * input_domain + time_expand * target_domain
 
         pred_direction = model(xt, time)
 
@@ -473,6 +477,38 @@ def zero_module(module):
         for p in module.parameters():
             p.zero_()
     return module
+
+
+class FusedFlowResidual(nn.Module):
+    def __init__(self,hidden_dim) -> None:
+        super().__init__()
+        m = Residual([
+            Prod(nn.Sequential(
+                nn.Linear(hidden_dim,hidden_dim),
+                nn.RMSNorm(hidden_dim),
+                nn.Tanh(),
+            )),
+            nn.SiLU(),
+            nn.Linear(hidden_dim,hidden_dim),
+            # zero_module(nn.Linear(hidden_dim,hidden_dim)),
+        ],init_at_zero=False)
+        prod = m.m[0]
+        self.prod_linear = prod.module[0]
+        self.prod_norm = prod.module[1]
+        self.linear = m.m[2]
+        self.m=m
+    def forward(self,x):
+        # i have tested it, it returns exactly same result as self.m(x)
+        pl = self.prod_linear
+        pn = self.prod_norm
+        ln = self.linear
+        x_orig = x
+        x1 = F.linear(x,pl.weight,pl.bias)
+        x = x*F.rms_norm(x1,pn.normalized_shape,pn.weight).tanh()
+        x = F.linear(F.silu(x),ln.weight,ln.bias)+x_orig
+        return x
+
+
 class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data.
@@ -506,7 +542,6 @@ class FlowModel1d(nn.Module):
         self.in_dim=in_dim
         self.hidden_dim=hidden_dim
         norm = nn.RMSNorm
-        act = nn.GELU
         # self.time_emb = nn.Sequential(
         #     nn.Linear(1,hidden_dim),
         #     norm(hidden_dim),
@@ -531,24 +566,12 @@ class FlowModel1d(nn.Module):
         self.norm = norm(hidden_dim)
         
         self.residual_blocks = nn.ModuleList([
-            nn.ModuleList([
-                Residual([
-                    # norm(hidden_dim),
-                    act(),
-                    zero_module(nn.Linear(hidden_dim,hidden_dim)),
-                ],init_at_zero=False),
-                nn.Sequential(
-                    # norm(hidden_dim),
-                    nn.Linear(hidden_dim,hidden_dim),
-                    norm(hidden_dim),
-                    nn.Tanh(),
-                )
-            ]) for i in range(residual_blocks)
+            FusedFlowResidual(hidden_dim)
+            for i in range(residual_blocks)
         ])
         
         self.collapse = nn.Sequential(
             norm(hidden_dim),
-            # act(),
             nn.Linear(hidden_dim,in_dim)
         )
         # self.gamma = nn.Parameter(torch.tensor([0.0]))
@@ -558,7 +581,7 @@ class FlowModel1d(nn.Module):
 
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
-        x_orig = x
+        # x_orig = x
         while t.ndim<x.ndim:
             t = t[:,None]
         time = self.time_emb(t)
@@ -570,8 +593,8 @@ class FlowModel1d(nn.Module):
         
         x = self.dropout(x)
         x = self.norm(x)
-        for m,temb in self.residual_blocks:
-            x = m(x*temb(x))
+        for m in self.residual_blocks:
+            x = m(x)
         
         return self.collapse(x)#+x_orig*self.gamma
     
@@ -590,7 +613,6 @@ class FlowModel1d(nn.Module):
         """
         self.device=device
         return super().to(device)
-    
     def fit(
         self,
         data: torch.Tensor,
@@ -599,7 +621,6 @@ class FlowModel1d(nn.Module):
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
         distribution_matching=0.0,
-        grad_clip_max_norm: Optional[float] = 1,
         debug: bool = False,
         scheduler = True,
     ):
@@ -627,25 +648,35 @@ class FlowModel1d(nn.Module):
             normalizer_loss_weight (float): Weight for the auxiliary loss that trains
                                           the loss normalizer network (default: 0.1).
             distribution_matching: how close to original data distributed resulting flow must be. When set to 1, model will try to match distribution exactly, when close to 0, will shift distribution closer to mode. I advice you left it with 0.0.
-            grad_clip_max_norm (Optional[float]): Maximum gradient norm for clipping.
-                                                If None, no clipping is applied (default: 1).
             debug (bool): Whether to print training progress and best loss updates (default: False).
             scheduler (bool): Whether to use a cosine annealing learning rate scheduler (default: True).
 
         Returns:
             None: Modifies the model in-place, retaining the best checkpoint based on validation loss.
         """
+        # these are optimal for cpu-training
+        try:
+            torch.set_num_threads(4)
+            torch.set_num_interop_threads(1)
+        except: pass
+        
+        # torch.set_num_threads(min(4,os.cpu_count()))
+        # torch.set_num_interop_threads(min(4,os.cpu_count()))
         model = self
         device = model.device
         
-        loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
+        
+        trainable_weights = list(model.parameters())
+        if distribution_matching>0:
+            loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
+            trainable_weights=trainable_weights+list(loss_normalizer.parameters())
         
         batch_size = min(batch_size,data.shape[0])
         data = data.to(device)
         
         model.train()
         
-        optim = torch.optim.AdamW(list(model.parameters())+list(loss_normalizer.parameters()), lr=lr,fused=True)
+        optim = torch.optim.AdamW(trainable_weights, lr=lr,fused=True)
         
         best_loss = float("inf")
         best_r2 = -1e8
@@ -659,6 +690,12 @@ class FlowModel1d(nn.Module):
         total_steps = len(slices)*epochs
         
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
+        
+        prior_batch=torch.randn((batch_size,self.in_dim),device=device)
+        time = torch.rand(batch_size,device=device)
+        
+        perm = torch.zeros(n, device=device,dtype=torch.int32)
+        # gc.disable()
         try:
             for epoch in range(epochs):
                 if debug and improved:
@@ -666,36 +703,34 @@ class FlowModel1d(nn.Module):
                 improved = False
                 
                 # shuffle each epoch
-                perm = torch.randperm(n, device=device)
-                data_shuf = data[perm]
+                torch.randperm(n, device=device,out=perm)
+                data_shuf = data[perm].contiguous()
 
                 losses = []
                 r2s = []
                 for start in slices:
                     batch = data_shuf[start : start + batch_size]
-
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
                     
-                    prior_batch=torch.randn_like(batch,device=device)
-                    time = torch.rand(batch.shape[0],device=device)
-                    
-                    # def run_model(xt,t):
-                    #     noise = torch.randn_like(xt)*0.01
-                    #     return model(xt+noise,t)
+                    prior_batch.normal_()
+                    time.uniform_()
                     
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
                             model,
-                            prior_batch,
+                            prior_batch[:batch.shape[0]],
                             batch,
-                            time=time
+                            time=time[:batch.shape[0]]
                         )
+                    
                     pred_loss = F.mse_loss(pred_dir,target_dir,reduction='none')+1
                     contrastive_loss = F.mse_loss(pred_dir,contrast_dir,reduction='none')
                     
+                    contrastive_loss_det = contrastive_loss.detach()
+                    pred_loss_det = pred_loss.detach()
                     # make it negative
-                    contrastive_loss-=contrastive_loss.max().detach()+1e-4
-                    contrastive_loss=contrastive_loss/contrastive_loss.abs().mean().detach()*pred_loss.abs().mean().detach()
+                    contrastive_loss-=contrastive_loss_det.max()+1e-4
+                    contrastive_loss=contrastive_loss/contrastive_loss_det.abs().mean()*pred_loss_det.abs().mean()
                     
                     # scale it
                     contrastive_loss = contrastive_loss_weight*contrastive_loss
@@ -705,15 +740,16 @@ class FlowModel1d(nn.Module):
                     
                     if distribution_matching>0:
                         with torch.no_grad():  # Stop-gradient via detach
-                            sg_log_losses = pred_loss.detach().log()
+                            sg_log_losses = pred_loss_det.log()
                             target_log_w = -sg_log_losses  # log(1/L)
                         
                         weights = loss_normalizer(target_dir, t) # it equals to log(1/loss)
-                        loss_weighted = (weights*distribution_matching).exp().detach() # it equals to 1/loss
+                        loss_weighted = (weights.detach()*distribution_matching).exp() # it equals to 1/loss
                         aux_loss = F.mse_loss(weights, target_log_w)
                     else:
                         loss_weighted=1
                         aux_loss=0
+                    
                     #scale loss by it's prediction
                     weighed_loss = (loss_weighted*sample_loss).mean()
                     # print(r2_score(weights, (1/sample_loss).log()))
@@ -721,29 +757,31 @@ class FlowModel1d(nn.Module):
                     loss = weighed_loss+distribution_matching*aux_loss
                     loss.backward()
                     
-                    if grad_clip_max_norm is not None:
-                        torch.nn.utils.clip_grad_norm_(
-                            model.parameters(),
-                            max_norm=grad_clip_max_norm,
-                            norm_type=2.0,
-                        )
+                    torch.nn.utils.clip_grad_norm_(
+                        model.parameters(),
+                        max_norm=1,
+                        norm_type=2.0,
+                    )
                         
                     optim.step()
                     if scheduler: sch.step()
                     
                     r2 = r2_score(pred_dir,target_dir)
-                    losses.append(loss)
+                    losses.append(loss.detach())
                     r2s.append(r2)
                     
                 mean_loss = sum(losses)/len(losses)
                 mean_r2 = sum(r2s)/len(r2s)
                 if mean_r2 > best_r2:
-                    best_loss = mean_loss.item()
+                    best_loss = mean_loss
                     best_trained_model = deepcopy(model)
                     best_r2 = mean_r2
                     improved = True
         except KeyboardInterrupt:
             if debug: print("Stop training")
+        finally:
+            # gc.enable()
+            gc.collect()
         if debug and improved:
             print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}\tbest_r2={best_r2:0.3f}")
         

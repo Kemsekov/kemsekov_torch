@@ -20,7 +20,7 @@ def r2_score(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     # Calculate the R² score
     r2 = 1 - (residual_variance / total_variance)
     
-    res = r2.item()
+    res = r2.detach()
     return res
 
 
