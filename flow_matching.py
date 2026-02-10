@@ -654,6 +654,7 @@ class FlowModel1d(nn.Module):
             torch.set_num_threads(4)
             torch.set_num_interop_threads(1)
         except: pass
+        gc.disable()
         
         # torch.set_num_threads(min(4,os.cpu_count()))
         # torch.set_num_interop_threads(min(4,os.cpu_count()))
@@ -690,7 +691,6 @@ class FlowModel1d(nn.Module):
         time = torch.rand(batch_size,device=device)
         
         perm = torch.zeros(n, device=device,dtype=torch.int32)
-        # gc.disable()
         try:
             for epoch in range(epochs):
                 if debug and improved:
@@ -775,7 +775,7 @@ class FlowModel1d(nn.Module):
         except KeyboardInterrupt:
             if debug: print("Stop training")
         finally:
-            # gc.enable()
+            gc.enable()
             gc.collect()
         if debug and improved:
             print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}\tbest_r2={best_r2:0.3f}")
@@ -832,6 +832,7 @@ class FlowModel1d(nn.Module):
             base_model (Optional[nn.Module]): Teacher model with `to_prior()`/`to_target()` methods. 
                                             If None, uses `self` (self-distillation, default: None)
         """
+        gc.disable()
         if base_model is None: base_model=self
         with torch.no_grad():
             x = base_model.to_prior(data)
@@ -863,41 +864,48 @@ class FlowModel1d(nn.Module):
         
         opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True)
         mse = torch.nn.functional.mse_loss
-        for i in range(iterations):
-            opt.zero_grad(True)
-            ind = torch.randperm(x.shape[0])[:batch_size]
-            xbatch = x[ind]
-            ybatch = y[ind]
+        try:
+            for i in range(iterations):
+                opt.zero_grad(True)
+                ind = torch.randperm(x.shape[0])[:batch_size]
+                xbatch = x[ind]
+                ybatch = y[ind]
+                
+                y_pred = self.to_target(xbatch)
+                x_pred = self.to_prior(ybatch)
+                
+                forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)
+                forward_loss-=forward_loss.min().detach()-1e-2
+                inverse_loss = mse(xbatch,x_pred,reduction='none').mean(-1)
+                inverse_loss-=inverse_loss.min().detach()-1e-2
+                
+                prediction_loss = forward_loss.mean()+inverse_loss.mean()
+                
+                forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch,ybatch],-1)).chunk(2,-1)
+                forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
+                normalizer_loss = mse(forward_weight,forward_loss.detach().log())+mse(inverse_weight,inverse_loss.detach().log())
+                
+                fw = (-forward_weight*distribution_matching).detach().exp()
+                iw = (-inverse_weight*distribution_matching).detach().exp()
+                loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss*distribution_matching
+                loss.backward()
+                if grad_clip_max_norm is not None:
+                    torch.nn.utils.clip_grad_norm_(
+                        self.parameters(),
+                        max_norm=grad_clip_max_norm,
+                        norm_type=2.0,
+                    )
+                opt.step()
+                
+                if debug:
+                    loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
+                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(r2_score(ybatch,y_pred).item())[:6]} inverse_r2={str(r2_score(xbatch,x_pred).item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
+        except KeyboardInterrupt as e:
+            print("Stop reflowing...")
+        finally:
+            gc.enable()
+            gc.collect()
             
-            y_pred = self.to_target(xbatch)
-            x_pred = self.to_prior(ybatch)
-            
-            forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)
-            forward_loss-=forward_loss.min().detach()-1e-2
-            inverse_loss = mse(xbatch,x_pred,reduction='none').mean(-1)
-            inverse_loss-=inverse_loss.min().detach()-1e-2
-            
-            prediction_loss = forward_loss.mean()+inverse_loss.mean()
-            
-            forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch,ybatch],-1)).chunk(2,-1)
-            forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
-            normalizer_loss = mse(forward_weight,forward_loss.detach().log())+mse(inverse_weight,inverse_loss.detach().log())
-            
-            fw = (-forward_weight*distribution_matching).detach().exp()
-            iw = (-inverse_weight*distribution_matching).detach().exp()
-            loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss*distribution_matching
-            loss.backward()
-            if grad_clip_max_norm is not None:
-                torch.nn.utils.clip_grad_norm_(
-                    self.parameters(),
-                    max_norm=grad_clip_max_norm,
-                    norm_type=2.0,
-                )
-            opt.step()
-            
-            if debug:
-                loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
-                print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.item())[:8]} forward_r2={str(r2_score(ybatch,y_pred))[:6]} inverse_r2={str(r2_score(xbatch,x_pred))[:6]} loss_pred_r2={str(loss_pred_r2)[:6]}")
         self.eval()
   
     def to_prior(self,data : torch.Tensor,steps=None):
