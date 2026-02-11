@@ -488,7 +488,6 @@ class FusedFlowResidual(nn.Module):
                 nn.Tanh(),
             )),
             nn.SiLU(),
-            # nn.Linear(hidden_dim,hidden_dim),
             zero_module(nn.Linear(hidden_dim,hidden_dim)),
         ],init_at_zero=False)
         prod = m.m[0]
@@ -655,8 +654,6 @@ class FlowModel1d(nn.Module):
         except: pass
         gc.disable()
         model = self
-        # torch.set_num_threads(min(4,os.cpu_count()))
-        # torch.set_num_interop_threads(min(4,os.cpu_count()))
         device = model.device
         
         
@@ -699,7 +696,7 @@ class FlowModel1d(nn.Module):
                 
                 # shuffle each epoch
                 torch.randperm(n, device=device,out=perm)
-                data_shuf = data[perm].contiguous()
+                data_shuf = data[perm]
 
                 losses = 0
                 r2s = 0
