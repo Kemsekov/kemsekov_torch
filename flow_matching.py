@@ -655,15 +655,14 @@ class FlowModel1d(nn.Module):
         gc.disable()
         model = self
         device = model.device
+        batch_size = min(batch_size,data.shape[0])
         
         
         trainable_weights = list(model.parameters())
         if distribution_matching>0:
             loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
+            loss_normalizer = torch.jit.trace(loss_normalizer,(torch.randn((1,self.in_dim)),torch.randn((1,1))))
             trainable_weights=trainable_weights+list(loss_normalizer.parameters())
-        
-        batch_size = min(batch_size,data.shape[0])
-        
         
         data = data.to(device)
         
@@ -686,7 +685,7 @@ class FlowModel1d(nn.Module):
         time = torch.rand(batch_size,device=device)
         
         perm = torch.zeros(n, device=device,dtype=torch.int32)
-        # model_trace = torch.jit.trace(model,example_inputs=(torch.randn((batch_size,self.in_dim)),torch.randn((batch_size))))
+        model_trace = torch.jit.trace(model,example_inputs=(torch.randn((1,self.in_dim)),torch.randn((1))))
         
         try:
             for epoch in range(epochs):
@@ -707,11 +706,10 @@ class FlowModel1d(nn.Module):
                     prior_batch.normal_()
                     time.uniform_()
                     
-                    
                     B = batch.shape[0]
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
-                            model,
+                            model_trace,
                             prior_batch[:B],
                             batch,
                             time=time[:B]
@@ -832,6 +830,11 @@ class FlowModel1d(nn.Module):
                                             If None, uses `self` (self-distillation, default: None)
         """
         gc.disable()
+        try:
+            torch.set_num_threads(4)
+            torch.set_num_interop_threads(1)
+        except: pass
+        
         if base_model is None: base_model=self
         with torch.no_grad():
             x = base_model.to_prior(data)
@@ -860,6 +863,8 @@ class FlowModel1d(nn.Module):
             nn.SiLU(),
             nn.Linear(self.hidden_dim,2),
         )
+        
+        loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2)))
         
         opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True)
         mse = torch.nn.functional.mse_loss
