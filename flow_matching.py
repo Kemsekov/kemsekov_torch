@@ -239,11 +239,15 @@ class FlowMatching(nn.Module):
         # weights for one-step integration
     
     def reset_weights(self):
+        if hasattr(self,'one_weights'):
+            device = self.one_weights.device
+        else:
+            device=None
         with torch.no_grad():
-            self.one_weights     = torch.nn.Parameter(torch.tensor([0.5,  0.5, 1,0,0]))
-            self.one_weights_inv = torch.nn.Parameter(torch.tensor([0.5,-0.5,1,0,0]))
-            self.rk2_weights     = torch.nn.Parameter(torch.tensor([0,1,1/4,3/4,2/3,2/3,0.0]))
-            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1,-1,1/4,3/4,2/3,2/3,1.0]))
+            self.one_weights     = torch.nn.Parameter(torch.tensor([0.5,  0.5, 1,0,0],device=device))
+            self.one_weights_inv = torch.nn.Parameter(torch.tensor([0.5,-0.5,1,0,0],device=device))
+            self.rk2_weights     = torch.nn.Parameter(torch.tensor([0,1,1/4,3/4,2/3,2/3,0.0],device=device))
+            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1,-1,1/4,3/4,2/3,2/3,1.0],device=device))
     
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
@@ -592,18 +596,6 @@ class FlowModel1d(nn.Module):
         return self.collapse(x)#+x_orig*self.gamma
     
     def to(self,device):
-        """
-        Moves the model to the specified device.
-
-        This method overrides the parent's to() method to also update the device attribute
-        of the FlowModel1d instance, ensuring that the model knows which device it's on.
-
-        Args:
-            device: The device (CPU/GPU) to move the model to
-
-        Returns:
-            FlowModel1d: The model moved to the specified device
-        """
         self.device=device
         return super().to(device)
     def fit(
@@ -661,7 +653,7 @@ class FlowModel1d(nn.Module):
         trainable_weights = list(model.parameters())
         if distribution_matching>0:
             loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
-            loss_normalizer = torch.jit.trace(loss_normalizer,(torch.randn((1,self.in_dim)),torch.randn((1,1))))
+            loss_normalizer = torch.jit.trace(loss_normalizer,(torch.randn((1,self.in_dim),device=device),torch.randn((1,1),device=device)))
             trainable_weights=trainable_weights+list(loss_normalizer.parameters())
         
         data = data.to(device)
@@ -685,7 +677,7 @@ class FlowModel1d(nn.Module):
         time = torch.rand(batch_size,device=device)
         
         perm = torch.zeros(n, device=device,dtype=torch.int32)
-        model_trace = torch.jit.trace(model,example_inputs=(torch.randn((1,self.in_dim)),torch.randn((1))))
+        model_trace = torch.jit.trace(model,example_inputs=(torch.randn((1,self.in_dim),device=device),torch.randn((1),device=device)))
         
         try:
             for epoch in range(epochs):
@@ -834,7 +826,9 @@ class FlowModel1d(nn.Module):
             torch.set_num_threads(4)
             torch.set_num_interop_threads(1)
         except: pass
+        self.to(self.device)
         
+        data = data.to(self.device)
         if base_model is None: base_model=self
         with torch.no_grad():
             x = base_model.to_prior(data)
@@ -862,16 +856,16 @@ class FlowModel1d(nn.Module):
             nn.LayerNorm(self.hidden_dim),
             nn.SiLU(),
             nn.Linear(self.hidden_dim,2),
-        )
+        ).to(self.device)
         
-        loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2)))
-        
+        device=self.device
+        loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
         opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True)
         mse = torch.nn.functional.mse_loss
         try:
             for i in range(iterations):
                 opt.zero_grad(True)
-                ind = torch.randperm(x.shape[0])[:batch_size]
+                ind = torch.randperm(x.shape[0],device=device)[:batch_size]
                 xbatch = x[ind]
                 ybatch = y[ind]
                 
@@ -1006,9 +1000,9 @@ class FlowModel1d(nn.Module):
         """
         model = self
         model.eval()
-
+        device = self.device
         # Initialize z from standard normal distribution
-        z = torch.randn(num_samples, model.in_dim, device=self.device, requires_grad=True)
+        z = torch.randn(num_samples, model.in_dim, device=device, requires_grad=True)
 
         original_prior = (z * z).mean().detach()
 
