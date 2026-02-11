@@ -356,7 +356,6 @@ class FlowMatching(nn.Module):
         time_expand = time[:, *([None] * (target_domain.dim() - 1))]
         xt = torch.lerp(input_domain,target_domain,time_expand)
         # xt = (1 - time_expand) * input_domain + time_expand * target_domain
-
         pred_direction = model(xt, time)
 
         target = (target_domain - input_domain)
@@ -489,8 +488,8 @@ class FusedFlowResidual(nn.Module):
                 nn.Tanh(),
             )),
             nn.SiLU(),
-            nn.Linear(hidden_dim,hidden_dim),
-            # zero_module(nn.Linear(hidden_dim,hidden_dim)),
+            # nn.Linear(hidden_dim,hidden_dim),
+            zero_module(nn.Linear(hidden_dim,hidden_dim)),
         ],init_at_zero=False)
         prod = m.m[0]
         self.prod_linear = prod.module[0]
@@ -504,8 +503,8 @@ class FusedFlowResidual(nn.Module):
         ln = self.linear
         x_orig = x
         x1 = F.linear(x,pl.weight,pl.bias)
-        x = x*F.rms_norm(x1,pn.normalized_shape,pn.weight).tanh()
-        x = F.linear(F.silu(x),ln.weight,ln.bias)+x_orig
+        x = x*F.rms_norm(x1,pn.normalized_shape,pn.weight).tanh_()
+        x = F.linear(F.silu(x,inplace=True),ln.weight,ln.bias)+x_orig
         return x
 
 
@@ -655,10 +654,9 @@ class FlowModel1d(nn.Module):
             torch.set_num_interop_threads(1)
         except: pass
         gc.disable()
-        
+        model = self
         # torch.set_num_threads(min(4,os.cpu_count()))
         # torch.set_num_interop_threads(min(4,os.cpu_count()))
-        model = self
         device = model.device
         
         
@@ -668,6 +666,8 @@ class FlowModel1d(nn.Module):
             trainable_weights=trainable_weights+list(loss_normalizer.parameters())
         
         batch_size = min(batch_size,data.shape[0])
+        
+        
         data = data.to(device)
         
         model.train()
@@ -683,14 +683,14 @@ class FlowModel1d(nn.Module):
         n = data.shape[0]
         slices = list(range(0, n, batch_size))
         
-        total_steps = len(slices)*epochs
-        
-        sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,total_steps)
+        sch = torch.optim.lr_scheduler.CosineAnnealingLR(optim,epochs)
         
         prior_batch=torch.randn((batch_size,self.in_dim),device=device)
         time = torch.rand(batch_size,device=device)
         
         perm = torch.zeros(n, device=device,dtype=torch.int32)
+        # model_trace = torch.jit.trace(model,example_inputs=(torch.randn((batch_size,self.in_dim)),torch.randn((batch_size))))
+        
         try:
             for epoch in range(epochs):
                 if debug and improved:
@@ -701,14 +701,16 @@ class FlowModel1d(nn.Module):
                 torch.randperm(n, device=device,out=perm)
                 data_shuf = data[perm].contiguous()
 
-                losses = []
-                r2s = []
+                losses = 0
+                r2s = 0
                 for start in slices:
-                    batch = data_shuf[start : start + batch_size]
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
                     
+                    batch = data_shuf[start : start + batch_size]
                     prior_batch.normal_()
                     time.uniform_()
+                    
+                    
                     B = batch.shape[0]
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
@@ -759,17 +761,19 @@ class FlowModel1d(nn.Module):
                     )
                         
                     optim.step()
-                    if scheduler: sch.step()
                     
                     r2 = r2_score(pred_dir,target_dir)
-                    losses.append(loss.detach())
-                    r2s.append(r2)
+                    losses+=loss.detach()
+                    r2s+=r2
                     
-                mean_loss = sum(losses)/len(losses)
-                mean_r2 = sum(r2s)/len(r2s)
+                if scheduler: sch.step()
+                
+                mean_loss = losses/len(slices)
+                mean_r2 = r2s/len(slices)
                 if mean_r2 > best_r2:
                     best_loss = mean_loss
-                    best_trained_model = deepcopy(model)
+                    model_state_dict = model.state_dict()
+                    best_trained_model = {key:model_state_dict[key].clone() for key in model_state_dict}
                     best_r2 = mean_r2
                     improved = True
         except KeyboardInterrupt:
@@ -781,9 +785,7 @@ class FlowModel1d(nn.Module):
             print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}\tbest_r2={best_r2:0.3f}")
         
         # update current model with best checkpoint
-        with torch.no_grad():
-            for p1,p2 in zip(model.parameters(),best_trained_model.parameters()):
-                p1.copy_(p2.to(device))
+        model.load_state_dict(best_trained_model)
         model.eval()
     
     def mmd2_with_data(self,data : torch.Tensor) -> float:
