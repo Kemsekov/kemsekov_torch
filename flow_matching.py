@@ -535,7 +535,7 @@ class FlowModel1d(nn.Module):
         default_steps (int): Default number of integration steps for sampling
         device (str): Device on which the model is located
     """
-    def __init__(self, in_dim,hidden_dim=64,residual_blocks=3,dropout_p=0.0,device='cpu') -> None:
+    def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu') -> None:
         super().__init__()
         self.fm = FlowMatching()
         # default time scaler for training
@@ -601,8 +601,8 @@ class FlowModel1d(nn.Module):
     def fit(
         self,
         data: torch.Tensor,
-        batch_size: int = 256,
         epochs: int = 64,
+        batch_size: int = 256,
         contrastive_loss_weight=0.1,
         lr: float = 0.02,
         distribution_matching=0.0,
@@ -644,6 +644,8 @@ class FlowModel1d(nn.Module):
             torch.set_num_threads(4)
             torch.set_num_interop_threads(1)
         except: pass
+        if not isinstance(data,torch.Tensor):
+            data = torch.tensor(data,dtype=torch.float32,device=self.device)
         gc.disable()
         model = self
         device = model.device
@@ -798,9 +800,9 @@ class FlowModel1d(nn.Module):
     def reflow(
             self,
             data : torch.Tensor,
+            epochs = 512,
             steps : Literal[1,2] = 1,
             batch_size=256,
-            iterations = 512,
             debug = False,
             lr = 1e-2,
             distribution_matching = 0,
@@ -815,8 +817,8 @@ class FlowModel1d(nn.Module):
         
         Args:
             data (torch.Tensor): Target data tensor of shape [N, input_dim] from teacher distribution
+            epochs (int): Total training iterations
             batch_size (int): Mini-batch size for training (default: 512)
-            iterations (int): Total training iterations
             debug (bool): Print training progress and R² metrics (default: False)
             base_model (Optional[nn.Module]): Teacher model with `to_prior()`/`to_target()` methods. 
                                             If None, uses `self` (self-distillation, default: None)
@@ -826,6 +828,8 @@ class FlowModel1d(nn.Module):
             torch.set_num_threads(4)
             torch.set_num_interop_threads(1)
         except: pass
+        if not isinstance(data,torch.Tensor):
+            data = torch.tensor(data,dtype=torch.float32,device=self.device)
         self.to(self.device)
         
         data = data.to(self.device)
@@ -861,9 +865,10 @@ class FlowModel1d(nn.Module):
         device=self.device
         loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
         opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True)
+        sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
         try:
-            for i in range(iterations):
+            for i in range(epochs):
                 opt.zero_grad(True)
                 ind = torch.randperm(x.shape[0],device=device)[:batch_size]
                 xbatch = x[ind]
@@ -894,6 +899,7 @@ class FlowModel1d(nn.Module):
                         norm_type=2.0,
                     )
                 opt.step()
+                sch.step()
                 
                 if debug:
                     loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
