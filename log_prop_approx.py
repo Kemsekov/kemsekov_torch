@@ -76,27 +76,33 @@ def log_prob(model, prior, eps=1e-3):
     # this stuff perfectly match log prob structure
     return prior_logp-logdet_approx
 
-def log_prob_inverse(model, target, eps=1e-3):
+def log_prob_inverse(model, target, eps=1e-3, random_directions=0):
     """"
     Computes log_prob for density of random vector transformation prior = model(y) via jacobian approximation
     where y dimensions can differ from prior.
     
     model: model that transforms target to prior distribution
     target: batched vector [...batch_dims...,dim]
+    random_directions: if random_directions>0 then algorithm will use random directions approximation for jacobian approximation instead of simplex vectors. If your target is very high-dimensional data it make sense to use random_directions>0
     """
     data=target
     device = 'cpu'
     Y = data.to(device)
 
-    # generate N-dimensional simplex
-    simplex_points = generate_unit_simplex_vertices(data.shape[-1]).to(device)*eps
+    if random_directions>0:
+        vectors = torch.randn((random_directions,Y.shape[-1]),device=device)
+        simplex_points = vectors*eps
+        shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
+        # log area of original simplex
+        original_simplex_area_log = compute_subspace_log_volume(shifted_simplex)
+    else:
+        # generate N-dimensional simplex
+        simplex_points = generate_unit_simplex_vertices(data.shape[-1]).to(device)*eps
+        # simplex that have some point at origin 0
+        shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
+        # log area of original simplex
+        original_simplex_area_log = shifted_simplex.slogdet()[1]
 
-    # simplex that have some point at origin 0
-    shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
-
-    # log area of original simplex
-    original_simplex_area_log = shifted_simplex.slogdet()[1]
-    # original_simplex_area_log = compute_subspace_log_volume(shifted_simplex)
 
     # make shapes match
     simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
