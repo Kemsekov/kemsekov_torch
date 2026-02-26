@@ -75,3 +75,52 @@ def log_prob(model, prior, eps=1e-3):
     prior_logp = Normal(0,1).log_prob(data).sum(-1)
     # this stuff perfectly match log prob structure
     return prior_logp-logdet_approx
+
+def log_prob_inverse(model, target, eps=1e-3):
+    """"
+    Computes log_prob for density of random vector transformation prior = model(y) via jacobian approximation
+    where y dimensions can differ from prior.
+    
+    model: model that transforms target to prior distribution
+    target: batched vector [...batch_dims...,dim]
+    """
+    data=target
+    device = 'cpu'
+    Y = data.to(device)
+
+    # generate N-dimensional simplex
+    simplex_points = generate_unit_simplex_vertices(data.shape[-1]).to(device)*eps
+
+    # simplex that have some point at origin 0
+    shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
+
+    # log area of original simplex
+    original_simplex_area_log = shifted_simplex.slogdet()[1]
+    # original_simplex_area_log = compute_subspace_log_volume(shifted_simplex)
+
+    # make shapes match
+    simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
+
+    # shift Y to sphere points of simplex
+    Y_neighbors = Y[...,None,:] + simplex_points  # (B, n_neighbors, ...dim)
+
+    # Compute priors for all neighbors
+    X_neighbors = model(Y_neighbors)
+
+    # get area of transformed simplex
+    transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
+    
+    if transformed_simplex.shape[-1]==transformed_simplex.shape[-2]:
+        transformed_simplex_area_log = transformed_simplex.slogdet()[1]
+    else:
+        transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
+
+    in_dim = X_neighbors.shape[-1]
+    
+    # area ratio is our jacobian determinant approximation
+    logdet_approx = transformed_simplex_area_log - original_simplex_area_log - in_dim*math.log(in_dim)
+
+    prior = model(data)
+    prior_logp = Normal(0,1).log_prob(prior).sum(-1)
+    # this stuff perfectly match log prob structure
+    return prior_logp+logdet_approx
