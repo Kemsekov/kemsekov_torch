@@ -33,6 +33,7 @@ def log_prob(model, prior, eps=1e-3):
     Computes log_prob for density of random vector transformation y = model(prior) via jacobian approximation
     where y dimensions can differ from prior.
     
+    model: model that transforms prior to target distribution
     prior: standard-normal distributed batched vector [...batch_dims...,dim]
     """
     data=prior
@@ -60,7 +61,11 @@ def log_prob(model, prior, eps=1e-3):
 
     # get area of transformed simplex
     transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
-    transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
+    
+    if transformed_simplex.shape[-1]==transformed_simplex.shape[-2]:
+        transformed_simplex_area_log = transformed_simplex.slogdet()[1]
+    else:
+        transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
 
     in_dim = X_neighbors.shape[-1]
     
