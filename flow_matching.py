@@ -239,6 +239,19 @@ class FlowMatching(nn.Module):
         self.reset_weights()
         # weights for one-step integration
     
+    def freeze(self):
+        self.one_weights.requires_grad_(False)
+        self.one_weights_inv.requires_grad_(False)
+        self.rk2_weights.requires_grad_(False)
+        self.rk2_weights_inv.requires_grad_(False)
+    
+    def unfreeze(self):
+        self.one_weights.requires_grad_(True)
+        self.one_weights_inv.requires_grad_(True)
+        self.rk2_weights.requires_grad_(True)
+        self.rk2_weights_inv.requires_grad_(True)
+    
+        
     def reset_weights(self):
         if hasattr(self,'one_weights'):
             device = self.one_weights.device
