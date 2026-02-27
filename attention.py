@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.rotary_emb import RotEmb
+from kemsekov_torch.common_modules import Transpose, ChanLayerNorm
 
 def zero_module(module):
     """
@@ -122,7 +123,9 @@ class SelfAttention(nn.Module):
         linear=False,
         output_bias = True,
         abs_pos_jit_prob = 0.5,
-        add_absolute_pos = False
+        add_absolute_pos = False,
+        prenorm = True,
+        is_causal=False
     ):
         """
         dim: input dimensions
@@ -134,8 +137,10 @@ class SelfAttention(nn.Module):
         linear: whether to use custom-linear attention or not. Current linear attention although works, but is not optimized and default non-linear attention works a lot faster.
         output_bias: add bias to output conv or not. If you use GroupNorm after self-attention, i advice you to set this value to False
         add_absolute_pos: add absolute position embedding
+        prenorm: add group pre-normalization for input
         """
         super().__init__()
+        self.is_causal=is_causal
         self.heads = heads
         self.head_dim = head_dim
         self.dropout=dropout
@@ -155,8 +160,13 @@ class SelfAttention(nn.Module):
         if groups==1 and dim//16>=2: groups=2
         
         # Pre-normalization with GroupNorm
-        self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
-        
+        if prenorm and not is_causal:
+            self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
+        elif prenorm and is_causal:
+            self.norm = ChanLayerNorm(dim)
+        else:
+            self.norm = nn.Identity()
+            
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         
         self.to_qkv = conv(dim, inner_dim * 3, 1, bias=True)
@@ -206,8 +216,8 @@ class SelfAttention(nn.Module):
             # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
             attn_out = F.scaled_dot_product_attention(
                 q, k, v,
-                dropout_p=self.dropout,
-                is_causal=False
+                dropout_p=self.dropout if self.training else 0,
+                is_causal=self.is_causal
             )  # [B, heads, L, head_dim]
         
         # 6. Reshape back
@@ -307,7 +317,7 @@ class CrossAttention(nn.Module):
             # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
             attn_out = F.scaled_dot_product_attention(
                 q, k, v,
-                dropout_p=self.dropout,
+                dropout_p=self.dropout if self.training else 0,
                 is_causal=False
             )  # [B, heads, L, head_dim]
         
