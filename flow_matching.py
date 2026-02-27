@@ -6,6 +6,7 @@ from typing import Callable, Literal, Optional
 from kemsekov_torch.common_modules import Prod, Residual
 from kemsekov_torch.metrics import r2_score
 from kemsekov_torch.common_modules import mmd_rbf
+from kemsekov_torch.log_prop_approx import log_prob_inverse
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -405,19 +406,6 @@ class FlowMatching(nn.Module):
             case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
             case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_sampler_transform,no_grad_model=no_grad_model)
 
-def generate_unit_simplex_vertices(d):
-    # 1. Generate the initial regular simplex
-    vertices = torch.eye(d)
-    last_vertex = (1 - torch.sqrt(torch.tensor(d + 1.0))) / d * torch.ones(d)
-    vertices = torch.cat([vertices, last_vertex.unsqueeze(0)], dim=0)
-    
-    # 2. Recenter at the origin (subtract the mean)
-    vertices -= vertices.mean(dim=0)
-    
-    # 3. Normalize to unit length (radius = 1)
-    # Each row is a vertex; normalize along the last dimension
-    return torch.nn.functional.normalize(vertices, p=2, dim=-1)
-
 class LossNormalizer1d(nn.Module):
     """
     A neural network module that learns to normalize loss values based on input data and time.
@@ -481,7 +469,6 @@ def zero_module(module):
             p.zero_()
     return module
 
-
 class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim) -> None:
         super().__init__()
@@ -509,7 +496,6 @@ class FusedFlowResidual(nn.Module):
         x = x*F.rms_norm(x1,pn.normalized_shape,pn.weight).tanh_()
         x = F.linear(F.silu(x,inplace=True),ln.weight,ln.bias)+x_orig
         return x
-
 
 class FlowModel1d(nn.Module):
     """
@@ -575,7 +561,6 @@ class FlowModel1d(nn.Module):
         self.default_steps=16
         self.to(device)
         self.eval()
-
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         # x_orig = x
@@ -1187,72 +1172,6 @@ class FlowModel1d(nn.Module):
 
         return result, iteration.best_loss
     
-    def log_prob(self, data, steps=None, eps=1e-3,return_separately = False,max_vectors = 32):
-        """
-        Computes log probability using Jacobian determinant approximation via simplex volume ratios.
-
-        This method approximates the log probability using a novel approach based on comparing
-        volumes of simplices before and after transformation. It achieves the same accuracy as
-        full_log_prob but at much lower computational cost by approximating the Jacobian
-        determinant through the ratio of simplex volumes in the data and latent spaces.
-
-        The algorithm works by:
-        1. Creating a small simplex around each data point
-        2. Transforming the simplex vertices through the inverse flow
-        3. Computing the volume ratio between the original and transformed simplices
-        4. Using this ratio as an approximation of the Jacobian determinant
-
-        Args:
-            data (torch.Tensor): Input tensor for which to compute log probability.
-                               Expected shape: [batch_size, input_dim]
-            steps (int, optional): Number of integration steps to use for transformation.
-                                 If None, uses the model's default steps.
-            eps (float): Small epsilon value for simplex perturbation (default: 1e-3)
-            return_separately (bool): If True, returns prior logprob, jacobian logdet,
-                                    and latent variables separately. If False, returns
-                                    the combined log probability (default: False)
-            max_vectors: Maximum number of vectors to use for simplex determinant approximation.
-
-        Returns:
-            torch.Tensor or tuple: If return_separately is False, returns combined log
-                                 probability tensor of shape [batch_size]. If True,
-                                 returns a tuple of (prior_logp, logdet_approx, X)
-        """
-        
-        
-        if not steps: steps = self.default_steps
-        Y = data.to(self.device)
-
-        # generate N-dimensional simplex
-        simplex_points = generate_unit_simplex_vertices(self.in_dim).to(self.device)*eps
-
-        # simplex that have some point at origin 0
-        shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
-
-        # log area of original simplex
-        original_simplex_area_log = shifted_simplex[:max_vectors,:max_vectors].slogdet()[1]
-
-        # make shapes match
-        simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
-
-        # shift Y to sphere points of simplex
-        Y_neighbors = Y[...,None,:] + simplex_points[:max_vectors]  # (B, n_neighbors, ...dim)
-
-        # Compute priors for all neighbors
-        X_neighbors = self.to_prior(Y_neighbors, steps)
-
-        # get area of transformed simplex
-        transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
-        transformed_simplex_area_log = transformed_simplex[...,:max_vectors,:max_vectors].slogdet()[1]
-
-        # area ratio is our jacobian determinant approximation
-        logdet_approx = transformed_simplex_area_log - original_simplex_area_log + self.in_dim*math.log(self.in_dim)
-
-        X = self.to_prior(Y,steps)
-        prior_logp = Normal(0,1).log_prob(X).sum(-1)
-
-        if return_separately:
-            return prior_logp,logdet_approx,X
-        # this stuff perfectly match log prob structure
-        return prior_logp+logdet_approx
+    def log_prob(self, data, eps=1e-3,random_directions=0,return_prior=False):
+        return log_prob_inverse(self.to_prior,data,eps,random_directions=random_directions,return_prior=return_prior)
         
