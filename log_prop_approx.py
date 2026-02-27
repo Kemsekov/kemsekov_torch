@@ -76,7 +76,7 @@ def log_prob(model, prior, eps=1e-3):
     # this stuff perfectly match log prob structure
     return prior_logp-logdet_approx
 
-def log_prob_inverse(model, target, eps=1e-3, random_directions=0):
+def log_prob_inverse(model, target, eps=1e-3, random_directions=0,return_prior=False):
     """"
     Computes log_prob for density of random vector transformation prior = model(y) via jacobian approximation
     where y dimensions can differ from prior.
@@ -124,9 +124,14 @@ def log_prob_inverse(model, target, eps=1e-3, random_directions=0):
     in_dim = X_neighbors.shape[-1]
     
     # area ratio is our jacobian determinant approximation
-    logdet_approx = transformed_simplex_area_log - original_simplex_area_log - in_dim*math.log(in_dim)
+    logdet_approx = transformed_simplex_area_log - original_simplex_area_log + in_dim*math.log(in_dim)
 
     prior = model(data)
     prior_logp = Normal(0,1).log_prob(prior).sum(-1)
     # this stuff perfectly match log prob structure
-    return prior_logp+logdet_approx
+    
+    logp = prior_logp+logdet_approx
+    
+    if return_prior:
+        return logp,prior
+    return logp
