@@ -28,7 +28,7 @@ def compute_subspace_log_volume(x: torch.Tensor, eps: float = 1e-8):
     log_vol = torch.sum(torch.log(torch.abs(diag_r) + eps), dim=-1)
     return log_vol
 
-def log_prob(model, prior, eps=1e-3):
+def log_prob(model, prior, eps=1e-3,random_directions=0):
     """"
     Computes log_prob for density of random vector transformation y = model(prior) via jacobian approximation
     where y dimensions can differ from prior.
@@ -40,15 +40,20 @@ def log_prob(model, prior, eps=1e-3):
     device = 'cpu'
     Y = data.to(device)
 
-    # generate N-dimensional simplex
-    simplex_points = generate_unit_simplex_vertices(data.shape[-1]).to(device)*eps
-
-    # simplex that have some point at origin 0
-    shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
-
-    # log area of original simplex
-    original_simplex_area_log = shifted_simplex.slogdet()[1]
-    # original_simplex_area_log = compute_subspace_log_volume(shifted_simplex)
+    if random_directions>0:
+        vectors = torch.randn((random_directions,Y.shape[-1]),device=device)
+        simplex_points = vectors*eps
+        shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
+        # log area of original simplex
+        original_simplex_area_log = compute_subspace_log_volume(shifted_simplex)
+    else:
+        # generate N-dimensional simplex
+        simplex_points = generate_unit_simplex_vertices(data.shape[-1]).to(device)*eps
+        # simplex that have some point at origin 0
+        shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
+        # log area of original simplex
+        original_simplex_area_log = shifted_simplex.slogdet()[1]
+    
 
     # make shapes match
     simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
