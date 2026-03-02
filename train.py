@@ -115,7 +115,7 @@ def train_simple(
     with torch.no_grad():
         if best_model_state is not None:
             model.load_state_dict(best_model_state)
-    print(f"Best metric {metric_name}:{best_metric:0.4f}")
+    if verbose: _print_green(f"Best metric {metric_name} {best_metric:0.4f}")
     model = model.eval().to(orig_model_device,dtype=orig_model_dtype)
     
     return model
