@@ -49,7 +49,7 @@ def train_simple(
     def totensor(x):
         if not isinstance(x,torch.Tensor):
             x = torch.tensor(x)
-        if not x.device!=device or x.dtype!=dtype:
+        if x.device!=device or x.dtype!=dtype:
             x=x.to(device=device,dtype=dtype)
         return x
     
