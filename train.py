@@ -1,12 +1,12 @@
+from copy import deepcopy
 import gc
 import os
-from typing import List, Dict
+from typing import List, Dict,Callable, Tuple
 import accelerate
 from matplotlib import pyplot as plt
 import torch
-from tqdm import tqdm
+import torch.nn as nn
 import json
-from accelerate import Accelerator, load_checkpoint_and_dispatch
 import math
 import shutil
 import time
@@ -25,6 +25,102 @@ def _print_blue(text: str) -> None:
     """Print bold blue text."""
     print(f"\033[1;34m{text}\033[0m")
 
+def train_simple(
+    model : nn.Module,
+    # it accepts model, X and y, returns loss and dictionary with metric
+    compute_loss_and_metrics : Callable[[nn.Module,torch.Tensor,torch.Tensor],Tuple[torch.Tensor,Dict[str,float]]],
+    X_train,
+    y_train,
+    X_test=None,
+    y_test=None,
+    batch_size=256,
+    epochs=1024,
+    # how often validate model performance
+    validate_each=32,
+    lr=1e-3,
+    # how many test metric degradation wait before rolling back to
+    # previous back checkpoint
+    rollback_K=0,
+    # print or not
+    verbose = True,
+    device='cpu',
+    dtype=torch.float32
+):
+    X_train=torch.tensor(X_train,dtype=dtype,device=device)
+    y_train=torch.tensor(y_train,dtype=dtype,device=device)
+    X_test=torch.tensor(X_test,dtype=dtype,device=device)
+    y_test=torch.tensor(y_test,dtype=dtype,device=device)
+    
+    w = list(model.parameters())[0]
+    orig_model_device = w.device
+    orig_model_dtype = w.dtype
+    
+    model=model.to(device,dtype=dtype)
+    
+    model.train()
+    opt = torch.optim.AdamW(model.parameters(),lr=lr,fused=True)
+    sh = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
+    
+    best_metric = -1e10
+    best_model_state = None
+    
+    running_metric = 0
+    running_loss = 0
+    test_degraded = 0
+    for i in range(1,epochs+1):
+        opt.zero_grad(True)
+        ind = torch.randperm(X_train.shape[0])[:batch_size]
+        batch_x = X_train[ind]
+        batch_y = y_train[ind]
+        loss,metric = compute_loss_and_metrics(model,batch_x,batch_y)
+        
+        metric_name = list(metric.keys())[0]
+        metric=metric[metric_name]
+        
+        running_metric+=metric
+        running_loss+=loss.detach()
+        if i%validate_each==0:
+            running_metric/=validate_each
+            running_loss/=validate_each
+            if X_test is not None:
+                model.eval()
+                with torch.no_grad():
+                    test_metric = compute_loss_and_metrics(model,X_test,y_test)[1]
+                test_metric=test_metric[metric_name]
+                model.train()
+            else:
+                test_metric=running_metric
+            if verbose: print(f"Epoch {i} \tLoss {running_loss:0.4f} \t {metric_name} {test_metric:0.4f}")
+            
+            running_metric=0
+            running_loss=0
+                            
+            if test_metric>best_metric:
+                best_metric = test_metric
+                best_model_state=deepcopy(model.state_dict())
+                test_degraded=0
+                if verbose: print(f"{"="*23}Save{"="*23}")
+            elif rollback_K>0 and best_model_state is not None:
+                test_degraded+=1
+                if test_degraded>=rollback_K:
+                    if verbose: print(f"{"="*19}Rolling back{"="*19}")
+                    test_degraded=0
+                    with torch.no_grad():
+                        model.load_state_dict(best_model_state)
+                continue
+        
+        loss.backward()
+        opt.step()
+        sh.step()
+    with torch.no_grad():
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state)
+    print(f"Best metric {metric_name}:{best_metric:0.4f}")
+    model = model.eval().to(orig_model_device,dtype=orig_model_dtype)
+    
+    return model
+
+
 def train(
         model : torch.nn.Module,
         train_loader,
@@ -39,7 +135,7 @@ def train(
         optimizer = None,
         scheduler = None,
         model_wrapper = None,
-        accelerator : Accelerator = None,
+        accelerator = None,
         accelerate_args : None | Dict = None,
         ema_args :  None | Dict = None,
         gradient_clipping_max_norm = None,
@@ -253,6 +349,9 @@ def train(
     5. **Checkpointing and Plotting:** Saves the model checkpoint if the test metric improves. At the end of training,
        generates and saves loss and metric plots in the `plots` folder.
     """
+    from accelerate import Accelerator
+    from tqdm import tqdm
+    
     _print_green(f"Using dir {save_results_dir}")
     if checkpoints_count==0:
         _print_red("WARNING!!! (checkpoints_count==0) No checkpoints will be saved!")
@@ -700,6 +799,7 @@ def load_best_checkpoint(model,base_path,log = True,device_map=None):
     return load_checkpoint(model,base_path,-1,log,device_map=device_map).eval()
 
 def load_last_checkpoint(model,base_path,log=True,device_map=None):
+    from accelerate import load_checkpoint_and_dispatch
     report = os.path.join(base_path,'last','report.json')
     if log and os.path.isfile(report):
         report = json.loads(open(report).read())
@@ -710,6 +810,7 @@ def load_last_checkpoint(model,base_path,log=True,device_map=None):
     return model.eval()
 
 def load_checkpoint(model,base_path,checkpoint_index,log=True,device_map=None):
+    from accelerate import load_checkpoint_and_dispatch
     checkpoints = os.path.join(base_path,'checkpoints')
     c = os.listdir(checkpoints)
     best = sorted(c,key=lambda x: int(x.split('-')[-1]))[checkpoint_index]
