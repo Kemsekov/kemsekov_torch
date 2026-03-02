@@ -46,10 +46,17 @@ def train_simple(
     device='cpu',
     dtype=torch.float32
 ):
-    X_train=torch.tensor(X_train,dtype=dtype,device=device)
-    y_train=torch.tensor(y_train,dtype=dtype,device=device)
-    X_test=torch.tensor(X_test,dtype=dtype,device=device)
-    y_test=torch.tensor(y_test,dtype=dtype,device=device)
+    def totensor(x):
+        if not isinstance(x,torch.Tensor):
+            x = torch.tensor(x)
+        if not x.device!=device or x.dtype!=dtype:
+            x=x.to(device=device,dtype=dtype)
+        return x
+    
+    X_train=totensor(X_train)
+    y_train=totensor(y_train)
+    X_test=totensor(X_test)
+    y_test=totensor(y_test)
     
     w = list(model.parameters())[0]
     orig_model_device = w.device
