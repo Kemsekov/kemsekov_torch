@@ -99,11 +99,11 @@ def train_simple(
                 best_metric = test_metric
                 best_model_state=deepcopy(model.state_dict())
                 test_degraded=0
-                if verbose: print(f"{"="*23}Save{"="*23}")
+                if verbose: _print_green(f"{"="*23}Save{"="*23}")
             elif rollback_K>0 and best_model_state is not None:
                 test_degraded+=1
                 if test_degraded>=rollback_K:
-                    if verbose: print(f"{"="*19}Rolling back{"="*19}")
+                    if verbose: _print_red(f"{"="*19}Rolling back{"="*19}")
                     test_degraded=0
                     with torch.no_grad():
                         model.load_state_dict(best_model_state)
