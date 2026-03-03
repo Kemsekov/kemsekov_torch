@@ -4,35 +4,18 @@ from typing import Dict, Tuple
 import torch
 from torch import nn
 
-
-
 def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval_length = 1):
     """
     Returns interpolated inverse frequencies.
     """
     # ==================== Linear ====================
     scale = eval_length / trained_length
+    
+    # do not scale inputs smaller than trained ones
+    if scale<1: scale=1
     i = torch.arange(0, dim, dtype=torch.float32, device=device)
     base_freq = base ** (-i / dim)  # Standard inverse frequencies
     return base_freq/scale
-    
-    # ==================== YaRN ====================
-    # it works very good for 1-dim data, but for some reason just completely fails at images domain
-    # scale = eval_length / trained_length
-    # i = torch.arange(0, dim, dtype=torch.float32, device=device)  # Shape: [dim//2]
-    # base_freq = base ** (-i / dim)          # Standard inverse frequencies [dim//2]
-    # if scale!=1:
-    #     # print(scale)
-    #     # good finetuned approximation
-    #     parameter = math.log2(dim)-0.15*math.sqrt(dim)-1
-    #     parameter = math.log2(dim)-math.sqrt(dim)
-    #     parameter = 2
-    #     gamma = (parameter* i) / (dim - parameter)
-    #     scaled_freq = base_freq * (scale ** (-gamma))
-    #     return scaled_freq
-    # return base_freq
-    
-    
 
 
 class RotEmb(nn.Module):

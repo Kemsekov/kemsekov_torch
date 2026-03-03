@@ -82,20 +82,20 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
         
         # pos ind always centered at zero, and be in range [-1,1]
         POS_IND=POS_IND[None,:]/self.max_dim_size
-        
+        POS_IND=POS_IND.to(x.device,dtype=x.dtype)
         # apply CAPE Augmentation Transformations 
         if self.training and self.jit_prob>0:
             # for more stable gradients, apply transformations batch-wise
             B = x.shape[0]
             
             #randomly shift in range [-cape_shift,cape_shift]
-            pos_ind_shift = (torch.rand([B]+[1]*(POS_IND.ndim-2)+[self.dimensions],device=x.device)*2-1)*self.cape_shift
+            pos_ind_shift = (torch.rand([B]+[1]*(POS_IND.ndim-2)+[self.dimensions],device=x.device,dtype=x.dtype)*2-1)*self.cape_shift
             #randomly scale in range [0,cape_scale]
-            pos_ind_scale = torch.rand([B]+[1]*(POS_IND.ndim-2)+[self.dimensions],device=x.device)*self.cape_scale
+            pos_ind_scale = torch.rand([B]+[1]*(POS_IND.ndim-2)+[self.dimensions],device=x.device,dtype=x.dtype)*self.cape_scale
             
             # with probability (1-jit) choose batches that are not going to be augmented
             if self.jit_prob<1:
-                batches_not_to_augment = torch.rand((B,),device=x.device)>self.jit_prob
+                batches_not_to_augment = torch.rand((B,),device=x.device,dtype=x.dtype)>self.jit_prob
                 pos_ind_scale[batches_not_to_augment]=1
                 pos_ind_shift[batches_not_to_augment]=0
             # shift and scale positions to make attention work on relative positions rather than fixed
