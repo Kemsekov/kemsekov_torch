@@ -99,7 +99,6 @@ class OptimalFeatureImportance:
         epochs: int = 512,
         lr: float = 1e-3,
         batch_size: int = 32,
-        test_size: int = 128,
         drop_features_per_step: int = 10,
         max_steps: int = 15,
         n_model_init: int = 5,
@@ -109,7 +108,6 @@ class OptimalFeatureImportance:
         verbose: bool = True,
         seed: int = 42,
         rollback_K: int = 3,
-        prediction_indices: Optional[List[int]] = None
     ):
         """
         Initialize the feature selection model.
@@ -129,7 +127,6 @@ class OptimalFeatureImportance:
             verbose: Whether to print progress
             seed: Random seed for reproducibility
             rollback_K: Rollback parameter for training
-            prediction_indices: Which columns to predict (None = all)
         """
         torch.manual_seed(seed)
         
@@ -137,7 +134,6 @@ class OptimalFeatureImportance:
         self.epochs = epochs
         self.lr = lr
         self.batch_size = batch_size
-        self.test_size = test_size
         self.drop_features_per_step = drop_features_per_step
         self.max_steps = max_steps
         self.n_model_init = n_model_init
@@ -147,7 +143,6 @@ class OptimalFeatureImportance:
         self.verbose = verbose
         self.seed = seed
         self.rollback_K = rollback_K
-        self.prediction_indices = prediction_indices
         
         # Fitted state
         self.is_fitted = False
@@ -159,13 +154,21 @@ class OptimalFeatureImportance:
         self.feature_importance_history = []
         self.all_columns = None
     
-    def fit(self, X: pd.DataFrame, y: Optional[pd.DataFrame|np.ndarray] = None) -> 'OptimalFeatureImportance':
+    def fit(
+        self, 
+        X: pd.DataFrame, 
+        y: Union[pd.DataFrame, np.ndarray],
+        X_test: pd.DataFrame,
+        y_test: Union[pd.DataFrame, np.ndarray]
+    ) -> 'OptimalFeatureImportance':
         """
         Fit the feature selection model.
         
         Args:
-            X: Input DataFrame of shape [samples, features]
-            y: Target DataFrame or ndarray (optional, if None uses X columns)
+            X: Training input DataFrame of shape [samples, features]
+            y: Training target DataFrame or ndarray
+            X_test: Test input DataFrame (REQUIRED)
+            y_test: Test target DataFrame or ndarray (REQUIRED)
             
         Returns:
             self
@@ -173,35 +176,49 @@ class OptimalFeatureImportance:
         if not isinstance(X, pd.DataFrame):
             raise TypeError("X must be a pandas DataFrame")
         
+        if not isinstance(X_test, pd.DataFrame):
+            raise TypeError("X_test must be a pandas DataFrame")
+        
         # Store column names
         self.all_columns = list(X.columns)
         
-        # Convert to numpy and scale
+        # Validate X_test has same columns as X
+        missing_cols = set(self.all_columns) - set(X_test.columns)
+        if missing_cols:
+            raise ValueError(f"X_test missing columns: {missing_cols}")
+        
+        extra_cols = set(X_test.columns) - set(self.all_columns)
+        if extra_cols:
+            raise ValueError(f"X_test has extra columns not in X: {extra_cols}")
+        def totensor(x):
+            if isinstance(x,torch.Tensor): return x.float()
+            return torch.tensor(x,dtype=torch.float32)
+        # Convert training data to numpy and scale (fit scaler on TRAINING data only)
         X_np = X.to_numpy()
         self.scaler = StandardScaler()
         X_scaled = self.scaler.fit_transform(X_np)
-        X_full = torch.tensor(X_scaled, dtype=torch.float32)
+        X_full = totensor(X_scaled)
+        y_full = totensor(y)
         
-        # Handle target
-        if y is not None:
-            y_np = np.array(y)
-            y_full = torch.tensor(y_np, dtype=torch.float32)
-            if self.prediction_indices is None:
-                self.prediction_indices = list(range(y_full.shape[1]))
-        else:
-            # Use X columns as target (auto-regressive)
-            if self.prediction_indices is None:
-                self.prediction_indices = list(range(X_full.shape[1]))
-            y_full = X_full[1:, self.prediction_indices]
-            X_full = X_full[:-1]
+        # Align train shapes
+        min_train_len = min(len(X_full), len(y_full))
+        X_full = X_full[:min_train_len]
+        y_full = y_full[:min_train_len]
         
-        # Align shapes if y was provided separately
-        if y is not None and len(y_full) > len(X_full):
-            y_full = y_full[:len(X_full)]
-        elif y is not None and len(y_full) < len(X_full):
-            X_full = X_full[:len(y_full)]
+        # Convert and scale test data using fitted scaler (NO refit!)
+        X_test_np = X_test.to_numpy()
+        X_test_scaled = self.scaler.transform(X_test_np)
+  
         
-        # Store for later
+        self.X_test_scaled = totensor(X_test_scaled)
+        self.y_test_tensor = totensor(y_test)
+        
+        # Align test shapes
+        min_test_len = min(len(self.X_test_scaled), len(self.y_test_tensor))
+        self.X_test_scaled = self.X_test_scaled[:min_test_len]
+        self.y_test_tensor = self.y_test_tensor[:min_test_len]
+        
+        # Store full scaled training data for potential recalculation
         self.X_full = X_full
         self.y_full = y_full
         
@@ -222,26 +239,23 @@ class OptimalFeatureImportance:
                     print(f"Step {step}: Stopping - too few features remaining ({len(features_id)})")
                 break
             
-            # Select current features
-            X_prep = X_full[:, features_id]
-            X_train = X_prep[:-self.test_size]
-            y_train = y_full[:-self.test_size]
-            X_test = X_prep[-self.test_size:]
-            y_test = y_full[-self.test_size:]
+            # Select current features for both train and test
+            X_train_prep = X_full[:, features_id]
+            X_test_prep = self.X_test_scaled[:, features_id]
             
             # Step 1: Find best model from multiple initializations
             best_model = None
             best_r2 = -1e10
             
             for i in range(self.n_model_init):
-                mlp = MLP(X_train.shape[-1], y_train.shape[-1], hid=self.hid)
+                mlp = MLP(X_train_prep.shape[-1], y_full.shape[-1], hid=self.hid)
                 model, metrics = train_simple(
                     mlp,
                     compute_loss_and_metric,
-                    X_train,
-                    y_train,
-                    X_test,
-                    y_test,
+                    X_train_prep,
+                    y_full,
+                    X_test_prep,
+                    self.y_test_tensor,
                     rollback_K=self.rollback_K,
                     epochs=self.epochs,
                     lr=self.lr,
@@ -254,12 +268,12 @@ class OptimalFeatureImportance:
                     best_r2 = r2
                     best_model = model
             
-            # Step 2: Calculate feature importance
+            # Step 2: Calculate feature importance on TEST set
             importances = calculate_permutation_importance(
                 best_model,
                 compute_loss_and_metric,
-                X_test,
-                y_test,
+                X_test_prep,
+                self.y_test_tensor,
                 n_repeats=self.n_repeats,
                 verbose=False,
                 dtype=self.dtype,
@@ -276,7 +290,7 @@ class OptimalFeatureImportance:
                 'r2': best_r2
             })
             
-            # Update best if this is the best so far
+            # Update best if this is the best so far (evaluated on TEST set)
             if best_r2 > self.best_features_r2:
                 self.best_features_r2 = best_r2
                 self.best_features_id = deepcopy(features_id)
@@ -285,11 +299,10 @@ class OptimalFeatureImportance:
             
             if self.verbose:
                 print("=" * 20)
-                print(f"Step {step}: Features={len(features_id)}, Best R²={best_r2:.4f}")
+                print(f"Step {step}: Features={len(features_id)}, Test R²={best_r2:.4f}")
                 print(f"Current Features: {current_feature_names[:10]}{'...' if len(current_feature_names) > 10 else ''}")
             
             # Step 3: Drop least important features
-            # argsort ascending (worst first), keep top features
             important_features_ind = (-importance).argsort()[:-self.drop_features_per_step]
             features_id = [features_id[i] for i in important_features_ind]
             
@@ -301,7 +314,7 @@ class OptimalFeatureImportance:
         if self.verbose:
             print("\n" + "=" * 20)
             print(f"Feature Selection Complete!")
-            print(f"Best R²: {self.best_features_r2:.4f}")
+            print(f"Best Test R²: {self.best_features_r2:.4f}")
             print(f"Best Features ({len(self.best_features_id)}): {self.best_features_names}")
         
         return self
@@ -315,11 +328,7 @@ class OptimalFeatureImportance:
             y: Optional target for evaluation
             
         Returns:
-            Dictionary containing:
-                - predictions: Model predictions
-                - features_used: List of feature names used
-                - r2: R² score if y provided
-                - importance: Feature importance scores if available
+            Dictionary containing predictions, features used, and metrics
         """
         if not self.is_fitted:
             raise RuntimeError("Model must be fitted before prediction. Call fit() first.")
@@ -332,13 +341,15 @@ class OptimalFeatureImportance:
         if missing_cols:
             raise ValueError(f"Missing required features: {missing_cols}")
         
-        # Select best features and scale
+        # Select best features and scale (using fitted scaler)
         X_scaled = self.scaler.transform(X)
-        X_selected = X_scaled[:,self.best_features_id]
-        X_tensor = torch.tensor(X_selected, dtype=torch.float32).to(self.device, dtype=self.dtype)
+        X_selected = X_scaled[:, self.best_features_id]
+        X_tensor = torch.tensor(X_selected, dtype=torch.float32).to(self.device)
         
-        w = list(self.best_fitted_model.parameters())[0]
-        X_tensor = X_tensor.to(w.device,dtype=w.dtype)
+        # Ensure model parameters and input are on same device/dtype
+        model_params = list(self.best_fitted_model.parameters())[0]
+        X_tensor = X_tensor.to(device=model_params.device, dtype=model_params.dtype)
+        
         # Make prediction
         self.best_fitted_model.eval()
         with torch.no_grad():
@@ -352,16 +363,15 @@ class OptimalFeatureImportance:
         
         # Evaluate if y provided
         if y is not None:
-            y_np = y.to_numpy()
-            y_tensor = torch.tensor(y_np, dtype=torch.float32).to(self.device, dtype=self.dtype)
+            y_np = y.to_numpy() if isinstance(y, pd.DataFrame) else y
+            y_tensor = torch.tensor(y_np, dtype=torch.float32).to(self.device)
             
             # Align shapes
-            if len(y_tensor) > len(X_tensor):
-                y_tensor = y_tensor[:len(X_tensor)]
-            elif len(y_tensor) < len(X_tensor):
-                predictions = predictions[:len(y_tensor)]
+            min_len = min(len(predictions), len(y_tensor))
+            pred_trim = predictions[:min_len]
+            y_trim = y_tensor[:min_len]
             
-            r2 = float(r2_score(predictions, y_tensor))
+            r2 = float(r2_score(pred_trim.cpu().numpy(), y_trim.cpu().numpy()))
             result['r2'] = r2
         
         return result
@@ -376,121 +386,31 @@ class OptimalFeatureImportance:
         if not self.is_fitted:
             raise RuntimeError("Model must be fitted first.")
         
-        # Get importance from last recorded step with best features
+        # Try to get importance from history for best features
         for hist in reversed(self.feature_importance_history):
             if set(hist['features']) == set(self.best_features_names):
                 importance = hist['importance']
-                break
-        else:
-            # Fallback: recalculate
-            X_prep = self.X_full[:, self.best_features_id]
-            X_test = X_prep[-self.test_size:]
-            y_test = self.y_full[-self.test_size:]
-            
-            importances = calculate_permutation_importance(
-                self.best_fitted_model,
-                compute_loss_and_metric,
-                X_test,
-                y_test,
-                n_repeats=self.n_repeats,
-                verbose=False,
-                dtype=self.dtype,
-                device=self.device
-            )
-            importance = importances[0].cpu().numpy()
+                return pd.DataFrame({
+                    'feature': self.best_features_names,
+                    'importance': importance
+                }).sort_values('importance', ascending=False)
+        
+        # Fallback: recalculate on stored test data
+        X_test_prep = self.X_test_scaled[:, self.best_features_id]
+        
+        importances = calculate_permutation_importance(
+            self.best_fitted_model,
+            compute_loss_and_metric,
+            X_test_prep,
+            self.y_test_tensor,
+            n_repeats=self.n_repeats,
+            verbose=False,
+            dtype=self.dtype,
+            device=self.device
+        )
+        importance = importances[0].cpu().numpy()
         
         return pd.DataFrame({
             'feature': self.best_features_names,
             'importance': importance
         }).sort_values('importance', ascending=False)
-    
-    def get_selection_history(self) -> pd.DataFrame:
-        """
-        Get the history of feature selection across all steps.
-        
-        Returns:
-            DataFrame with step, num_features, and best_r2
-        """
-        if not self.is_fitted:
-            raise RuntimeError("Model must be fitted first.")
-        
-        history = []
-        for h in self.feature_importance_history:
-            history.append({
-                'step': h['step'],
-                'num_features': len(h['features']),
-                'r2': h['r2']
-            })
-        
-        return pd.DataFrame(history)
-    
-    def get_best_features(self) -> List[str]:
-        """Return the list of best feature names."""
-        if not self.is_fitted:
-            raise RuntimeError("Model must be fitted first.")
-        return self.best_features_names
-    
-    def save(self, path: str):
-        """Save the model state."""
-        if not self.is_fitted:
-            raise RuntimeError("Model must be fitted before saving.")
-        
-        torch.save({
-            'best_model_state': self.best_fitted_model.state_dict(),
-            'best_features_id': self.best_features_id,
-            'best_features_names': self.best_features_names,
-            'best_features_r2': self.best_features_r2,
-            'scaler_mean': self.scaler.mean_,
-            'scaler_scale': self.scaler.scale_,
-            'config': {
-                'hid': self.hid,
-                'epochs': self.epochs,
-                'lr': self.lr,
-                'test_size': self.test_size,
-                'drop_features_per_step': self.drop_features_per_step,
-                'max_steps': self.max_steps,
-                'n_model_init': self.n_model_init,
-                'n_repeats': self.n_repeats,
-                'device': self.device,
-                'dtype': str(self.dtype),
-                'all_columns': self.all_columns,
-                'prediction_indices': self.prediction_indices
-            }
-        }, path)
-    
-    @classmethod
-    def load(cls, path: str, device: Optional[str] = None) -> 'OptimalFeatureImportance':
-        """Load model from checkpoint."""
-        checkpoint = torch.load(path, map_location=device or 'cpu')
-        config = checkpoint['config']
-        
-        # Reconstruct dtype
-        config['dtype'] = torch.bfloat16 if config['dtype'] == 'torch.bfloat16' else torch.float32
-        if device:
-            config['device'] = device
-        
-        model = cls(**config)
-        
-        # Restore scaler
-        model.scaler = StandardScaler()
-        model.scaler.mean_ = checkpoint['scaler_mean']
-        model.scaler.scale_ = checkpoint['scaler_scale']
-        model.scaler.n_features_in_ = len(checkpoint['scaler_mean'])
-        
-        # Restore best model
-        model.best_fitted_model = MLP(
-            len(checkpoint['best_features_id']),
-            len(config['prediction_indices']),
-            hid=config['hid']
-        )
-        model.best_fitted_model.load_state_dict(checkpoint['best_model_state'])
-        model.best_fitted_model.to(config['device'], dtype=config['dtype'])
-        
-        # Restore state
-        model.best_features_id = checkpoint['best_features_id']
-        model.best_features_names = checkpoint['best_features_names']
-        model.best_features_r2 = checkpoint['best_features_r2']
-        model.all_columns = config['all_columns']
-        model.is_fitted = True
-        
-        return model
