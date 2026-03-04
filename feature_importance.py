@@ -235,7 +235,7 @@ class OptimalFeatureImportance:
             
             for i in range(self.n_model_init):
                 mlp = MLP(X_train.shape[-1], y_train.shape[-1], hid=self.hid)
-                model, metric = train_simple(
+                model, metrics = train_simple(
                     mlp,
                     compute_loss_and_metric,
                     X_train,
@@ -249,7 +249,7 @@ class OptimalFeatureImportance:
                     dtype=self.dtype,
                     verbose=False
                 )
-                r2 = metric['R2']
+                r2 = metrics['R2']
                 if r2 > best_r2:
                     best_r2 = r2
                     best_model = model
@@ -333,10 +333,12 @@ class OptimalFeatureImportance:
             raise ValueError(f"Missing required features: {missing_cols}")
         
         # Select best features and scale
-        X_selected = X[self.best_features_names]
-        X_scaled = self.scaler.transform(X_selected.to_numpy())
-        X_tensor = torch.tensor(X_scaled, dtype=torch.float32).to(self.device, dtype=self.dtype)
+        X_scaled = self.scaler.transform(X)
+        X_selected = X_scaled[:,self.best_features_id]
+        X_tensor = torch.tensor(X_selected, dtype=torch.float32).to(self.device, dtype=self.dtype)
         
+        w = list(self.best_fitted_model.parameters())[0]
+        X_tensor = X_tensor.to(w.device,dtype=w.dtype)
         # Make prediction
         self.best_fitted_model.eval()
         with torch.no_grad():
