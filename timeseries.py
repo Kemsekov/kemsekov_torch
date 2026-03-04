@@ -1,3 +1,4 @@
+import numpy as np
 import torch.nn as nn
 import torch
 import math
@@ -18,6 +19,7 @@ class TimeSeriesModel(nn.Module):
             # my self attention expects tensors [batch,dim,sequence]
             *[
                 nn.Sequential(
+                    nn.SiLU(),
                     ChanLayerNorm(hid),
                     SelfAttention(
                         hid,
@@ -31,17 +33,16 @@ class TimeSeriesModel(nn.Module):
                         prenorm=False
                     ),
                     ChanLayerNorm(hid),
-                    nn.ReLU6(),
                 )
             for i in range(layers)  
             ],
             Transpose(1,-1)
         )
         self.fc = nn.Linear(hid,out_dim*2)
-    def forward(self,x,return_embeddings=False):
+    def forward(self,x,return_emb=False):
         out = self.m(x)
         mu,logstd = self.fc(out).chunk(2,-1)
-        if return_embeddings:
+        if return_emb:
             return mu,logstd,out
         return mu,logstd
     
@@ -78,7 +79,6 @@ class TimeseriesRegression:
     
     def __init__(
         self,
-        in_dim: int,
         prediction_indices: List[int],
         hid: int = 64,
         layers: int = 1,
@@ -97,7 +97,6 @@ class TimeseriesRegression:
         Initialize the Time Series Regression model.
         
         Args:
-            in_dim: Number of input features
             prediction_indices: Which columns to predict (None = all)
             hid: Hidden layer size
             layers: Number of hidden layers
@@ -118,7 +117,6 @@ class TimeseriesRegression:
         """
         torch.manual_seed(seed)
         
-        self.in_dim = in_dim
         self.out_dim = len(prediction_indices)
         self.hid = hid
         self.layers = layers
@@ -210,7 +208,14 @@ class TimeseriesRegression:
         else:
             return r2s,mus,sigmas
     
-    def fit(self, data: torch.Tensor,test_size : int, verbose: bool = True) -> 'TimeseriesRegression':
+    def _totensor(self,x):
+        if not isinstance(x,torch.Tensor):
+            x = torch.tensor(x)
+        if x.device!=self.device or x.dtype!=self.dtype:
+            x=x.to(device=self.device,dtype=self.dtype)
+        return x
+    
+    def fit(self, data: torch.Tensor|np.ndarray,test_size : int, verbose: bool = True) -> 'TimeseriesRegression':
         """
         Fit the model on the provided data.
         
@@ -222,10 +227,12 @@ class TimeseriesRegression:
         Returns:
             self
         """
+        data = self._totensor(data)
+        self.in_dim = data.shape[-1]
         self.test_size=test_size
         self.train_size = len(data)-test_size
         # Store full dataset
-        self.x_full = data.to(device=self.device, dtype=self.dtype)
+        self.x_full = data
         self.dataset_size = len(self.x_full)
         
         # Split train/test
@@ -312,8 +319,8 @@ class TimeseriesRegression:
     
     def predict(
         self, 
-        X: torch.Tensor, 
-        return_uncertainty: bool = False
+        X: torch.Tensor|np.ndarray,
+        return_emb = False
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
         Make predictions on new data.
@@ -333,7 +340,7 @@ class TimeseriesRegression:
         self.model.eval()
         
         # Ensure correct device/dtype
-        X = X.to(device=self.device, dtype=self.dtype)
+        X = self._totensor(X)
         
         # Handle different input shapes
         if X.dim() == 2:
@@ -341,18 +348,14 @@ class TimeseriesRegression:
             X = X[None]
         
         # Split input
-        prev_x = X[:, :-self.future_steps]
         
         with torch.no_grad():
-            mu, logstd = self.model(prev_x)
+            result = self.model(X,return_emb=return_emb)
         
         if was_training:
             self.model.train()
         
-        if return_uncertainty:
-            return mu, logstd
-        else:
-            return mu
+        return result
     
     def evaluate(
         self, 
@@ -379,8 +382,8 @@ class TimeseriesRegression:
         was_training = self.model.training
         self.model.eval()
         
-        X = X.to(device=self.device, dtype=self.dtype)
-        y = y.to(device=self.device, dtype=self.dtype)
+        X = self._totensor(X)
+        y = self._totensor(y)
         
         if X.dim() == 2:
             X = X[None]

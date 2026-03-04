@@ -551,7 +551,6 @@ class OptimalFeatureImportance:
         self.best_features_r2 = -1e10
         self.best_fitted_model = None
         self.feature_importance_history = []
-        
         # Recursive Feature Elimination Loop
         for step in range(self.max_steps):
             if len(features_id) <= self.drop_features_per_step:
