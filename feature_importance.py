@@ -587,12 +587,18 @@ class OptimalFeatureImportance:
                     best_r2 = r2
                     best_model = model
             
+            
+            # new we attach part of train dataset alongside test dataset
+            # to make sure that permutation importance
+            X_permutation = torch.concat([X_train_prep,X_test_prep],0)[-2*X_test_prep.shape[0]:]
+            y_permutation = torch.concat([y_full,self.y_test_tensor],0)[-2*X_test_prep.shape[0]:]
+            
             # Step 2: Calculate feature importance on TEST set
             importances = calculate_permutation_importance(
                 best_model,
                 compute_loss_and_metric,
-                X_test_prep,
-                self.y_test_tensor,
+                X_permutation,
+                y_permutation,
                 n_repeats=self.n_repeats,
                 verbose=False,
                 dtype=self.dtype,
