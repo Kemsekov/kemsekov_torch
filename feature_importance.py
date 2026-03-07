@@ -194,9 +194,8 @@ class OptimalFeatureImportance:
             if isinstance(x,torch.Tensor): return x.float()
             return torch.tensor(x,dtype=torch.float32)
         # Convert training data to numpy and scale (fit scaler on TRAINING data only)
-        X_np = X.to_numpy()
         self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X_np)
+        X_scaled = self.scaler.fit_transform(X)
         X_full = totensor(X_scaled)
         y_full = totensor(y)
         
@@ -206,8 +205,7 @@ class OptimalFeatureImportance:
         y_full = y_full[:min_train_len]
         
         # Convert and scale test data using fitted scaler (NO refit!)
-        X_test_np = X_test.to_numpy()
-        X_test_scaled = self.scaler.transform(X_test_np)
+        X_test_scaled = self.scaler.transform(X_test)
   
         
         self.X_test_scaled = totensor(X_test_scaled)
@@ -514,9 +512,8 @@ class OptimalFeatureImportance:
             if isinstance(x,torch.Tensor): return x.float()
             return torch.tensor(x,dtype=torch.float32)
         # Convert training data to numpy and scale (fit scaler on TRAINING data only)
-        X_np = X.to_numpy()
         self.scaler = StandardScaler()
-        X_scaled = self.scaler.fit_transform(X_np)
+        X_scaled = self.scaler.fit_transform(X)
         X_full = totensor(X_scaled)
         y_full = totensor(y)
         
@@ -526,8 +523,7 @@ class OptimalFeatureImportance:
         y_full = y_full[:min_train_len]
         
         # Convert and scale test data using fitted scaler (NO refit!)
-        X_test_np = X_test.to_numpy()
-        X_test_scaled = self.scaler.transform(X_test_np)
+        X_test_scaled = self.scaler.transform(X_test)
   
         
         self.X_test_scaled = totensor(X_test_scaled)
