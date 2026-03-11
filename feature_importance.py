@@ -8,7 +8,6 @@ from sklearn.preprocessing import StandardScaler
 from kemsekov_torch.metrics import r2_score
 from kemsekov_torch.train import train_simple
 
-@torch.no_grad()
 def calculate_permutation_importance(model, compute_loss_and_metrics, X_test, y_test, 
                                       n_repeats=5, verbose=True, dtype=torch.float32, device='cpu'):
     """Calculate permutation importance for each feature."""
@@ -44,7 +43,8 @@ def calculate_permutation_importance(model, compute_loss_and_metrics, X_test, y_
             X_perm = X_test.clone()
             perm = torch.randperm(X_test.shape[0])
             X_perm[:, i] = X_test[perm, i]
-            _, p_metrics = compute_loss_and_metrics(model, X_perm, y_test)
+            with torch.inference_mode():
+                _, p_metrics = compute_loss_and_metrics(model, X_perm, y_test)
             scores.append(p_metrics[metric_name])
         
         avg_score = sum(scores) / n_repeats
