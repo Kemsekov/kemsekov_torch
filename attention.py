@@ -243,8 +243,11 @@ class CrossAttention(nn.Module):
         dropout=0.0,
         dimensions: Literal[1,2,3] = 2,
         add_rotary_embedding = False,
-        linear=False
-        
+        add_absolute_pos=False,
+        abs_pos_jit_prob=0.5,
+        linear=False,
+        is_causal=False,
+        prenorm=True
     ):
         super().__init__()
         self.heads = heads
@@ -253,7 +256,10 @@ class CrossAttention(nn.Module):
         self.linear = linear
         inner_dim = heads * head_dim
         context_dim = context_dim if context_dim is not None else dim
-        self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions)
+        if add_absolute_pos:
+            self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
+        else:
+            self.abs_emb = nn.Identity()
         
         self.add_rotary_embedding = add_rotary_embedding
         self.rotary_emb = RotEmb()
@@ -261,8 +267,15 @@ class CrossAttention(nn.Module):
         groups = max(1, dim // 32)
         if groups == 1 and dim // 16 >= 2: groups = 2
         
-        self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
-        self.norm_context = nn.GroupNorm(num_groups=max(1, context_dim // 32), num_channels=context_dim, eps=1e-6)
+        if prenorm and not is_causal:
+            self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
+            self.norm_context = nn.GroupNorm(num_groups=max(1, context_dim // 32), num_channels=context_dim, eps=1e-6)
+        elif prenorm and is_causal:
+            self.norm = ChanLayerNorm(dim)
+            self.norm_context = ChanLayerNorm(context_dim)
+        else:
+            self.norm = nn.Identity()
+            self.norm_context = nn.Identity()
         
         conv = [nn.Conv1d, nn.Conv2d, nn.Conv3d][dimensions - 1]
         
