@@ -124,7 +124,7 @@ class SelfAttention(nn.Module):
         output_bias = True,
         abs_pos_jit_prob = 0.5,
         add_absolute_pos = False,
-        prenorm : Literal[None,'group','layer']=True
+        prenorm : Literal[None,'group','layer']='layer'
         is_causal=False
     ):
         """
@@ -137,7 +137,7 @@ class SelfAttention(nn.Module):
         linear: whether to use custom-linear attention or not. Current linear attention although works, but is not optimized and default non-linear attention works a lot faster.
         output_bias: add bias to output conv or not. If you use GroupNorm after self-attention, i advice you to set this value to False
         add_absolute_pos: add absolute position embedding
-        prenorm: add group pre-normalization for input
+        prenorm: add group or layer pre-normalization for input
         """
         super().__init__()
         self.is_causal=is_causal
@@ -247,7 +247,7 @@ class CrossAttention(nn.Module):
         abs_pos_jit_prob=0.5,
         linear=False,
         is_causal=False,
-        prenorm : Literal[None,'group','layer']=True
+        prenorm : Literal[None,'group','layer']='layer'
     ):
         super().__init__()
         self.heads = heads
