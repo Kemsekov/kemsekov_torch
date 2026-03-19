@@ -4,8 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.metrics import r2_score
-from kemsekov_torch.common_modules import Prod, AddConst
-from kemsekov_torch.flow_matching import FlowMatching, generate_unit_simplex_vertices
+from kemsekov_torch.common_modules import Prod
+from kemsekov_torch.flow_matching import FlowMatching
 from kemsekov_torch.residual import Residual
 from kemsekov_torch.attention import EfficientSpatialChannelAttention
 import torch.nn as nn
@@ -49,7 +49,8 @@ class ViT(nn.Module):
                             add_rotary_embedding=True,
                             dropout=dropout,
                             output_bias=False,
-                            add_absolute_pos=True
+                            add_absolute_pos=True,
+                            abs_pos_jit_prob=0
                         ),
                         nn.GroupNorm(32,hidden_dim),
                         EfficientSpatialChannelAttention(hidden_dim,kernel_size=3),
@@ -77,16 +78,8 @@ class ViT(nn.Module):
             conv(hidden_dim,in_channels*(compression**2),1),
             nn.PixelShuffle(compression),
         )
-        # self.orig_x_gamma = nn.Sequential(
-        #     nn.Linear(1,32),
-        #     act(),
-        #     zero_module(nn.Linear(32,in_channels)),
-        # )
-        
-        # self.orig_x_gamma = nn.Parameter(torch.tensor([0.0]))
         
     def forward(self,x,t):
-        x_orig = x
         while t.ndim==1:
             t = t.unsqueeze(-1)
         
@@ -96,7 +89,18 @@ class ViT(nn.Module):
             xt = x*(1+time_scale)+time_shift
             x = r(xt)
         return self.up(x)
-
+class ViTHierarchy(nn.Module):
+    def __init__(self,in_channels,compression_rates=[4,8,16],hidden_dim=256,layers=[1,2,3],head_dim=64) -> None:
+        super().__init__()
+        self.v1 = ViT(in_channels,compression=compression_rates[0], hidden_dim=hidden_dim,layers=layers[0],head_dim=head_dim)  #16x16
+        self.v2 = ViT(in_channels,compression=compression_rates[1], hidden_dim=hidden_dim*2,layers=layers[1],head_dim=head_dim)  #8x8
+        self.v3 = ViT(in_channels,compression=compression_rates[2], hidden_dim=hidden_dim*4,layers=layers[2],head_dim=head_dim)  #4x4
+        self.combine = nn.Conv2d(3*in_channels,in_channels,kernel_size=3,padding=1)
+        
+    def forward(self,x,t):
+        y = torch.concat([self.v1(x,t),self.v2(x,t),self.v3(x,t)],dim=1)
+        return self.combine(y)
+    
 class LossNormalizer2d(nn.Module):
     def __init__(self, in_channels,hidden_dim) -> None:
         super().__init__()
@@ -186,19 +190,25 @@ def compute_subspace_log_volume(x: torch.Tensor, eps: float = 1e-8):
     return log_vol
 
 class FlowModel2d(nn.Module):
-    def __init__(self, in_channels,hidden_dim = 256,attention_layers=10,head_dim=64,compression_ratio=4) -> None:
+    def __init__(self, in_channels,hidden_dim = 64,attention_layers=10,head_dim=64,compression_ratio=4) -> None:
         super().__init__()
         self.register_buffer('default_steps',torch.tensor([16]))
         self.fm = FlowMatching()
         # self.fm.time_scaler = lambda x: torch.log(9*x+1)/math.log(10)
         self.in_channels=in_channels
-        self.vit = ViT(
+        self.vit = ViTHierarchy(
             in_channels,
             hidden_dim=hidden_dim,
-            layers=attention_layers,
+            layers=[8,3,2],
             head_dim=head_dim,
-            compression=compression_ratio
         )
+        # self.vit = ViT(
+        #     in_channels,
+        #     hidden_dim=hidden_dim,
+        #     layers=attention_layers,
+        #     head_dim=head_dim,
+        #     compression=compression_ratio
+        # )
         self.ln = LossNormalizer2d(in_channels,256)
         self.device='cpu'
     
