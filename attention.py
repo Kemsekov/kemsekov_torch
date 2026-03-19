@@ -124,7 +124,7 @@ class SelfAttention(nn.Module):
         output_bias = True,
         abs_pos_jit_prob = 0.5,
         add_absolute_pos = False,
-        prenorm : Literal[None,'group','layer']='layer'
+        prenorm : Literal[None,'group','layer']='layer',
         is_causal=False
     ):
         """
@@ -246,8 +246,8 @@ class CrossAttention(nn.Module):
         add_absolute_pos=False,
         abs_pos_jit_prob=0.5,
         linear=False,
+        prenorm : Literal[None,'group','layer']='layer',
         is_causal=False,
-        prenorm : Literal[None,'group','layer']='layer'
     ):
         super().__init__()
         self.heads = heads
