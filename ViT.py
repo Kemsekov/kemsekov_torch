@@ -50,7 +50,7 @@ class ViT(nn.Module):
                             dropout=dropout,
                             output_bias=False,
                             add_absolute_pos=True,
-                            abs_pos_jit_prob=0
+                            abs_pos_jit_prob=0.
                         ),
                         nn.GroupNorm(32,hidden_dim),
                         EfficientSpatialChannelAttention(hidden_dim,kernel_size=3),
@@ -92,13 +92,24 @@ class ViT(nn.Module):
 class ViTHierarchy(nn.Module):
     def __init__(self,in_channels,compression_rates=[4,8,16],hidden_dim=256,layers=[1,2,3],head_dim=64) -> None:
         super().__init__()
+        length = min(len(layers),3)
+        self.length=length
+        
         self.v1 = ViT(in_channels,compression=compression_rates[0], hidden_dim=hidden_dim,layers=layers[0],head_dim=head_dim)  #16x16
-        self.v2 = ViT(in_channels,compression=compression_rates[1], hidden_dim=hidden_dim*2,layers=layers[1],head_dim=head_dim)  #8x8
-        self.v3 = ViT(in_channels,compression=compression_rates[2], hidden_dim=hidden_dim*4,layers=layers[2],head_dim=head_dim)  #4x4
-        self.combine = nn.Conv2d(3*in_channels,in_channels,kernel_size=3,padding=1)
+        if length>1:
+            self.v2 = ViT(in_channels,compression=compression_rates[1], hidden_dim=hidden_dim,layers=layers[1],head_dim=head_dim)  #8x8
+        if length>2:
+            self.v3 = ViT(in_channels,compression=compression_rates[2], hidden_dim=hidden_dim,layers=layers[2],head_dim=head_dim)  #4x4
+        self.combine = nn.Conv2d(length*in_channels,in_channels,kernel_size=3,padding=1)
         
     def forward(self,x,t):
-        y = torch.concat([self.v1(x,t),self.v2(x,t),self.v3(x,t)],dim=1)
+        values = [self.v1(x,t)]
+        if self.length>1:
+            values.append(self.v2(x,t))
+        if self.length>2:
+            values.append(self.v3(x,t))
+        
+        y = torch.concat(values,dim=1)
         return self.combine(y)
     
 class LossNormalizer2d(nn.Module):
@@ -190,7 +201,7 @@ def compute_subspace_log_volume(x: torch.Tensor, eps: float = 1e-8):
     return log_vol
 
 class FlowModel2d(nn.Module):
-    def __init__(self, in_channels,hidden_dim = 64,attention_layers=10,head_dim=64,compression_ratio=4) -> None:
+    def __init__(self, in_channels,hidden_dim = 64,attention_layers=[8,4,2],compression_rates=[2,4,8],head_dim=64,compression_ratio=4) -> None:
         super().__init__()
         self.register_buffer('default_steps',torch.tensor([16]))
         self.fm = FlowMatching()
@@ -199,16 +210,10 @@ class FlowModel2d(nn.Module):
         self.vit = ViTHierarchy(
             in_channels,
             hidden_dim=hidden_dim,
-            layers=[8,3,2],
+            layers=attention_layers,
+            compression_rates=compression_rates,
             head_dim=head_dim,
         )
-        # self.vit = ViT(
-        #     in_channels,
-        #     hidden_dim=hidden_dim,
-        #     layers=attention_layers,
-        #     head_dim=head_dim,
-        #     compression=compression_ratio
-        # )
         self.ln = LossNormalizer2d(in_channels,256)
         self.device='cpu'
     

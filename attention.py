@@ -160,13 +160,11 @@ class SelfAttention(nn.Module):
         if groups==1 and dim//16>=2: groups=2
         
         # Pre-normalization with GroupNorm
-        if prenorm and not is_causal:
-            self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
-        elif prenorm and is_causal:
+        if prenorm:
             self.norm = ChanLayerNorm(dim)
         else:
             self.norm = nn.Identity()
-            
+        
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         
         self.to_qkv = conv(dim, inner_dim * 3, 1, bias=True)
@@ -267,10 +265,7 @@ class CrossAttention(nn.Module):
         groups = max(1, dim // 32)
         if groups == 1 and dim // 16 >= 2: groups = 2
         
-        if prenorm and not is_causal:
-            self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
-            self.norm_context = nn.GroupNorm(num_groups=max(1, context_dim // 32), num_channels=context_dim, eps=1e-6)
-        elif prenorm and is_causal:
+        if prenorm:
             self.norm = ChanLayerNorm(dim)
             self.norm_context = ChanLayerNorm(context_dim)
         else:
