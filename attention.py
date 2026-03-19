@@ -124,7 +124,7 @@ class SelfAttention(nn.Module):
         output_bias = True,
         abs_pos_jit_prob = 0.5,
         add_absolute_pos = False,
-        prenorm = True,
+        prenorm : Literal[None,'group','layer']=True
         is_causal=False
     ):
         """
@@ -160,8 +160,10 @@ class SelfAttention(nn.Module):
         if groups==1 and dim//16>=2: groups=2
         
         # Pre-normalization with GroupNorm
-        if prenorm:
+        if prenorm=='layer':
             self.norm = ChanLayerNorm(dim)
+        elif prenorm=='group':
+            self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
         else:
             self.norm = nn.Identity()
         
@@ -245,7 +247,7 @@ class CrossAttention(nn.Module):
         abs_pos_jit_prob=0.5,
         linear=False,
         is_causal=False,
-        prenorm=True
+        prenorm : Literal[None,'group','layer']=True
     ):
         super().__init__()
         self.heads = heads
@@ -265,9 +267,12 @@ class CrossAttention(nn.Module):
         groups = max(1, dim // 32)
         if groups == 1 and dim // 16 >= 2: groups = 2
         
-        if prenorm:
+        if prenorm=='layer':
             self.norm = ChanLayerNorm(dim)
             self.norm_context = ChanLayerNorm(context_dim)
+        elif prenorm=='group':
+            self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
+            self.norm_context = nn.GroupNorm(num_groups=max(1, context_dim // 32), num_channels=context_dim, eps=1e-6)
         else:
             self.norm = nn.Identity()
             self.norm_context = nn.Identity()
