@@ -167,39 +167,6 @@ class LossNormalizer2d(nn.Module):
         x = self.down4(x)
         
         return self.out(x).mean([-1,-2],keepdim=True)
-        
-
-def compute_subspace_log_volume(x: torch.Tensor, eps: float = 1e-8):
-    """
-    Computes the log-volume of the k-dimensional parallelepiped formed by 
-    k vectors in N-dimensional space.
-    
-    Args:
-        x: Tensor of shape [B, k, N]
-        eps: Small constant for numerical stability in log
-        
-    Returns:
-        log_vol: Tensor of shape [B] representing the log-volume
-    """
-    # 1. Transpose to [B, N, k] because QR decomposes columns
-    # We want to find the volume spanned by the 'k' vectors.
-    x_t = x.transpose(-1, -2)
-    
-    # 2. Perform QR decomposition
-    # Q: [B, N, k] (orthogonal basis)
-    # R: [B, k, k] (upper triangular matrix)
-    # 'reduced' mode is faster and sufficient here
-    Q, R = torch.linalg.qr(x_t, mode='reduced')
-    
-    # 3. The volume is the product of the absolute diagonal elements of R
-    # We take the diagonal of the last two dimensions [B, k]
-    diag_r = torch.diagonal(R, dim1=-2, dim2=-1)
-    
-    # 4. Compute log-volume for numerical stability
-    # log(product(diag)) = sum(log(abs(diag)))
-    log_vol = torch.sum(torch.log(torch.abs(diag_r) + eps), dim=-1)
-    
-    return log_vol
 
 class FlowModel2d(nn.Module):
     def __init__(self, in_channels,hidden_dim = 64,attention_layers=[8,4,2],compression_rates=[2,4,8],head_dim=64,compression_ratio=4) -> None:
@@ -339,37 +306,18 @@ class FlowModel2d(nn.Module):
 
         return final_x
 
-    def log_prob(self, data, eps=1e-3,vectors_count=32):
+    def log_prob(self, data, eps=1e-3,random_directions=8):
         """
         Computes log-probability of passed data. This is very rough adaptation of exact log-prob estimation from flow_matching.py file.
         
         Accepts inputs in shape `[BATCH,C,H,W]`, returns `[BATCH]`. The larger returned value, the more likely given image to be from data distribution
         """
-        model = self
-        device = model.device
-        Y = data.to(model.device)
+        from kemsekov_torch.log_prop_approx import log_prob_inverse
+        def to_prior(x:torch.Tensor):
+            x = x.reshape(-1,*data.shape[1:])
+            return self.to_prior(x).flatten(1)
+        return log_prob_inverse(to_prior,data.flatten(1),random_directions=8,eps=eps)
         
-        Y_flat = Y.flatten(1)
-        
-        # generate vectors on unit sphere
-        vectors = torch.randn((1,vectors_count,Y_flat.shape[-1]),device=device)
-        vectors = vectors*eps
-        volume_before_transformation = compute_subspace_log_volume(vectors)
-        
-        Y_flat=Y_flat[:,None]+vectors
-        Y_flat_batched = Y_flat.view(-1,Y_flat.shape[-1]) #merge added vectors and batch dimension
-        Y_batched = Y_flat_batched.view(Y_flat_batched.shape[0],*Y.shape[1:]) #expand dimensions
-        X_batched = self.to_prior(Y_batched).view(Y_flat_batched.shape).view(Y_flat.shape)
-        
-        #X_batched of shape [BATCH,vectors_count,C*H*W]
-        volume_after_transformation = compute_subspace_log_volume(X_batched)
-        logdet_approx = (volume_after_transformation-volume_before_transformation)/vectors_count
-        # print(volume_before_transformation,volume_after_transformation)
-
-        X = self.to_prior(Y)
-        prior_logp = Normal(0,1).log_prob(X).mean([-1,-2,-3])
-        return logdet_approx+prior_logp
-    
     def reflow_loss_and_metric(self,x0 : torch.Tensor,images : torch.Tensor):
         """
         Computes loss and metrics for reflowing FM model from known latents (x0) and images
