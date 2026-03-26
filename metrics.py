@@ -23,7 +23,45 @@ def r2_score(predictions: torch.Tensor, targets: torch.Tensor) -> float:
     res = r2.detach()
     return res
 
+def accuracy(predictions: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
+    """
+    Computes accuracy for binary classification.
+    Shape-agnostic (works for any ND tensor).
+    """
+    with torch.no_grad():
+        # Flatten and binarize
+        preds = (predictions > threshold).float().view(-1)
+        labels = targets.float().view(-1)
+        
+        # Compare and average
+        correct = (preds == labels).float().mean()
+        
+        return correct.detach()
 
+def f1_score(predictions: torch.Tensor, targets: torch.Tensor, threshold: float = 0.5) -> float:
+    """
+    Computes the F1 score for binary classification.
+    Shape-agnostic (works for any ND tensor).
+    """
+    with torch.no_grad():
+        # Flatten to 1D to handle any input shape
+        preds = (predictions > threshold).float().view(-1)
+        labels = targets.float().view(-1)
+        
+        # Calculate components
+        tp = (preds * labels).sum()
+        fp = (preds * (1 - labels)).sum()
+        fn = ((1 - preds) * labels).sum()
+        
+        # Calculate precision and recall with epsilon to avoid div by zero
+        precision = tp / (tp + fp + 1e-7)
+        recall = tp / (fn + tp + 1e-7)
+        
+        # Harmonic mean
+        f1 = 2 * (precision * recall) / (precision + recall + 1e-7)
+        
+        return f1.detach()
+    
 def iou_metric(pred, target, threshold=0.5):
     with torch.no_grad():
         pred = (pred> threshold).float()  # Convert to binary
