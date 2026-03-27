@@ -1,8 +1,7 @@
 from copy import deepcopy
 import gc
 import math
-import os
-from typing import Callable, Literal, Optional
+from typing import Callable, Literal
 from kemsekov_torch.common_modules import Prod, Residual
 from kemsekov_torch.metrics import r2_score
 from kemsekov_torch.common_modules import mmd_rbf
@@ -12,6 +11,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.func import vmap, jacrev
+import torch.nn.init as init
+
 
 def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False, time_transform : nn.Module = nn.Identity(),no_grad_model=False):
     """
@@ -482,11 +483,51 @@ def zero_module(module):
             p.zero_()
     return module
 
+
+def init_weights(
+    m: nn.Module,
+    module_type=nn.Linear,
+    init_type: Literal['he', 'xavier', 'kaiming'] = 'he'
+):
+    """
+    Recursively initialize weights of a model.
+
+    Args:
+        m: root module
+        module_type: which layer type to initialize (default: nn.Linear)
+        init_type: 'he', 'xavier', or 'kaiming'
+    """
+
+    for child in m.children():
+        # If this layer matches → initialize
+        if isinstance(child, module_type):
+
+            if init_type == 'he':
+                init.kaiming_normal_(child.weight, nonlinearity='relu')
+
+            elif init_type == 'kaiming':
+                init.kaiming_uniform_(child.weight, nonlinearity='relu')
+
+            elif init_type == 'xavier':
+                init.xavier_uniform_(child.weight)
+
+            else:
+                raise ValueError(f"Unknown init_type: {init_type}")
+
+            # Bias initialization
+            if child.bias is not None:
+                init.zeros_(child.bias)
+
+        # Recurse deeper
+        init_weights(child, module_type, init_type)
+    return m
+
 class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim) -> None:
         super().__init__()
         m = Residual([
             Prod(nn.Sequential(
+                # nn.SiLU(),
                 nn.Linear(hidden_dim,hidden_dim),
                 nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
@@ -494,21 +535,9 @@ class FusedFlowResidual(nn.Module):
             nn.SiLU(),
             zero_module(nn.Linear(hidden_dim,hidden_dim)),
         ],init_at_zero=False)
-        prod = m.m[0]
-        self.prod_linear = prod.module[0]
-        self.prod_norm = prod.module[1]
-        self.linear = m.m[2]
         self.m=m
     def forward(self,x):
-        # i have tested it, it returns exactly same result as self.m(x)
-        pl = self.prod_linear
-        pn = self.prod_norm
-        ln = self.linear
-        x_orig = x
-        x1 = F.linear(x,pl.weight,pl.bias)
-        x = x*F.rms_norm(x1,pn.normalized_shape,pn.weight).tanh_()
-        x = F.linear(F.silu(x,inplace=True),ln.weight,ln.bias)+x_orig
-        return x
+        return self.m(x)
 
 class FlowModel1d(nn.Module):
     """
@@ -543,13 +572,13 @@ class FlowModel1d(nn.Module):
         self.in_dim=in_dim
         self.hidden_dim=hidden_dim
         norm = nn.RMSNorm
-
         
         self.time_emb = nn.Sequential(
             nn.Linear(1,hidden_dim),
             Prod(nn.Sequential(
-                nn.RMSNorm(hidden_dim),
+                nn.SiLU(),
                 nn.Linear(hidden_dim,hidden_dim),
+                norm(hidden_dim),
                 nn.Tanh(),
             )),
             nn.SiLU(),
@@ -574,6 +603,7 @@ class FlowModel1d(nn.Module):
         self.default_steps=16
         self.to(device)
         self.eval()
+        # init_weights(self,nn.Linear,'he')
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         # x_orig = x
