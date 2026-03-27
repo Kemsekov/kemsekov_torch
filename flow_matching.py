@@ -527,7 +527,7 @@ class FusedFlowResidual(nn.Module):
         super().__init__()
         m = Residual([
             Prod(nn.Sequential(
-                # nn.SiLU(),
+                nn.SiLU(),
                 nn.Linear(hidden_dim,hidden_dim),
                 nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
