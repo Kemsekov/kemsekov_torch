@@ -240,6 +240,7 @@ def train_simple(
     y_test=None,
     batch_size=256,
     epochs=1024,
+    max_grad_norm = None,
     # how often validate model performance
     validate_each=32,
     lr=1e-3,
@@ -322,6 +323,12 @@ def train_simple(
                 continue
         
         loss.backward()
+        if max_grad_norm is not None:
+            total_norm = torch.nn.utils.clip_grad_norm_(
+                model.parameters(), 
+                max_norm=max_grad_norm
+            )
+        
         opt.step()
         sh.step()
     with torch.no_grad():
