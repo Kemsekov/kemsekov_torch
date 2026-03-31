@@ -1,7 +1,8 @@
 from copy import deepcopy
 import gc
 import math
-from typing import Callable, Literal
+import os
+from typing import Callable, Literal, Optional
 from kemsekov_torch.common_modules import Prod, Residual
 from kemsekov_torch.metrics import r2_score
 from kemsekov_torch.common_modules import mmd_rbf
@@ -11,8 +12,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.func import vmap, jacrev
-import torch.nn.init as init
-
 
 def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False, time_transform : nn.Module = nn.Identity(),no_grad_model=False):
     """
@@ -483,52 +482,11 @@ def zero_module(module):
             p.zero_()
     return module
 
-
-def init_weights(
-    m: nn.Module,
-    module_type=nn.Linear,
-    init_type: Literal['he', 'xavier', 'kaiming'] = 'he'
-):
-    """
-    Recursively initialize weights of a model.
-
-    Args:
-        m: root module
-        module_type: which layer type to initialize (default: nn.Linear)
-        init_type: 'he', 'xavier', or 'kaiming'
-    """
-
-    for child in m.children():
-        # If this layer matches → initialize
-        if isinstance(child, module_type):
-
-            if init_type == 'he':
-                init.kaiming_normal_(child.weight, nonlinearity='relu')
-
-            elif init_type == 'kaiming':
-                init.kaiming_uniform_(child.weight, nonlinearity='relu')
-
-            elif init_type == 'xavier':
-                init.xavier_uniform_(child.weight)
-
-            else:
-                raise ValueError(f"Unknown init_type: {init_type}")
-
-            # Bias initialization
-            if child.bias is not None:
-                init.zeros_(child.bias)
-
-        # Recurse deeper
-        init_weights(child, module_type, init_type)
-    return m
-
 class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim) -> None:
         super().__init__()
         m = Residual([
             Prod(nn.Sequential(
-                nn.RMSNorm(hidden_dim), # i am not sure how important is this one
-                nn.SiLU(),
                 nn.Linear(hidden_dim,hidden_dim),
                 nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
@@ -573,13 +531,13 @@ class FlowModel1d(nn.Module):
         self.in_dim=in_dim
         self.hidden_dim=hidden_dim
         norm = nn.RMSNorm
+
         
         self.time_emb = nn.Sequential(
             nn.Linear(1,hidden_dim),
             Prod(nn.Sequential(
-                nn.SiLU(),
+                nn.RMSNorm(hidden_dim),
                 nn.Linear(hidden_dim,hidden_dim),
-                norm(hidden_dim),
                 nn.Tanh(),
             )),
             nn.SiLU(),
@@ -604,7 +562,6 @@ class FlowModel1d(nn.Module):
         self.default_steps=16
         self.to(device)
         self.eval()
-        # init_weights(self,nn.Linear,'he')
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         # x_orig = x
@@ -710,6 +667,11 @@ class FlowModel1d(nn.Module):
         perm = torch.zeros(n, device=device,dtype=torch.int32)
         model_trace = torch.jit.trace(model,example_inputs=(torch.randn((1,self.in_dim),device=device),torch.randn((1),device=device)))
         
+        self.fit_history = {
+            'loss':[],
+            'r2':[]
+        }
+        
         try:
             for epoch in range(epochs):
                 if debug and improved:
@@ -780,9 +742,14 @@ class FlowModel1d(nn.Module):
                         
                     optim.step()
                     
+                    loss=loss.detach()
+                    
                     r2 = r2_score(pred_dir,target_dir)
-                    losses+=loss.detach()
+                    losses+=loss
                     r2s+=r2
+                    
+                    self.fit_history['loss'].append(loss)
+                    self.fit_history['r2'].append(r2)
                     
                 if scheduler: sch.step()
                 
@@ -896,6 +863,13 @@ class FlowModel1d(nn.Module):
         opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
+        
+        self.reflow_history = {
+            'loss':[],
+            'forward_r2':[],
+            'inverse_r2':[],
+        }
+        
         try:
             for i in range(epochs):
                 opt.zero_grad(True)
@@ -930,9 +904,14 @@ class FlowModel1d(nn.Module):
                 opt.step()
                 sch.step()
                 
+                forward_r2 = r2_score(ybatch,y_pred)
+                inverse_r2 = r2_score(xbatch,x_pred)
+                self.reflow_history['loss'].append(loss.detach())
+                self.reflow_history['forward_r2'].append(forward_r2)
+                self.reflow_history['inverse_r2'].append(inverse_r2)
                 if debug:
                     loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
-                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(r2_score(ybatch,y_pred).item())[:6]} inverse_r2={str(r2_score(xbatch,x_pred).item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
+                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
         except KeyboardInterrupt as e:
             print("Stop reflowing...")
         finally:
