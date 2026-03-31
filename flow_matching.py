@@ -487,6 +487,8 @@ class FusedFlowResidual(nn.Module):
         super().__init__()
         m = Residual([
             Prod(nn.Sequential(
+                nn.RMSNorm(hidden_dim),
+                nn.SiLU(),
                 nn.Linear(hidden_dim,hidden_dim),
                 nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
@@ -536,8 +538,8 @@ class FlowModel1d(nn.Module):
         self.time_emb = nn.Sequential(
             nn.Linear(1,hidden_dim),
             Prod(nn.Sequential(
-                nn.RMSNorm(hidden_dim),
                 nn.Linear(hidden_dim,hidden_dim),
+                nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
             )),
             nn.SiLU(),
