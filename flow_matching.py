@@ -748,8 +748,8 @@ class FlowModel1d(nn.Module):
                     losses+=loss
                     r2s+=r2
                     
-                    self.fit_history['loss'].append(loss)
-                    self.fit_history['r2'].append(r2)
+                    self.fit_history['loss'].append(loss.item())
+                    self.fit_history['r2'].append(r2.item())
                     
                 if scheduler: sch.step()
                 
@@ -906,9 +906,9 @@ class FlowModel1d(nn.Module):
                 
                 forward_r2 = r2_score(ybatch,y_pred)
                 inverse_r2 = r2_score(xbatch,x_pred)
-                self.reflow_history['loss'].append(loss.detach())
-                self.reflow_history['forward_r2'].append(forward_r2)
-                self.reflow_history['inverse_r2'].append(inverse_r2)
+                self.reflow_history['loss'].append(loss.item())
+                self.reflow_history['forward_r2'].append(forward_r2.item())
+                self.reflow_history['inverse_r2'].append(inverse_r2.item())
                 if debug:
                     loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
                     print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
@@ -1098,7 +1098,7 @@ class FlowModel1d(nn.Module):
         log_jac_det = batch_jac.slogdet()[1]
         prior_log_prob = Normal(0,1).log_prob(X).sum(-1)
 
-        return prior_log_prob+log_jac_det
+        return (prior_log_prob+log_jac_det).to(data.device)
     
     def optimize(self, data: torch.Tensor, lr: float = 1.0, epochs: int = 1,
              columns_to_optimize: list[int] = None):
