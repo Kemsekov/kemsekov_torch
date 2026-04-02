@@ -32,7 +32,7 @@ class DensityRegressor(nn.Module):
         
         return logp[torch.arange(len(ind),device=x.device),ind]
     
-    def predict(self,x):
+    def predict_proba(self,x):
         logp = self.forward(x)
         values = torch.linspace(
             self.scale[0],
@@ -42,3 +42,8 @@ class DensityRegressor(nn.Module):
         )
         return values,logp
     
+    def predict_mean(self,x):
+        values,logp = self.predict_proba(x)
+        mean_prediction = (values*logp.exp()).sum(-1)
+        return mean_prediction
+        
