@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 class DensityRegressor(nn.Module):
-    def __init__(self, in_dim,scale=(-3,3),hid=128,bins=32) -> None:
+    def __init__(self, in_dim,scale=(-3,3),hid=128,bins=32,dropout=0) -> None:
         super().__init__()
         self.scale=(min(scale)-1e-8,max(scale)+1e-8)
         self.bins=bins
@@ -10,9 +10,11 @@ class DensityRegressor(nn.Module):
             nn.Linear(in_dim,hid),
             nn.RMSNorm(hid),
             nn.SiLU(),
+            nn.Dropout(dropout),
             nn.Linear(hid,hid),
             nn.RMSNorm(hid),
             nn.SiLU(),
+            nn.Dropout(dropout),
             nn.Linear(hid,bins),
         )
     
