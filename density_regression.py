@@ -25,7 +25,7 @@ class DensityRegressor(nn.Module):
         logp = self.forward(x)
         # move y to our scale
         y=((y-self.scale[0])/(self.scale[1]-self.scale[0]))
-        ind = (y*self.bins).int().clip(0,self.bins-1)
+        ind = (y*self.bins).long().clip(0,self.bins-1)
         return logp[torch.arange(len(ind),device=x.device),ind]
     
     def predict(self,x):
