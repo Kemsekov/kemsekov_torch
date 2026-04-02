@@ -21,11 +21,15 @@ class DensityRegressor(nn.Module):
     def forward(self,x) -> torch.Tensor:
         return self.m(x).log_softmax(-1)
     
-    def log_prob(self,x,y):
+    def log_prob(self,x,y,cumsum=False):
         logp = self.forward(x)
         # move y to our scale
         y=((y-self.scale[0])/(self.scale[1]-self.scale[0]))
         ind = (y*self.bins).long().clip(0,self.bins-1)
+        
+        if cumsum:
+            logp = logp.logcumsumexp(-1)
+        
         return logp[torch.arange(len(ind),device=x.device),ind]
     
     def predict(self,x):
