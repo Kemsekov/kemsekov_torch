@@ -122,7 +122,7 @@ class SelfAttention(nn.Module):
         add_rotary_embedding = False,
         linear=False,
         output_bias = True,
-        abs_pos_jit_prob = 0.5,
+        abs_pos_jit_prob = 0.0,
         add_absolute_pos = False,
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False
@@ -136,6 +136,7 @@ class SelfAttention(nn.Module):
         add_rotary_embedding: add rotary embedding to input or not. By default all three spacial resolutions are supported, so proper 1,2,3-dimensional rotary embedding is applied
         linear: whether to use custom-linear attention or not. Current linear attention although works, but is not optimized and default non-linear attention works a lot faster.
         output_bias: add bias to output conv or not. If you use GroupNorm after self-attention, i advice you to set this value to False
+        abs_pos_jit_prob: setting this value to 0.5 or 1.0, will make absolute positions embedding work as scale-translate independent feature, which will allow model to extrapolate to much larger sequence lengths
         add_absolute_pos: add absolute position embedding
         prenorm: add group or layer pre-normalization for input
         """
@@ -244,12 +245,15 @@ class CrossAttention(nn.Module):
         dimensions: Literal[1,2,3] = 2,
         add_rotary_embedding = False,
         add_absolute_pos=False,
-        abs_pos_jit_prob=0.5,
+        abs_pos_jit_prob=0.0,
         output_bias = True,
         linear=False,
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False,
     ):
+        """
+        abs_pos_jit_prob: setting this value to 0.5 or 1.0, will make absolute positions embedding work as scale-translate independent feature, which will allow model to extrapolate to much larger sequence lengths
+        """
         super().__init__()
         self.heads = heads
         self.head_dim = head_dim
