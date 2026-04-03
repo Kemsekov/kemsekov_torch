@@ -559,7 +559,7 @@ class FlowModel1d(nn.Module):
         self.dropout = nn.Dropout(dropout_p) if dropout_p>0 else nn.Identity()
         self.norm = norm(hidden_dim)
         
-        self.residual_blocks = nn.ModuleList([
+        self.residual_blocks = nn.Sequential(*[
             FusedFlowResidual(hidden_dim)
             for i in range(residual_blocks)
         ])
@@ -587,8 +587,7 @@ class FlowModel1d(nn.Module):
         
         x = self.dropout(x)
         x = self.norm(x)
-        for m in self.residual_blocks:
-            x = m(x)
+        x=self.residual_blocks(x)
         
         return self.collapse(x)#+x_orig*self.gamma
     
