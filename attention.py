@@ -245,6 +245,7 @@ class CrossAttention(nn.Module):
         add_rotary_embedding = False,
         add_absolute_pos=False,
         abs_pos_jit_prob=0.5,
+        output_bias = True,
         linear=False,
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False,
@@ -282,10 +283,18 @@ class CrossAttention(nn.Module):
         self.to_q = conv(dim, inner_dim, 1, bias=True)
         self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=True)
         
-        self.to_out = zero_module(conv(inner_dim, dim, 1, bias=True))
+        self.to_out = zero_module(conv(inner_dim, dim, 1, bias=output_bias))
+        self.is_causal=is_causal
         
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
+        """
+        x: of shape `[Batch,C,..spatial_1..]`
+        
+        memory: of shape `[Batch,C,..spatial_2..]`
+        
+        outputs tensor with same shape as `x`
+        """
         identity = x
         B = x.shape[0]
         
@@ -331,7 +340,7 @@ class CrossAttention(nn.Module):
             attn_out = F.scaled_dot_product_attention(
                 q, k, v,
                 dropout_p=self.dropout if self.training else 0,
-                is_causal=False
+                is_causal=self.is_causal
             )  # [B, heads, L, head_dim]
         
         # 6. Reshape back
