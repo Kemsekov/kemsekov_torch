@@ -258,8 +258,9 @@ class FlowMatching(nn.Module):
         else:
             device=None
         with torch.no_grad():
-            self.one_weights     = torch.nn.Parameter(torch.tensor([0.5,  0.5, 1,0,0],device=device))
-            self.one_weights_inv = torch.nn.Parameter(torch.tensor([0.5,-0.5,1,0,0],device=device))
+            start_time = self.time_scaler(0.5)
+            self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0,0],device=device))
+            self.one_weights_inv = torch.nn.Parameter(torch.tensor([start_time,-0.5,1,0,0],device=device))
             self.rk2_weights     = torch.nn.Parameter(torch.tensor([0,1,1/4,3/4,2/3,2/3,0.0],device=device))
             self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1,-1,1/4,3/4,2/3,2/3,1.0],device=device))
     
