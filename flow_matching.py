@@ -505,7 +505,7 @@ class FusedFlowResidual(nn.Module):
         self.m=m
     def forward(self,x):
         return self.m(x)
-
+from kemsekov_torch.attention_residual import *
 class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data.
@@ -559,6 +559,11 @@ class FlowModel1d(nn.Module):
         
         self.dropout = nn.Dropout(dropout_p) if dropout_p>0 else nn.Identity()
         self.norm = norm(hidden_dim)
+        
+        # self.residual_blocks = AttentionResidual(hidden_dim,-1,[
+        #     FusedFlowResidual(hidden_dim)
+        #     for i in range(residual_blocks)
+        # ])
         
         self.residual_blocks = nn.Sequential(*[
             FusedFlowResidual(hidden_dim)
@@ -653,7 +658,7 @@ class FlowModel1d(nn.Module):
         trainable_weights = list(model.parameters())
         if distribution_matching>0:
             loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
-            loss_normalizer = torch.jit.trace(loss_normalizer,(torch.randn((1,self.in_dim),device=device),torch.randn((1,1),device=device)))
+            # loss_normalizer = torch.jit.trace(loss_normalizer,(torch.randn((1,self.in_dim),device=device),torch.randn((1,1),device=device)))
             trainable_weights=trainable_weights+list(loss_normalizer.parameters())
         
         data = data.to(device)
@@ -677,8 +682,8 @@ class FlowModel1d(nn.Module):
         time = torch.rand(batch_size,device=device)
         
         perm = torch.zeros(n, device=device,dtype=torch.int32)
-        model_trace = torch.jit.trace(model,example_inputs=(torch.randn((1,self.in_dim),device=device),torch.randn((1),device=device)))
-        
+        # model_trace = torch.jit.trace(model,example_inputs=(torch.randn((1,self.in_dim),device=device),torch.randn((1),device=device)))
+        model_trace=model
         self.fit_history = {
             'loss':[],
             'r2':[]
@@ -889,7 +894,7 @@ class FlowModel1d(nn.Module):
         ).to(self.device)
         
         device=self.device
-        loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
+        # loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
         opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss

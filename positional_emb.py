@@ -73,7 +73,7 @@ class AddPositionalEmbeddingPermute(torch.nn.Module):
     
 class AddPositionalEmbedding(torch.nn.Module):
     """
-    Adds input with shape (batch_size, ch, ...N dimensions...) to positional embedding
+    Adds input with shape (batch_size, ...N dimensions...,ch) to positional embedding
     """
     def __init__(self,channels,freq=10000):
         """
