@@ -526,7 +526,7 @@ class FlowModel1d(nn.Module):
         default_steps (int): Default number of integration steps for sampling
         device (str): Device on which the model is located
     """
-    def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 2.0) -> None:
+    def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.0) -> None:
         super().__init__()
         self.fm = FlowMatching()
         # time scaler for training
