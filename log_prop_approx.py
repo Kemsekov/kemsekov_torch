@@ -42,7 +42,7 @@ def log_prob(model, prior, eps=1e-3,random_directions=0):
 
     if random_directions>0:
         vectors = torch.randn((random_directions,Y.shape[-1]),device=device)
-        simplex_points = vectors*eps
+        simplex_points = vectors/torch.norm(vectors,2.0,-1,keepdim=True)*eps
         shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
         # log area of original simplex
         original_simplex_area_log = compute_subspace_log_volume(shifted_simplex)
@@ -96,7 +96,7 @@ def log_prob_inverse(model, target, eps=1e-3, random_directions=0,return_prior=F
 
     if random_directions>0:
         vectors = torch.randn((random_directions,Y.shape[-1]),device=device)
-        simplex_points = vectors*eps
+        simplex_points = vectors/torch.norm(vectors,2.0,-1,keepdim=True)*eps
         shifted_simplex=simplex_points[:-1,:]-simplex_points[-1]
         # log area of original simplex
         original_simplex_area_log = compute_subspace_log_volume(shifted_simplex)
