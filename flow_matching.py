@@ -579,6 +579,7 @@ class FlowModel1d(nn.Module):
         
         # add time embedding
         time_scale,time_shift = time.chunk(2,-1)
+        # expand = self.norm(expand)
         x = expand*(1+time_scale)+time_shift
         
         x = self.dropout(x)
@@ -597,7 +598,7 @@ class FlowModel1d(nn.Module):
         epochs: int = 64,
         batch_size: int = 256,
         contrastive_loss_weight=0.1,
-        lr: float = 0.01,
+        lr: float = 0.02,
         distribution_matching=0.0,
         debug: bool = False,
         scheduler = True,
