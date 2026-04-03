@@ -846,6 +846,14 @@ class FlowModel1d(nn.Module):
         with torch.no_grad():
             x = base_model.to_prior(data)
             y = data
+            
+            # balance generated and original dataset 50/50
+            x_gen = torch.randn_like(x)
+            y_gen = base_model.to_target(x_gen)
+            
+            x = torch.concat([x,x_gen],0)
+            y = torch.concat([y,y_gen],0)
+            
         assert steps in [1,2],"steps parameter must be one of [1,2]"
         self.fm.reset_weights()
         self.train()
