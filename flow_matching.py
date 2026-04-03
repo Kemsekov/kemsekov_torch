@@ -848,6 +848,12 @@ class FlowModel1d(nn.Module):
             y = data
             
             # balance generated and original dataset 50/50
+            # the thing is that dataset latent space may be too limited
+            # to reach all edge-case samples from some subspaces of prior
+            # and reflowed model may struggle to transport these subspace prior
+            # samples to target distribution, so, we also include generated from base model
+            # samples to reflow model training, this step empirically helps a lot
+            # with reflowed model quality
             x_gen = torch.randn_like(x)
             y_gen = base_model.to_target(x_gen)
             
