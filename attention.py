@@ -262,9 +262,11 @@ class CrossAttention(nn.Module):
         inner_dim = heads * head_dim
         context_dim = context_dim if context_dim is not None else dim
         if add_absolute_pos:
-            self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
+            self.x_abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
+            self.mem_abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
         else:
-            self.abs_emb = nn.Identity()
+            self.x_abs_emb = nn.Identity()
+            self.mem_abs_emb = nn.Identity()
         
         self.add_rotary_embedding = add_rotary_embedding
         self.rotary_emb = RotEmb()
@@ -313,8 +315,8 @@ class CrossAttention(nn.Module):
         B = x.shape[0]
         
         # 1. Pre-normalization
-        x = self.norm(self.abs_emb(x))
-        memory = self.norm_context(memory)
+        x = self.norm(self.x_abs_emb(x))
+        memory = self.norm_context(self.mem_abs_emb(memory))
         
         # 2. Project Q and KV
         q = self.to_q(x)          # [B, inner_dim, ...]
