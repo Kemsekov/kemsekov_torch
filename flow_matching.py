@@ -411,6 +411,9 @@ class FlowMatching(nn.Module):
             - Final sample tensor if return_intermediates is False
             - Tuple of (final tensor, list of intermediate tensors) if return_intermediates is True
         """
+        if x0.dim() == 1:
+            x0 = x0.unsqueeze(0) 
+        
         if isinstance(steps,torch.Tensor):
             steps=steps.int().item()
         match steps:
