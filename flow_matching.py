@@ -6,7 +6,7 @@ from typing import Callable, Literal, Optional
 from kemsekov_torch.common_modules import Prod, Residual
 from kemsekov_torch.metrics import r2_score
 from kemsekov_torch.common_modules import mmd_rbf
-from kemsekov_torch.log_prop_approx import log_prob_inverse
+from kemsekov_torch.log_prop_approx import log_prob_inverse, log_prob
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -486,9 +486,11 @@ class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim) -> None:
         super().__init__()
         m = Residual([
+            # nn.RMSNorm(hidden_dim),
+            # nn.Linear(hidden_dim,hidden_dim),
             Prod(nn.Sequential(
-                nn.RMSNorm(hidden_dim),
-                nn.SiLU(),
+                # nn.RMSNorm(hidden_dim),
+                # nn.SiLU(),
                 nn.Linear(hidden_dim,hidden_dim),
                 nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
@@ -524,11 +526,13 @@ class FlowModel1d(nn.Module):
         default_steps (int): Default number of integration steps for sampling
         device (str): Device on which the model is located
     """
-    def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu') -> None:
+    def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 2.0) -> None:
         super().__init__()
         self.fm = FlowMatching()
-        # default time scaler for training
-        self.fm.time_scaler = lambda x: torch.log(9*x+1)/math.log(10)
+        # time scaler for training
+        self.time_scaler = torch.nn.Parameter(torch.tensor([default_time_scaler]))
+        # this thing will dynamically shift training to harder part of vector-space
+        self.fm.time_scaler = lambda x: torch.log((self.time_scaler-1)*x+1)/torch.log(self.time_scaler)
         
         self.in_dim=in_dim
         self.hidden_dim=hidden_dim
@@ -538,6 +542,7 @@ class FlowModel1d(nn.Module):
         self.time_emb = nn.Sequential(
             nn.Linear(1,hidden_dim),
             Prod(nn.Sequential(
+                nn.SiLU(),
                 nn.Linear(hidden_dim,hidden_dim),
                 nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
@@ -592,7 +597,7 @@ class FlowModel1d(nn.Module):
         epochs: int = 64,
         batch_size: int = 256,
         contrastive_loss_weight=0.1,
-        lr: float = 0.02,
+        lr: float = 0.01,
         distribution_matching=0.0,
         debug: bool = False,
         scheduler = True,
@@ -635,6 +640,7 @@ class FlowModel1d(nn.Module):
         if not isinstance(data,torch.Tensor):
             data = torch.tensor(data,dtype=torch.float32,device=self.device)
         gc.disable()
+        
         model = self
         device = model.device
         batch_size = min(batch_size,data.shape[0])
@@ -805,7 +811,8 @@ class FlowModel1d(nn.Module):
             lr = 1e-2,
             distribution_matching = 0,
             grad_clip_max_norm : float|None=1,
-            base_model : nn.Module|None = None
+            base_model : nn.Module|None = None,
+            freeze_integrator = False
         ) -> None:
         """
         Distill a teacher flow model into one-step generation via bidirectional ReFlow training.
@@ -839,6 +846,9 @@ class FlowModel1d(nn.Module):
         self.fm.reset_weights()
         self.train()
         self.default_steps=steps
+        
+        if freeze_integrator:
+            self.fm.freeze()
 
         
         loss_normalizer = nn.Sequential(
@@ -1198,5 +1208,6 @@ class FlowModel1d(nn.Module):
         return result, iteration.best_loss
     
     def log_prob(self, data, eps=1e-3,random_directions=0,return_prior=False):
+        # return log_prob(self.to_target,self.to_prior(data),eps,random_directions=random_directions)
         return log_prob_inverse(self.to_prior,data,eps,random_directions=random_directions,return_prior=return_prior)
         
