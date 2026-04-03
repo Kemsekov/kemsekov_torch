@@ -293,7 +293,17 @@ class CrossAttention(nn.Module):
         
         memory: of shape `[Batch,C,..spatial_2..]`
         
-        outputs tensor with same shape as `x`
+        Outputs tensor with same shape as `x`.
+        
+        For each token in `x`, the output token in same position
+        is constructed from memory representation. 
+        The output does not contain any `x` interconnections, 
+        each token in `x` know only about tokens in `memory` and
+        it's own exact key. So, in a sense, all x values are
+        processed independently from each other.
+        
+        Each token in X contains only information about itself(key) and
+        cross-attention'ed with each memory token, not each other.
         """
         identity = x
         B = x.shape[0]
