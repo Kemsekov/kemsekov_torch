@@ -490,11 +490,11 @@ class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim) -> None:
         super().__init__()
         m = Residual([
-            # nn.RMSNorm(hidden_dim),
             # nn.Linear(hidden_dim,hidden_dim),
+            # nn.RMSNorm(hidden_dim),
             Prod(nn.Sequential(
                 # nn.RMSNorm(hidden_dim),
-                # nn.SiLU(),
+                nn.SiLU(),
                 nn.Linear(hidden_dim,hidden_dim),
                 nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
