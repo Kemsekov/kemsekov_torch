@@ -76,7 +76,7 @@ def log_prob(model, prior, eps=1e-3,random_directions=0):
     in_dim = X_neighbors.shape[-1]
     
     # area ratio is our jacobian determinant approximation
-    logdet_approx = transformed_simplex_area_log - original_simplex_area_log - in_dim*math.log(in_dim)
+    logdet_approx = transformed_simplex_area_log - original_simplex_area_log# - in_dim*math.log(in_dim)
 
     prior_logp = Normal(0,1).log_prob(data).sum(-1)
     # this stuff perfectly match log prob structure
@@ -127,7 +127,7 @@ def log_prob_inverse(model, target, eps=1e-3, random_directions=0,return_prior=F
     in_dim = X_neighbors.shape[-1]
     
     # area ratio is our jacobian determinant approximation
-    logdet_approx = transformed_simplex_area_log - original_simplex_area_log + in_dim*math.log(in_dim)
+    logdet_approx = transformed_simplex_area_log - original_simplex_area_log# + in_dim*math.log(in_dim)
 
     prior = model(data)
     prior_logp = Normal(0,1).log_prob(prior).sum(-1)
