@@ -1098,7 +1098,7 @@ class FlowModel1d(nn.Module):
             final_x = model.to_target(self._iteration.best_sample)
 
         return final_x
-    
+ 
     def full_log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
         """
         Computes the full log probability of the data using exact Jacobian computation.
@@ -1136,7 +1136,7 @@ class FlowModel1d(nn.Module):
         return (prior_log_prob+log_jac_det).to(data.device)
     
     def optimize(self, data: torch.Tensor, lr: float = 1.0, epochs: int = 1,
-             columns_to_optimize: list[int] = None):
+             columns_to_optimize: list[int] = None,random_directions=0):
         """
         Optimize specific columns of data to maximize log probability.
 
@@ -1150,7 +1150,7 @@ class FlowModel1d(nn.Module):
             epochs (int): Number of optimization epochs (default: 1)
             columns_to_optimize (list[int]): List of column indices to optimize (0-based).
                                            If None or empty, all columns will be optimized.
-
+            random_directions: log-prob random directions approximation vectors
         Returns:
             tuple: A tuple containing:
                  - torch.Tensor: Optimized data tensor with the same shape as input
@@ -1165,7 +1165,7 @@ class FlowModel1d(nn.Module):
         # Validate column indices
         columns_to_optimize = [c for c in columns_to_optimize if 0 <= c < input_dim]
         if not columns_to_optimize:
-            return data.clone(), -self.log_prob(data).sum().detach()
+            return data.clone(), -self.log_prob(data,random_directions=random_directions).sum().detach()
 
         # Identify fixed columns as those not in columns_to_optimize
         all_columns = list(range(input_dim))
@@ -1206,7 +1206,7 @@ class FlowModel1d(nn.Module):
                 current_data[:, fixed_columns] = fixed_data
 
             # Compute loss on the full tensor
-            loss = -self.log_prob(current_data).sum()
+            loss = -self.log_prob(current_data,random_directions=random_directions).sum()
 
             if loss<iteration.best_loss:
                 iteration.best_loss=loss
