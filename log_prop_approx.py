@@ -20,6 +20,10 @@ def compute_subspace_log_volume(x: torch.Tensor, eps: float = 1e-8):
     Computes the log-volume of the k-dimensional parallelepiped formed by 
     k vectors in N-dimensional space.
     """
+    # for square matrices fall back to slogdet
+    if x.shape[-1]==x.shape[-2]:
+        return x.slogdet()[1]
+    
     # 1. Transpose to [B, N, k] because QR decomposes columns
     # We want to find the volume spanned by the 'k' vectors.
     x_t = x.transpose(-1, -2)
@@ -67,10 +71,7 @@ def log_prob(model, prior, eps=1e-3,random_directions=0):
     # get area of transformed simplex
     transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
     
-    if transformed_simplex.shape[-1]==transformed_simplex.shape[-2]:
-        transformed_simplex_area_log = transformed_simplex.slogdet()[1]
-    else:
-        transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
+    transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
 
     in_dim = X_neighbors.shape[-1]
     
@@ -121,10 +122,7 @@ def log_prob_inverse(model, target, eps=1e-3, random_directions=0,return_prior=F
     # get area of transformed simplex
     transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
     
-    if transformed_simplex.shape[-1]==transformed_simplex.shape[-2]:
-        transformed_simplex_area_log = transformed_simplex.slogdet()[1]
-    else:
-        transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
+    transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
 
     in_dim = X_neighbors.shape[-1]
     
