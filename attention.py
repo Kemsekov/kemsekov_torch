@@ -173,12 +173,12 @@ class SelfAttention(nn.Module):
         self.to_qkv = conv(dim, inner_dim * 3, 1, bias=True)
         
         # Zero-initialized output projection
-        self.to_out = zero_module(conv(inner_dim, dim, 1, bias=output_bias))
+        self.to_out = conv(inner_dim, dim, 1, bias=output_bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         x: [B, C, ...] with at most 3 dimensions in `...` part
-        Returns: Tensor same shaped as `x` with residual connection
+        Returns: Tensor same shaped as `x`
         """
         identity = x
         B = x.shape[0]
@@ -225,7 +225,7 @@ class SelfAttention(nn.Module):
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
         
         # 7. Output projection + residual connection
-        return identity + self.to_out(attn_out)
+        return self.to_out(attn_out)
 
 class CrossAttention(nn.Module):
     """
@@ -289,7 +289,7 @@ class CrossAttention(nn.Module):
         self.to_q = conv(dim, inner_dim, 1, bias=True)
         self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=True)
         
-        self.to_out = zero_module(conv(inner_dim, dim, 1, bias=output_bias))
+        self.to_out = conv(inner_dim, dim, 1, bias=output_bias)
         self.is_causal=is_causal
         
 
@@ -362,8 +362,8 @@ class CrossAttention(nn.Module):
         # 6. Reshape back
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
         
-        # 7. Output projection + residual connection
-        return identity + self.to_out(attn_out)
+        # 7. Output projection
+        return self.to_out(attn_out)
 class LinearAttention(nn.Module):
     """
     Linear attention with RALA-style rescaling,
@@ -482,7 +482,7 @@ class EfficientSpatialChannelAttention(nn.Module):
     that modulate channel responses based on spatial structure, improving
     feature representation with minimal overhead.
     """
-    def __init__(self, channels,groups='auto',dimensions=2,kernel_size=3):
+    def __init__(self, channels,groups='auto',dimensions=2,kernel_size=3,add_norm=False):
         super().__init__()
         assert dimensions in [1,2,3],f"dimensions must be one of [1,2,3], but got {dimensions}"
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
@@ -492,7 +492,7 @@ class EfficientSpatialChannelAttention(nn.Module):
         
         self.spatial_attn = nn.Sequential(
             conv(channels,channels,kernel_size,padding=kernel_size//2,groups=groups),
-            # nn.GroupNorm(groups,channels),
+            nn.GroupNorm(groups,channels) if add_norm else nn.Identity(),
             nn.Tanh()
         )
 
