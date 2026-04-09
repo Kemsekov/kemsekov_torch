@@ -13,6 +13,24 @@ from kemsekov_torch.attention import SelfAttention, EfficientSpatialChannelAtten
 from kemsekov_torch.residual import Residual
 from torch.distributions import Normal
 
+class TimeEmb(nn.Module):
+    def __init__(self, hidden_dim):
+        super().__init__()
+        self.time = nn.Sequential(
+            nn.Linear(1,hidden_dim),
+            Prod(nn.Sequential(
+                nn.RMSNorm(hidden_dim),
+                nn.Linear(hidden_dim,hidden_dim),
+                nn.Tanh(),
+            )),
+            nn.SiLU(),
+            zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
+        )
+    def forward(self,x,t):
+        time_scale,time_shift = self.time(t)[:,:,None,None].chunk(2,1)
+        xt = x*(1+time_scale)+time_shift
+        return xt
+
 class ViT(nn.Module):
     def __init__(
             self, 
@@ -42,6 +60,9 @@ class ViT(nn.Module):
                 nn.Sequential(
                     # self-attention already returns init-zeroed residual
                     Residual([
+                        # Prod([
+                            
+                        # ]),
                         SelfAttention(
                             hidden_dim,
                             heads=min(4,hidden_dim//head_dim), # use at least 4 heads
@@ -59,16 +80,8 @@ class ViT(nn.Module):
                         zero_module(conv(hidden_dim,hidden_dim,1,bias=False)),
                     ],init_at_zero=False),
                 ),
-                nn.Sequential(
-                    nn.Linear(1,hidden_dim),
-                    Prod(nn.Sequential(
-                        nn.RMSNorm(hidden_dim),
-                        nn.Linear(hidden_dim,hidden_dim),
-                        nn.Tanh(),
-                    )),
-                    act(),
-                    zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
-                )
+                # add time embedding just for 2 first layers
+                TimeEmb(hidden_dim) if i<3 else nn.Identity()
             ])
             for i in range(layers)
         ])
@@ -86,8 +99,7 @@ class ViT(nn.Module):
         
         x = self.down(x)
         for r,time_emb in self.residuals:
-            time_scale,time_shift = time_emb(t)[:,:,None,None].chunk(2,1)
-            xt = x*(1+time_scale)+time_shift
+            xt = time_emb(x,t)
             x = r(xt)
         return self.up(x)
 class ViTHierarchy(nn.Module):

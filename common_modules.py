@@ -96,8 +96,10 @@ class Prod(nn.Module):
     
     `Prod(nn.Linear(32,32))(x)` is same as `nn.Linear(32,32)(x)*x`
     """
-    def __init__(self, module) -> None:
+    def __init__(self, module : nn.Module|List[nn.Module]) -> None:
         super().__init__()
+        if isinstance(module,list):
+            module = nn.Sequential(*module)
         self.module=module
     def forward(self,x):
         return x*self.module(x)
