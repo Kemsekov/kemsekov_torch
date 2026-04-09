@@ -559,12 +559,7 @@ class FlowModel1d(nn.Module):
         
         self.dropout = nn.Dropout(dropout_p) if dropout_p>0 else nn.Identity()
         self.norm = norm(hidden_dim)
-        
-        # self.residual_blocks = AttentionResidual(hidden_dim,-1,[
-        #     FusedFlowResidual(hidden_dim)
-        #     for i in range(residual_blocks)
-        # ])
-        
+
         self.residual_blocks = nn.Sequential(*[
             FusedFlowResidual(hidden_dim)
             for i in range(residual_blocks)
@@ -580,7 +575,6 @@ class FlowModel1d(nn.Module):
         self.eval()
         
     def forward(self,x : torch.Tensor,t : torch.Tensor):
-        # x_orig = x
         while t.ndim<x.ndim:
             t = t[:,None]
         time = self.time_emb(t)
@@ -588,14 +582,13 @@ class FlowModel1d(nn.Module):
         
         # add time embedding
         time_scale,time_shift = time.chunk(2,-1)
-        # expand = self.norm(expand)
         x = expand*(1+time_scale)+time_shift
         
         x = self.dropout(x)
         x = self.norm(x)
         x=self.residual_blocks(x)
         
-        return self.collapse(x)#+x_orig*self.gamma
+        return self.collapse(x)
     
     def to(self,device):
         self.device=device
@@ -1069,7 +1062,7 @@ class FlowModel1d(nn.Module):
             # Forward pass: x = M_inv(z)
             x = model.to_target(z,sampler_steps)
 
-            # Compute prior loss: L_prior = ||z||² (keep z in N(0,I)) must match original generated prior
+            # Balance original prior probability/vs likelihood maximization
             L_prior = (z * z).mean()
             L_prior = (L_prior-original_prior)**2+mode_closeness_weight*L_prior
 
@@ -1086,7 +1079,7 @@ class FlowModel1d(nn.Module):
             
             L_total.backward()
             with torch.no_grad():
-                z.data += (noise_scale) * torch.randn_like(z)
+                z.data += noise_scale * torch.randn_like(z)
             return L_total
         
         for t in range(steps):

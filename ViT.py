@@ -169,10 +169,15 @@ class LossNormalizer2d(nn.Module):
         return self.out(x).mean([-1,-2],keepdim=True)
 
 class FlowModel2d(nn.Module):
-    def __init__(self, in_channels,hidden_dim = 64,attention_layers=[8,4,2],compression_rates=[2,4,8],head_dim=64,compression_ratio=4) -> None:
+    def __init__(self, in_channels,hidden_dim = 64,attention_layers=[8,4,2],compression_rates=[2,4,8],head_dim=64,compression_ratio=4,default_time_scaler=10.0) -> None:
         super().__init__()
         self.register_buffer('default_steps',torch.tensor([16]))
         self.fm = FlowMatching()
+        
+        self.time_scaler = torch.nn.Parameter(torch.tensor([default_time_scaler]))
+        # this thing will dynamically shift training to harder part of vector-space
+        self.fm.time_scaler = lambda x: torch.log((self.time_scaler-1)*x+1)/torch.log(self.time_scaler)
+        
         # self.fm.time_scaler = lambda x: torch.log(9*x+1)/math.log(10)
         self.in_channels=in_channels
         self.vit = ViTHierarchy(
