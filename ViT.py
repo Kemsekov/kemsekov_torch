@@ -19,6 +19,7 @@ class TimeEmb(nn.Module):
         self.time = nn.Sequential(
             nn.Linear(1,hidden_dim),
             Prod(nn.Sequential(
+                nn.SiLU(),
                 nn.RMSNorm(hidden_dim),
                 nn.Linear(hidden_dim,hidden_dim),
                 nn.Tanh(),
@@ -51,7 +52,10 @@ class ViT(nn.Module):
             nn.PixelUnshuffle(compression),
             conv(in_channels*(compression**2),hidden_dim,1),
         )
-
+        
+        groups = max(1,hidden_dim//32)
+        if groups==1: groups=2
+        
         # my self and cross attention works on conv2d-shaped tensors
         # [B,C,H,W] where H,W is actual tokens
         act = nn.SiLU
@@ -60,9 +64,13 @@ class ViT(nn.Module):
                 nn.Sequential(
                     # self-attention already returns init-zeroed residual
                     Residual([
-                        # Prod([
-                            
-                        # ]),
+                        Prod([
+                           nn.SiLU(),
+                           nn.Conv2d(hidden_dim,hidden_dim,kernel_size=3,padding=1,groups=groups),
+                           nn.GroupNorm(32,hidden_dim),
+                           nn.Tanh()
+                        ]),
+                        nn.SiLU(),
                         SelfAttention(
                             hidden_dim,
                             heads=min(4,hidden_dim//head_dim), # use at least 4 heads
@@ -74,14 +82,10 @@ class ViT(nn.Module):
                             abs_pos_jit_prob=0.0,
                             prenorm='group'
                         ),
-                        nn.GroupNorm(32,hidden_dim),
-                        EfficientSpatialChannelAttention(hidden_dim,kernel_size=3),
-                        act(),
-                        zero_module(conv(hidden_dim,hidden_dim,1,bias=False)),
-                    ],init_at_zero=False),
+                    ],init_at_zero=True),
                 ),
-                # add time embedding just for 2 first layers
-                TimeEmb(hidden_dim) if i<3 else nn.Identity()
+                # add time embedding just for first two layers
+                TimeEmb(hidden_dim) if i==0 else nn.Identity()
             ])
             for i in range(layers)
         ])
