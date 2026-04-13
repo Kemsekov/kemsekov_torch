@@ -280,61 +280,62 @@ def train_simple(
     running_metric = 0
     running_loss = 0
     test_degraded = 0
-    for i in range(1,epochs+1):
-        opt.zero_grad(True)
-        ind = torch.randperm(X_train.shape[0])[:batch_size]
-        batch_x = X_train[ind]
-        batch_y = y_train[ind]
-        loss,metric = compute_loss_and_metrics(model,batch_x,batch_y)
-        
-        metric_name = list(metric.keys())[0]
-        metric=metric[metric_name]
-        
-        running_metric+=metric
-        running_loss+=loss.detach()
-        if i%validate_each==0:
-            running_metric/=validate_each
-            running_loss/=validate_each
-            if X_test is not None:
-                model.eval()
-                with torch.no_grad():
-                    test_metric = compute_loss_and_metrics(model,X_test,y_test)[1]
-                test_metric=test_metric[metric_name]
-                model.train()
-            else:
-                test_metric=running_metric
-            if verbose: print(f"Epoch {i} \tLoss {running_loss:0.4f} \t {metric_name} {test_metric:0.4f}")
+    with torch.autocast(device,dtype):
+        for i in range(1,epochs+1):
+            opt.zero_grad(True)
+            ind = torch.randperm(X_train.shape[0])[:batch_size]
+            batch_x = X_train[ind]
+            batch_y = y_train[ind]
+            loss,metric = compute_loss_and_metrics(model,batch_x,batch_y)
             
-            running_metric=0
-            running_loss=0
-                            
-            if test_metric>best_metric:
-                best_metric = test_metric
-                best_model_state=deepcopy(model.state_dict())
-                test_degraded=0
-                if verbose: _print_green(f"{"="*23}Save{"="*23}")
-            elif rollback_K>0 and best_model_state is not None:
-                test_degraded+=1
-                if test_degraded>=rollback_K:
-                    if verbose: _print_red(f"{"="*19}Rolling back{"="*19}")
-                    test_degraded=0
+            metric_name = list(metric.keys())[0]
+            metric=metric[metric_name]
+            
+            running_metric+=metric
+            running_loss+=loss.detach()
+            if i%validate_each==0:
+                running_metric/=validate_each
+                running_loss/=validate_each
+                if X_test is not None:
+                    model.eval()
                     with torch.no_grad():
-                        model.load_state_dict(best_model_state)
-                continue
-        
-        loss.backward()
-        if max_grad_norm is not None:
-            total_norm = torch.nn.utils.clip_grad_norm_(
-                model.parameters(), 
-                max_norm=max_grad_norm
-            )
-        
-        opt.step()
-        sh.step()
-    with torch.no_grad():
-        if best_model_state is not None:
-            model.load_state_dict(best_model_state)
-    if verbose: _print_green(f"Best metric {metric_name} {best_metric:0.4f}")
+                        test_metric = compute_loss_and_metrics(model,X_test,y_test)[1]
+                    test_metric=test_metric[metric_name]
+                    model.train()
+                else:
+                    test_metric=running_metric
+                if verbose: print(f"Epoch {i} \tLoss {running_loss:0.4f} \t {metric_name} {test_metric:0.4f}")
+                
+                running_metric=0
+                running_loss=0
+                                
+                if test_metric>best_metric:
+                    best_metric = test_metric
+                    best_model_state=deepcopy(model.state_dict())
+                    test_degraded=0
+                    if verbose: _print_green(f"{"="*23}Save{"="*23}")
+                elif rollback_K>0 and best_model_state is not None:
+                    test_degraded+=1
+                    if test_degraded>=rollback_K:
+                        if verbose: _print_red(f"{"="*19}Rolling back{"="*19}")
+                        test_degraded=0
+                        with torch.no_grad():
+                            model.load_state_dict(best_model_state)
+                    continue
+            
+            loss.backward()
+            if max_grad_norm is not None:
+                total_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(), 
+                    max_norm=max_grad_norm
+                )
+            
+            opt.step()
+            sh.step()
+        with torch.no_grad():
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state)
+        if verbose: _print_green(f"Best metric {metric_name} {best_metric:0.4f}")
     model = model.eval().to(orig_model_device,dtype=orig_model_dtype)
     
     return model,{metric_name:best_metric}

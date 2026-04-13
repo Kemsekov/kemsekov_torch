@@ -178,7 +178,10 @@ class OptimalFeatureImportance:
         
         if not isinstance(X_test, pd.DataFrame):
             raise TypeError("X_test must be a pandas DataFrame")
-        
+        if len(y.shape)==1:
+            y = y[:,None]
+        if len(y_test.shape)==1:
+            y_test = y_test[:,None]
         # Store column names
         self.all_columns = list(X.columns)
         
