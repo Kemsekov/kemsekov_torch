@@ -220,6 +220,10 @@ class SelfAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=self.is_causal
             )  # [B, heads, L, head_dim]
+            
+            # apply exclusive self-attention
+            Vn = F.normalize(v,dim=-1)
+            attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
@@ -358,6 +362,9 @@ class CrossAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=self.is_causal
             )  # [B, heads, L, head_dim]
+            
+            Vn = F.normalize(v,dim=-1)
+            attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
