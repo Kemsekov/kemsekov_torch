@@ -229,7 +229,7 @@ class SelfAttention(nn.Module):
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
         
         # 7. Output projection + residual connection
-        return self.to_out(attn_out)
+        return self.to_out(attn_out)+x
 
 class CrossAttention(nn.Module):
     """
@@ -363,6 +363,7 @@ class CrossAttention(nn.Module):
                 is_causal=self.is_causal
             )  # [B, heads, L, head_dim]
             
+            # Exclusive self-attention
             Vn = F.normalize(v,dim=-1)
             attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
@@ -370,7 +371,7 @@ class CrossAttention(nn.Module):
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
         
         # 7. Output projection
-        return self.to_out(attn_out)
+        return self.to_out(attn_out)+x
 class LinearAttention(nn.Module):
     """
     Linear attention with RALA-style rescaling,
