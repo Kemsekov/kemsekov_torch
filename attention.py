@@ -173,7 +173,7 @@ class SelfAttention(nn.Module):
         
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         
-        self.to_qkv = conv(dim, inner_dim * 3, 1, bias=True)
+        self.to_qkv = conv(dim, inner_dim * 3, 1, bias=False)
         
         # Zero-initialized output projection
         self.to_out =  conv(inner_dim, dim, 1, bias=output_bias)
@@ -295,8 +295,8 @@ class CrossAttention(nn.Module):
         
         conv = [nn.Conv1d, nn.Conv2d, nn.Conv3d][dimensions - 1]
         
-        self.to_q = conv(dim, inner_dim, 1, bias=True)
-        self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=True)
+        self.to_q = conv(dim, inner_dim, 1, bias=False)
+        self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=False)
         
         self.to_out = conv(inner_dim, dim, 1, bias=output_bias)
         self.is_causal=is_causal
