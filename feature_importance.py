@@ -108,6 +108,7 @@ class OptimalFeatureImportance:
         verbose: bool = True,
         seed: int = 42,
         rollback_K: int = 3,
+        validate_each:int = 16
     ):
         """
         Initialize the feature selection model.
@@ -129,7 +130,7 @@ class OptimalFeatureImportance:
             rollback_K: Rollback parameter for training
         """
         torch.manual_seed(seed)
-        
+        self.validate_each=validate_each
         self.hid = hid
         self.epochs = epochs
         self.lr = lr
@@ -259,6 +260,7 @@ class OptimalFeatureImportance:
                     rollback_K=self.rollback_K,
                     epochs=self.epochs,
                     lr=self.lr,
+                    validate_each=self.validate_each,
                     device=self.device,
                     dtype=self.dtype,
                     verbose=False
