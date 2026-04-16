@@ -80,7 +80,7 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
     else:
         ts = torch.linspace(0, 1, steps+1, device=device)
     ts = time_transform(ts[:,None])[:,0]
-    dt = ts[1]-ts[0]
+    dt = ts[1:]-ts[:-1]
     x0 = x0.to(device)
     xt = x0
     intermediates = []
@@ -111,28 +111,28 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
             pred_current = pred(xt, t_expand_current)
             
             # Predictor step (Euler)
-            x_pred = xt + dt * pred_current
+            x_pred = xt + dt[i] * pred_current
             
             # Evaluate at predicted point
             t_expand_next = t_next.expand(x0.shape[0])
             pred_next = pred(x_pred, t_expand_next)
             
             # Corrector step (Heun's method)
-            xt = xt + dt * 0.5 * (pred_current + pred_next)
+            xt = xt + dt[i] * 0.5 * (pred_current + pred_next)
             
             # Store the predictor derivative for next step
             prev_pred = pred_next
         else:
             # Subsequent steps: reuse previous derivative (1 evaluation per step)
             # Predictor using previous derivative (Euler step)
-            x_pred = xt + dt * prev_pred
+            x_pred = xt + dt[i] * prev_pred
             
             # Evaluate at predicted point (ONLY ONE EVAL PER STEP)
             t_expand_next = t_next.expand(x0.shape[0])
             pred_next = pred(x_pred, t_expand_next)
             
             # Corrector step using stored previous derivative
-            xt = xt + dt * 0.5 * (prev_pred + pred_next)
+            xt = xt + dt[i] * 0.5 * (prev_pred + pred_next)
             
             # Update stored derivative for next step
             prev_pred = pred_next

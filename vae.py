@@ -11,6 +11,16 @@ class VAE(nn.Module):
             emb_dim=in_channels*16
         if latent_dim is None:
             latent_dim=emb_dim
+        
+        attn_args = dict(
+            dim=emb_dim,
+            add_absolute_pos=False,
+            add_rotary_embedding=True,
+            prenorm='group',
+            abs_pos_jit_prob=0,
+            xsa=True
+        )
+        
         self.in_channels = in_channels
         self.latent_dim=latent_dim
         self.encoder = nn.Sequential(
@@ -18,7 +28,7 @@ class VAE(nn.Module):
             nn.Conv2d(in_channels*16,emb_dim,1),
             
             Residual([
-                SelfAttention(emb_dim,add_absolute_pos=False,add_rotary_embedding=True,abs_pos_jit_prob=0),
+                SelfAttention(**attn_args),
                 nn.GroupNorm(16,emb_dim),
                 EfficientSpatialChannelAttention(emb_dim),
                 nn.SiLU(),
@@ -26,7 +36,7 @@ class VAE(nn.Module):
             ],init_at_zero=False),
             
             Residual([
-                SelfAttention(emb_dim,add_absolute_pos=False,add_rotary_embedding=True,abs_pos_jit_prob=0),
+                SelfAttention(**attn_args),
                 nn.GroupNorm(16,emb_dim),
                 EfficientSpatialChannelAttention(emb_dim),
                 nn.SiLU(),
@@ -39,7 +49,7 @@ class VAE(nn.Module):
             nn.Conv2d(latent_dim,emb_dim,1),
             
             Residual([
-                SelfAttention(emb_dim,add_absolute_pos=False,add_rotary_embedding=True,abs_pos_jit_prob=0,prenorm='group'),
+                SelfAttention(**attn_args),
                 nn.GroupNorm(16,emb_dim),
                 EfficientSpatialChannelAttention(emb_dim),
                 nn.SiLU(),
@@ -47,7 +57,7 @@ class VAE(nn.Module):
             ],init_at_zero=False),
             
             Residual([
-                SelfAttention(emb_dim,add_absolute_pos=False,add_rotary_embedding=True,abs_pos_jit_prob=0,prenorm='group'),
+                SelfAttention(**attn_args),
                 nn.GroupNorm(16,emb_dim),
                 EfficientSpatialChannelAttention(emb_dim),
                 nn.SiLU(),

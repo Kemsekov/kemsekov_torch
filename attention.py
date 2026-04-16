@@ -125,7 +125,8 @@ class SelfAttention(nn.Module):
         abs_pos_jit_prob = 0.0,
         add_absolute_pos = False,
         prenorm : Literal[None,'group','layer']='group',
-        is_causal=False
+        is_causal=False,
+        xsa=False
     ):
         """
         dim: input dimensions
@@ -139,6 +140,7 @@ class SelfAttention(nn.Module):
         abs_pos_jit_prob: setting this value to 0.5 or 1.0, will make absolute positions embedding work as scale-translate independent feature, which will allow model to extrapolate to much larger sequence lengths
         add_absolute_pos: add absolute position embedding
         prenorm: add group or layer pre-normalization for input
+        xsa: apply exclusive self-attention fix. It will slow down module performance on about 13% but will improve model quality
         """
         super().__init__()
         self.is_causal=is_causal
@@ -148,6 +150,7 @@ class SelfAttention(nn.Module):
         inner_dim = heads * head_dim
         self.linear = linear
         self.dimensions=dimensions
+        self.xsa = xsa
         if add_absolute_pos:
             self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
         else:
@@ -170,7 +173,7 @@ class SelfAttention(nn.Module):
         
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         
-        self.to_qkv = conv(dim, inner_dim * 3, 1, bias=True)
+        self.to_qkv = conv(dim, inner_dim * 3, 1, bias=False)
         
         # Zero-initialized output projection
         self.to_out =  conv(inner_dim, dim, 1, bias=output_bias)
@@ -222,8 +225,9 @@ class SelfAttention(nn.Module):
             )  # [B, heads, L, head_dim]
             
             # apply exclusive self-attention
-            Vn = F.normalize(v,dim=-1)
-            attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
+            if self.xsa:
+                Vn = F.normalize(v,dim=-1)
+                attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
@@ -254,6 +258,7 @@ class CrossAttention(nn.Module):
         linear=False,
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False,
+        xsa = False
     ):
         """
         abs_pos_jit_prob: setting this value to 0.5 or 1.0, will make absolute positions embedding work as scale-translate independent feature, which will allow model to extrapolate to much larger sequence lengths
@@ -290,11 +295,12 @@ class CrossAttention(nn.Module):
         
         conv = [nn.Conv1d, nn.Conv2d, nn.Conv3d][dimensions - 1]
         
-        self.to_q = conv(dim, inner_dim, 1, bias=True)
-        self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=True)
+        self.to_q = conv(dim, inner_dim, 1, bias=False)
+        self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=False)
         
         self.to_out = conv(inner_dim, dim, 1, bias=output_bias)
         self.is_causal=is_causal
+        self.xsa = xsa
         
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
@@ -362,9 +368,10 @@ class CrossAttention(nn.Module):
                 dropout_p=self.dropout if self.training else 0,
                 is_causal=self.is_causal
             )  # [B, heads, L, head_dim]
-            
-            Vn = F.normalize(v,dim=-1)
-            attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
+            # apply exclusive self attention
+            if self.xsa:
+                Vn = F.normalize(v,dim=-1)
+                attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])

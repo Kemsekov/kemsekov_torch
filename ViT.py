@@ -31,7 +31,10 @@ class TimeEmb(nn.Module):
         time_scale,time_shift = self.time(t)[:,:,None,None].chunk(2,1)
         xt = x*(1+time_scale)+time_shift
         return xt
-
+class NoTimeEmb(nn.Module):
+    def __init__(self):
+        super().__init__()
+    def forward(self,x,t): return x
 class ViT(nn.Module):
     def __init__(
             self, 
@@ -77,15 +80,16 @@ class ViT(nn.Module):
                             head_dim=head_dim,
                             add_rotary_embedding=True,
                             dropout=dropout,
-                            output_bias=False,
+                            output_bias=True,
                             add_absolute_pos=True,
                             abs_pos_jit_prob=0.0,
-                            prenorm='group'
+                            prenorm='group',
+                            xsa=True
                         ),
                     ],init_at_zero=True),
                 ),
                 # add time embedding just for first two layers
-                TimeEmb(hidden_dim) if i==0 else nn.Identity()
+                TimeEmb(hidden_dim) if i==0 else NoTimeEmb()
             ])
             for i in range(layers)
         ])
