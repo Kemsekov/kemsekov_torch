@@ -26,209 +26,6 @@ def _print_blue(text: str) -> None:
     """Print bold blue text."""
     print(f"\033[1;34m{text}\033[0m")
 
-def train_lgb_with_rollback(
-    X_train: torch.Tensor|np.ndarray,
-    y_train: torch.Tensor|np.ndarray,
-    X_test: Optional[torch.Tensor|np.ndarray] = None,
-    y_test: Optional[torch.Tensor|np.ndarray] = None,
-    # LightGBM parameters - optimized defaults
-    n_estimators: int = 10000,
-    learning_rate: float = 0.01,
-    max_depth: int = -1,      # -1 means no limit
-    num_leaves: int = 31,
-    # Regularization parameters
-    min_child_samples: int = 20,      # min data in leaf
-    min_child_weight: float = 1e-3,   # min hessian sum
-    subsample: float = 0.8,           # row sampling
-    subsample_freq: int = 1,          # frequency of subsampling
-    colsample_bytree: float = 0.8,    # column sampling per tree
-    colsample_bynode: float = 0.8,    # column sampling per node
-    reg_alpha: float = 0.1,           # L1 regularization
-    reg_lambda: float = 0.1,          # L2 regularization
-    # Training control
-    validate_each: int = 10,
-    rollback_K: int = 5,
-    early_stopping_rounds: int = 100,
-    metric: Literal[
-        # Classification metrics
-        'auc', 'binary_logloss', 'binary_error',
-        'multi_logloss', 'multi_error',
-        'accuracy', 'f1', 'precision', 'recall',
-        # Regression metrics
-        'rmse', 'mse', 'mae', 'huber', 'fair', 'poisson',
-        'quantile', 'mape', 'gamma', 'tweedie',
-        # Ranking metrics
-        'lambdarank', 'ndcg', 'map', 'ecg',
-    ] = 'auc',
-    task: Literal[
-        'classification',
-        'regression',
-        'ranking',
-    ] = 'classification',
-    verbose: bool = True,
-    class_weight: Optional[str] = None,
-):
-    """
-    Optimized LightGBM training with rollback mechanism.
-
-    Key optimizations:
-    1. Subsampling (row/column) for regularization
-    2. min_child_samples to prevent overfitting on small leaves
-    3. L1/L2 regularization on leaf weights
-    4. Class weight balancing for imbalanced data
-    
-    Parameters
-    ----------
-    metric : Literal[...]
-        Evaluation metric. Options:
-        - Classification: 'auc', 'binary_logloss', 'binary_error', 'multi_logloss', 
-          'multi_error', 'accuracy', 'f1', 'precision', 'recall'
-        - Regression: 'rmse', 'mse', 'mae', 'huber', 'fair', 'poisson', 
-          'quantile', 'mape', 'gamma', 'tweedie'
-        - Ranking: 'lambdarank', 'ndcg', 'map', 'ecg'
-    task : Literal[...]
-        Task type. Options: 'classification', 'regression', 'ranking'
-    """
-    import lightgbm as lgb
-    
-    def to_numpy(t : torch.Tensor|np.ndarray):
-        if isinstance(t,torch.Tensor):
-            return t.numpy()
-        return t
-    
-    X_train = to_numpy(X_train)
-    y_train = to_numpy(y_train)
-    if X_test is not None:
-        X_test = to_numpy(X_test)
-    if y_test is not None:
-        y_test = to_numpy(y_test)
-    
-    is_classification = task == 'classification'
-    higher_is_better = metric in ['auc', 'accuracy', 'r2', 'map', 'ndcg', 'rmse']
-    
-    # Create dataset with optional class weights
-    if class_weight == 'balanced' and is_classification:
-        # Calculate class weights
-        class_counts = np.bincount(y_train.astype(int))
-        class_weights = len(y_train) / (len(class_counts) * class_counts)
-        sample_weights = class_weights[y_train.astype(int)]
-        train_data = lgb.Dataset(X_train, label=y_train, weight=sample_weights)
-    else:
-        train_data = lgb.Dataset(X_train, label=y_train)
-    
-    # Prepare eval sets
-    eval_sets = [(train_data, 'train')]
-    if X_test is not None and y_test is not None:
-        if class_weight == 'balanced' and is_classification:
-            test_sample_weights = class_weights[y_test.astype(int)]
-            test_data = lgb.Dataset(X_test, label=y_test, weight=test_sample_weights, reference=train_data)
-        else:
-            test_data = lgb.Dataset(X_test, label=y_test, reference=train_data)
-        eval_sets.append((test_data, 'test'))
-    
-    # Best model tracking
-    best_metric_value = -1e10 if higher_is_better else 1e10
-    best_iteration = 0
-    test_degraded_count = 0
-    rollback_triggered = False
-    
-    # Training parameters - optimized
-    params = {
-        'learning_rate': learning_rate,
-        'max_depth': max_depth,
-        'num_leaves': num_leaves,
-        'min_child_samples': min_child_samples,
-        'min_child_weight': min_child_weight,
-        'subsample': subsample,
-        'subsample_freq': subsample_freq,
-        'colsample_bytree': colsample_bytree,
-        'colsample_bynode': colsample_bynode,
-        'reg_alpha': reg_alpha,
-        'reg_lambda': reg_lambda,
-        'metric': metric,
-        'verbose': -1,
-        'seed': 42,
-        # 'force_row_wise': True,  # Better for small datasets
-    }
-    
-    if is_classification:
-        if len(np.unique(y_train)) == 2:
-            params['objective'] = 'binary'
-            if class_weight == 'balanced':
-                pos_weight = np.sum(y_train == 0) / np.sum(y_train == 1)
-                params['scale_pos_weight'] = pos_weight
-        else:
-            params['objective'] = 'multiclass'
-            params['num_class'] = len(np.unique(y_train))
-    else:
-        params['objective'] = 'regression'
-    
-    # Custom callback for periodic validation and rollback logic
-    eval_results = {}
-    
-    def eval_callback(env: lgb.callback.CallbackEnv):
-        nonlocal best_metric_value, best_iteration, test_degraded_count, rollback_triggered
-        
-        iteration = env.iteration + 1
-        
-        # Store results
-        for result in env.evaluation_result_list:
-            data_name, metric_name, score, is_higher_better = result
-            if data_name not in eval_results:
-                eval_results[data_name] = {}
-            if metric_name not in eval_results[data_name]:
-                eval_results[data_name][metric_name] = []
-            eval_results[data_name][metric_name].append(score)
-        
-        # Only check rollback at validate_each intervals
-        if iteration % validate_each != 0:
-            return
-        
-        # Get test metric
-        if 'test' in eval_results:
-            for metric_name, scores in eval_results['test'].items():
-                current_metric = scores[-1]
-                
-                if verbose:
-                    print(f"Iteration {iteration} \t{metric_name} {current_metric:.4f}")
-                
-                # Check if improved
-                if higher_is_better:
-                    improved = current_metric > best_metric_value
-                else:
-                    improved = current_metric < best_metric_value
-                
-                if improved:
-                    best_metric_value = current_metric
-                    best_iteration = iteration
-                    test_degraded_count = 0
-                    if verbose:
-                        _print_green(f"{'='*23}Save{'='*23}")
-                elif rollback_K > 0:
-                    test_degraded_count += 1
-                    if test_degraded_count >= rollback_K:
-                        if verbose:
-                            _print_red(f"{'='*19}Rolling back{'='*19}")
-                        rollback_triggered = True
-    
-    # Train with callbacks
-    model = lgb.train(
-        params,
-        train_data,
-        num_boost_round=n_estimators,
-        valid_sets=[d[0] for d in eval_sets],
-        valid_names=[d[1] for d in eval_sets],
-        callbacks=[
-            lgb.callback.early_stopping(stopping_rounds=early_stopping_rounds, first_metric_only=True),
-            eval_callback,
-        ],
-    )
-    
-    if verbose:
-        _print_green(f"Best metric {metric} {best_metric_value:.4f} at iteration {best_iteration}")
-    
-    return model, {metric: best_metric_value}, best_iteration
-
 
 def train_simple(
     model : nn.Module,
@@ -250,7 +47,8 @@ def train_simple(
     # print or not
     verbose = True,
     device='cpu',
-    dtype=torch.float32
+    dtype=torch.float32,
+    ema_beta = None
 ):
     def totensor(x):
         if not isinstance(x,torch.Tensor):
@@ -280,6 +78,14 @@ def train_simple(
     running_metric = 0
     running_loss = 0
     test_degraded = 0
+    def no_op():pass
+    if ema_beta is not None:
+        ema = EMA(model,beta=ema_beta)
+        ema_update = ema.update
+        ema_model_update = ema.update_model_with_ema
+    else:
+        ema_update = no_op
+        ema_model_update = no_op
     with torch.autocast(device,dtype):
         for i in range(1,epochs+1):
             opt.zero_grad(True)
@@ -294,6 +100,7 @@ def train_simple(
             running_metric+=metric
             running_loss+=loss.detach()
             if i%validate_each==0:
+                ema_model_update()
                 running_metric/=validate_each
                 running_loss/=validate_each
                 if X_test is not None:
@@ -332,6 +139,8 @@ def train_simple(
             
             opt.step()
             sh.step()
+            
+            ema_update()
         with torch.no_grad():
             if best_model_state is not None:
                 model.load_state_dict(best_model_state)
