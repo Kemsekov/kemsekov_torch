@@ -4,7 +4,7 @@ from typing import Dict, Tuple
 import torch
 from torch import nn
 
-def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval_length = 1):
+def _compute_inv_freq(base: int, dim: int,device : torch.device,trained_length : int = 1, eval_length : int = 1):
     """
     Returns interpolated inverse frequencies.
     """
@@ -12,7 +12,8 @@ def _compute_inv_freq(base: int, dim: int,device = None,trained_length = 1, eval
     scale = eval_length / trained_length
     
     # do not scale inputs smaller than trained ones
-    if scale<1: scale=1
+    if scale<1: 
+        scale+=1.0-scale
     i = torch.arange(0, dim, dtype=torch.float32, device=device)
     base_freq = base ** (-i / dim)  # Standard inverse frequencies
     return base_freq/scale

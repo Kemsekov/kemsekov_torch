@@ -65,17 +65,18 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
             if dims_len==1:
                 POS_IND = torch.arange(0,DIMS[0],device=x.device)[:,None]-DIMS[0]/2
             
-            if dims_len==2:
+            elif dims_len==2:
                 X = torch.arange(0,DIMS[0],device=x.device)-DIMS[0]/2
                 Y = torch.arange(0,DIMS[1],device=x.device)-DIMS[1]/2
                 POS_IND = torch.stack(torch.meshgrid([Y,X],indexing='ij'),-1)
             
-            if dims_len==3:
+            elif dims_len==3:
                 X = torch.arange(0,DIMS[0],device=x.device)-DIMS[0]/2
                 Y = torch.arange(0,DIMS[1],device=x.device)-DIMS[1]/2
                 Z = torch.arange(0,DIMS[2],device=x.device)-DIMS[2]/2
                 POS_IND = torch.stack(torch.meshgrid([Z,X,Y],indexing="ij"),-1)
-
+            else:
+                raise RuntimeError("I don't know how to embed more than 3 dimensions")
             POS_IND=POS_IND*2
             self.cached_grid = POS_IND
         
@@ -200,8 +201,7 @@ class SelfAttention(nn.Module):
             # 3. Reshape to [B, 3,L, heads, head_dim].
             qkv_perm = qkv.permute(0, 1, 4, 2, 3)
             
-            # expand x spatial dimensions to [B, 3, (...dims...), heads, head_dim].
-            qkv_perm = qkv_perm.view(B,3,*x.shape[2:],self.heads,self.head_dim)
+            qkv_perm = qkv_perm.view([B,3]+list(x.shape[2:])+[self.heads,self.head_dim])
             
             # apply rotary embedding to query and keys
             qkv_perm[:,0]=self.rotary_emb(qkv_perm[:,0])
@@ -220,7 +220,7 @@ class SelfAttention(nn.Module):
             # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
             attn_out = F.scaled_dot_product_attention(
                 q, k, v,
-                dropout_p=self.dropout if self.training else 0,
+                dropout_p=self.dropout if self.training else 0.0,
                 is_causal=self.is_causal
             )  # [B, heads, L, head_dim]
             
@@ -230,7 +230,7 @@ class SelfAttention(nn.Module):
                 attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
-        attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
+        attn_out = attn_out.transpose(-1, -2).reshape([B, self.heads * self.head_dim]+list(x.shape[2:]))
         
         # 7. Output projection + residual connection
         return self.to_out(attn_out)+identity
