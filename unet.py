@@ -18,7 +18,7 @@ class Unet(nn.Module):
         
         self.compress = nn.Sequential(
             nn.PixelUnshuffle(compression),
-            nn.Conv2d(2**compression*in_channels,layer_dims[0],kernel_size=1)
+            nn.Conv2d(compression**2*in_channels,layer_dims[0],kernel_size=1)
         )
         
         def down_block(in_dim,out_dim):
@@ -64,7 +64,7 @@ class Unet(nn.Module):
         self.up3 = up_block(layer_dims[1],layer_dims[0])
         
         self.final = nn.Sequential(
-            nn.Conv2d(layer_dims[0],2**compression*out_channels,kernel_size=3,padding=1),
+            nn.Conv2d(layer_dims[0],compression**2*out_channels,kernel_size=3,padding=1),
             nn.PixelShuffle(compression),
         )
         
