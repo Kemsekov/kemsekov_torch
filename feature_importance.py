@@ -28,7 +28,8 @@ def calculate_permutation_importance(model, compute_loss_and_metrics, X_test, y_
     y_test = totensor(y_test)
     
     # Get baseline performance
-    _, metrics = compute_loss_and_metrics(model, X_test, y_test)
+    with torch.no_grad():
+        _, metrics = compute_loss_and_metrics(model, X_test, y_test)
     metric_name = list(metrics.keys())[0]
     baseline_score = metrics[metric_name]
     
@@ -44,7 +45,8 @@ def calculate_permutation_importance(model, compute_loss_and_metrics, X_test, y_
             X_perm = X_test.clone()
             perm = torch.randperm(X_test.shape[0])
             X_perm[:, i] = X_test[perm, i]
-            _, p_metrics = compute_loss_and_metrics(model, X_perm, y_test)
+            with torch.no_grad():
+                _, p_metrics = compute_loss_and_metrics(model, X_perm, y_test)
             scores.append(p_metrics[metric_name])
         
         avg_score = sum(scores) / n_repeats
@@ -84,6 +86,16 @@ class MLP(nn.Module):
         if return_emb:
             return self.fc(emb), emb
         return self.fc(emb)
+
+class AverageMLP(nn.Module):
+    def __init__(self,models):
+        super().__init__()
+        self.models = nn.ModuleList(models)
+    def forward(self,x):
+        avg = 0
+        for m in self.models:
+            avg+=m(x)
+        return avg/len(self.models)
 
 class OptimalFeatureImportance:
     """
@@ -250,6 +262,7 @@ class OptimalFeatureImportance:
             best_model = None
             best_r2 = -1e10
             
+            trained_models = []
             for i in range(self.n_model_init):
                 mlp = MLP(X_train_prep.shape[-1], y_full.shape[-1], hid=self.hid)
                 model, metrics = train_simple(
@@ -269,10 +282,14 @@ class OptimalFeatureImportance:
                     ema_beta=self.ema_beta
                 )
                 r2 = metrics['R2']
-                if r2 > best_r2:
-                    best_r2 = r2
-                    best_model = model
+                trained_models.append((model,r2))
+                # if r2 > best_r2:
+                #     best_r2 = r2
+                #     best_model = model
             
+            best_model = AverageMLP([l[0] for l in trained_models])
+            with torch.no_grad():
+                best_r2 = compute_loss_and_metric(best_model,X_test_prep,self.y_test_tensor)[1]['R2']
             
             # new we attach part of train dataset alongside test dataset
             # to make sure that permutation importance
