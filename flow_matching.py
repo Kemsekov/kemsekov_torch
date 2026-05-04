@@ -1091,6 +1091,88 @@ class FlowModel1d(nn.Module):
             final_x = model.to_target(self._iteration.best_sample)
 
         return final_x
+
+    def conditional_optimize(
+        self,
+        data,
+        constraint : Callable[[torch.Tensor],torch.Tensor],
+        noise_scale: float = 0.0,
+        steps: int = 2,
+        lr: float = 1,
+        mode_closeness_weight = 1.0,
+        sampler_steps = None
+    ) -> torch.Tensor:
+        """
+        Make conditional optimization of data from trained flow matching model.
+        
+        I **strongly** advice you to call `reflow(...)` method before using conditional sampling,
+        otherwise you will need a lot more time to execute this method.
+        
+        Args:
+            constraint: Constraint loss function. Accepts generated target in `(num_samples,dim)` shape and returns loss `(scalar tensor)` that defines condition for sampling.
+            num_samples: Number of samples to generate
+            noise_scale: Scale of noise added during Langevin dynamics (default 0.00). Increasing this value will result in samples more spread from condition. Values around [0 to 0.05] are generally good enough.
+            steps: Number of optimization steps (default 2)
+            lr: Learning rate for the optimization (default 1)
+            mode_closeness_weight: Weight for trying to sample closer to distribution mode. Increasing this value make samples cluster more around closest distribution mode, potentially leading to mode collapse (all samples are the same).
+            sampler_steps: sampler steps for flow matching models.
+        Returns:
+            torch.Tensor: Data of shape `[num_samples, input_dim]` satisfying the conditions
+        
+        """
+        model = self
+        model.eval()
+        device = self.device
+        # Move data to prior
+        with torch.no_grad():
+            z : torch.Tensor = self.to_prior(data)
+        z=z.requires_grad_(True)
+        
+        original_prior = (z * z).mean().detach()
+
+        # Create optimizer for the latent variable z
+        optimizer = torch.optim.LBFGS([z], lr=lr)
+
+        class Iteration:
+            best_sample = z.clone().detach()
+            best_loss = 1e8
+        self._iteration = Iteration()
+        
+        def closure():
+            optimizer.zero_grad()
+
+            # Forward pass: x = M_inv(z)
+            x = model.to_target(z,sampler_steps)
+
+            # Balance original prior probability/vs likelihood maximization
+            L_prior = (z * z).mean()
+            L_prior = (L_prior-original_prior)**2+mode_closeness_weight*L_prior
+
+            # Compute constraint loss: L_constraint = constraint(x)
+            L_constraint = constraint(x)
+
+            # Total loss: L_total = L_prior + λ * L_constraint
+            L_total = L_prior + L_constraint
+
+            it = self._iteration
+            if L_total<it.best_loss:
+                it.best_loss = L_total
+                it.best_sample = z.clone().detach()
+            
+            L_total.backward()
+            with torch.no_grad():
+                z.data += noise_scale * torch.randn_like(z)
+            return L_total
+        
+        for t in range(steps):
+            # Perform optimizer step
+            optimizer.step(closure)
+
+
+        with torch.no_grad():
+            final_x = model.to_target(self._iteration.best_sample)
+
+        return final_x
  
     def full_log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
         """
