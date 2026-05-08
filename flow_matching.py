@@ -1105,12 +1105,14 @@ class FlowModel1d(nn.Module):
         """
         Make conditional optimization of data from trained flow matching model.
         
+        It tries to minimize constraint for given data points, keeping probability of points distribution same as it is in data
+        points. If `mode_closeness_weight`>0 then it will shift points closer to mode.
+        
         I **strongly** advice you to call `reflow(...)` method before using conditional sampling,
         otherwise you will need a lot more time to execute this method.
         
         Args:
-            constraint: Constraint loss function. Accepts generated target in `(num_samples,dim)` shape and returns loss `(scalar tensor)` that defines condition for sampling.
-            num_samples: Number of samples to generate
+            constraint: Constraint loss function. Accepts generated target in `(num_samples,dim)` shape and returns loss `(scalar tensor)` that defines condition for optimization.
             noise_scale: Scale of noise added during Langevin dynamics (default 0.00). Increasing this value will result in samples more spread from condition. Values around [0 to 0.05] are generally good enough.
             steps: Number of optimization steps (default 2)
             lr: Learning rate for the optimization (default 1)
