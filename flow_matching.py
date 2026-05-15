@@ -533,7 +533,7 @@ class FlowModel1d(nn.Module):
         super().__init__()
         self.fm = FlowMatching()
         # time scaler for training
-        self.time_scaler = torch.nn.Parameter(torch.tensor([default_time_scaler]))
+        self.time_scaler = torch.nn.Parameter(torch.tensor([float(default_time_scaler)]))
         # this thing will dynamically shift training to harder part of vector-space
         self.fm.time_scaler = lambda x: torch.log((self.time_scaler-1)*x+1)/torch.log(self.time_scaler)
         
