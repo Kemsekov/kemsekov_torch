@@ -485,25 +485,25 @@ def zero_module(module):
             p.zero_()
     return module
 
+class ReluSQ(nn.Module):
+    def forward(self,x : torch.Tensor):
+        return x.relu()**2
+
 class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim) -> None:
         super().__init__()
-        m = Residual([
-            # nn.Linear(hidden_dim,hidden_dim),
-            # nn.RMSNorm(hidden_dim),
-            Prod(nn.Sequential(
-                # nn.RMSNorm(hidden_dim),
-                nn.SiLU(),
-                nn.Linear(hidden_dim,hidden_dim),
-                nn.RMSNorm(hidden_dim),
-                nn.Tanh(),
-            )),
+        self.prod = nn.Sequential(
             nn.SiLU(),
-            zero_module(nn.Linear(hidden_dim,hidden_dim)),
-        ],init_at_zero=False)
-        self.m=m
+            nn.Linear(hidden_dim,hidden_dim,bias=False),
+        )
+        self.out = nn.Sequential(
+            nn.SiLU(),
+            zero_module(nn.Linear(hidden_dim,hidden_dim,bias=False))
+        )
+        
     def forward(self,x):
-        return self.m(x)
+        return self.out(x*self.prod(x))+x
+    
 from kemsekov_torch.attention_residual import *
 class FlowModel1d(nn.Module):
     """
