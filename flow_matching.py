@@ -484,11 +484,6 @@ def zero_module(module):
         for p in module.parameters():
             p.zero_()
     return module
-
-class ReluSQ(nn.Module):
-    def forward(self,x : torch.Tensor):
-        return x.relu()**2
-
 class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim) -> None:
         super().__init__()
