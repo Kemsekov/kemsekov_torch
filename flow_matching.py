@@ -947,7 +947,7 @@ class FlowModel1d(nn.Module):
             
         self.eval()
   
-    def to_prior(self,data : torch.Tensor,steps=None):
+    def to_prior(self,data : torch.Tensor,steps=None,return_intermediates=False):
         """
         Transforms data from the target distribution back to the prior (noise) distribution.
 
@@ -967,9 +967,9 @@ class FlowModel1d(nn.Module):
         """
         if not steps: steps = self.default_steps
         input_device = data.device
-        return self.fm.integrate(self,data.to(self.device),steps,inverse=True).to(input_device)
+        return self.fm.integrate(self,data.to(self.device),steps,inverse=True,return_intermediates=return_intermediates).to(input_device)
     
-    def to_target(self,normal_noise : torch.Tensor,steps=None):
+    def to_target(self,normal_noise : torch.Tensor,steps=None,return_intermediates=False):
         """
         Transforms samples from the prior (noise) distribution to the target distribution.
 
@@ -989,7 +989,7 @@ class FlowModel1d(nn.Module):
         """
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
-        return self.fm.integrate(self,normal_noise.to(self.device),steps).to(input_device)
+        return self.fm.integrate(self,normal_noise.to(self.device),steps,return_intermediates=return_intermediates).to(input_device)
     
     def sample(self,num_samples,steps=None):
         """
