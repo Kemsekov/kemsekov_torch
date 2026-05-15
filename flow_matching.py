@@ -35,7 +35,7 @@ def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates 
         ts = torch.linspace(1, 0, steps, device=device)
     else:
         ts = torch.linspace(0, 1, steps, device=device)
-    ts = time_transform(ts[:,None])[:,0]
+    # ts = time_transform(ts[:,None])[:,0]
     
     if len(ts)>1:
         dt = ts[1]-ts[0]
@@ -79,7 +79,7 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
         ts = torch.linspace(1, 0, steps+1, device=device)  # steps intervals = steps+1 points
     else:
         ts = torch.linspace(0, 1, steps+1, device=device)
-    ts = time_transform(ts[:,None])[:,0]
+    # ts = time_transform(ts[:,None])[:,0]
     dt = ts[1:]-ts[:-1]
     x0 = x0.to(device)
     xt = x0
@@ -529,13 +529,13 @@ class FlowModel1d(nn.Module):
         default_steps (int): Default number of integration steps for sampling
         device (str): Device on which the model is located
     """
-    def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.0) -> None:
+    def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01) -> None:
         super().__init__()
         self.fm = FlowMatching()
         # time scaler for training
         self.time_scaler = torch.nn.Parameter(torch.tensor([float(default_time_scaler)]))
         # this thing will dynamically shift training to harder part of vector-space
-        self.fm.time_scaler = lambda x: torch.log((self.time_scaler-1)*x+1)/torch.log(self.time_scaler)
+        self.fm.time_scaler = lambda x: torch.log((self.time_scaler-1)*x+1)/self.time_scaler.log()
         
         self.in_dim=in_dim
         self.hidden_dim=hidden_dim
