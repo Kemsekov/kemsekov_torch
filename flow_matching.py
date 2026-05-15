@@ -967,7 +967,15 @@ class FlowModel1d(nn.Module):
         """
         if not steps: steps = self.default_steps
         input_device = data.device
-        return self.fm.integrate(self,data.to(self.device),steps,inverse=True,return_intermediates=return_intermediates).to(input_device)
+        out = self.fm.integrate(self,data.to(self.device),steps,inverse=True,return_intermediates=return_intermediates)
+        if return_intermediates:
+            out,inter = out
+            out = out.to(input_device)
+            inter = [l.to(input_device) for l in inter]
+            out = (out,inter)
+        else:
+            out = out.to(input_device)
+        return out
     
     def to_target(self,normal_noise : torch.Tensor,steps=None,return_intermediates=False):
         """
@@ -989,7 +997,15 @@ class FlowModel1d(nn.Module):
         """
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
-        return self.fm.integrate(self,normal_noise.to(self.device),steps,return_intermediates=return_intermediates).to(input_device)
+        out = self.fm.integrate(self,normal_noise.to(self.device),steps,return_intermediates=return_intermediates)
+        if return_intermediates:
+            out,inter = out
+            out = out.to(input_device)
+            inter = [l.to(input_device) for l in inter]
+            out = (out,inter)
+        else:
+            out = out.to(input_device)
+        return out
     
     def sample(self,num_samples,steps=None):
         """
