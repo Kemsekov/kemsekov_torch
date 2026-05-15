@@ -235,7 +235,6 @@ class FlowMatching(nn.Module):
     def __init__(self):
         super().__init__()
         self.time_scaler = lambda x:x
-        self.time_sampler_transform = lambda x:x
         self.reset_weights()
         # weights for one-step integration
     
@@ -421,7 +420,7 @@ class FlowMatching(nn.Module):
             case 1: return one_step(model,x0,self.one_weights_inv if inverse else self.one_weights)
             case 2: return rk2(model,x0,self.rk2_weights_inv if inverse else self.rk2_weights,return_intermediates)
             case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
-            case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_sampler_transform,no_grad_model=no_grad_model)
+            case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_scaler,no_grad_model=no_grad_model)
 
 class LossNormalizer1d(nn.Module):
     """
