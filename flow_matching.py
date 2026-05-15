@@ -490,7 +490,7 @@ class FusedFlowResidual(nn.Module):
         self.prod = nn.Sequential(
             nn.SiLU(),
             nn.Linear(hidden_dim,hidden_dim,bias=False),
-            nn.Tanh()
+            # nn.Tanh()
         )
         self.out = nn.Sequential(
             nn.SiLU(),
