@@ -79,7 +79,7 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
         ts = torch.linspace(1, 0, steps+1, device=device)  # steps intervals = steps+1 points
     else:
         ts = torch.linspace(0, 1, steps+1, device=device)
-    # ts = time_transform(ts[:,None])[:,0]
+        ts = time_transform(ts[:,None])[:,0]
     dt = ts[1:]-ts[:-1]
     x0 = x0.to(device)
     xt = x0
