@@ -89,7 +89,14 @@ def _reshape_to_transformer_input(x : torch.Tensor):
 def _restore_shape_of_transformer_output(out,src_shape : List[int]):
     return out.permute(0,2,1).view(src_shape)
 
-
+def zero_module(module):
+    """
+    Zero out the parameters of a module and return it to implement Re-Zero
+    """
+    with torch.no_grad():
+        for p in module.parameters():
+            p.zero_()
+    return module
 class Prod(nn.Module):
     """
     Returns product of input with output of module of same input.
