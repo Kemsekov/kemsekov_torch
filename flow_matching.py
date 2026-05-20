@@ -629,6 +629,7 @@ class FlowModel1d(nn.Module):
         Returns:
             None: Modifies the model in-place, retaining the best checkpoint based on validation loss.
         """
+        self.unfreeze()
         # these are optimal for cpu-training
         try:
             torch.set_num_threads(4)
@@ -825,6 +826,7 @@ class FlowModel1d(nn.Module):
             base_model (Optional[nn.Module]): Teacher model with `to_prior()`/`to_target()` methods. 
                                             If None, uses `self` (self-distillation, default: None)
         """
+        self.unfreeze()
         gc.disable()
         try:
             torch.set_num_threads(4)
@@ -1053,6 +1055,7 @@ class FlowModel1d(nn.Module):
         """
         model = self
         model.eval()
+        self.freeze()
         device = self.device
         # Initialize z from standard normal distribution
         z = torch.randn(num_samples, model.in_dim, device=device, requires_grad=True)
@@ -1100,7 +1103,7 @@ class FlowModel1d(nn.Module):
 
         with torch.no_grad():
             final_x = model.to_target(self._iteration.best_sample)
-
+        self.unfreeze()
         return final_x
 
     def conditional_optimize(
@@ -1135,6 +1138,7 @@ class FlowModel1d(nn.Module):
         """
         model = self
         model.eval()
+        self.freeze()
         device = self.device
         # Move data to prior
         with torch.no_grad():
@@ -1184,7 +1188,7 @@ class FlowModel1d(nn.Module):
 
         with torch.no_grad():
             final_x = model.to_target(self._iteration.best_sample)
-
+        self.unfreeze()
         return final_x
  
     def full_log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
@@ -1245,7 +1249,7 @@ class FlowModel1d(nn.Module):
                  - torch.Tensor: Final loss value after optimization
         """
         batch_size, input_dim = data.shape
-
+        self.freeze()
         # Handle default case - optimize all columns if none specified
         if columns_to_optimize is None or len(columns_to_optimize) == 0:
             columns_to_optimize = list(range(input_dim))
@@ -1315,10 +1319,23 @@ class FlowModel1d(nn.Module):
         # Add back fixed columns if any exist
         if fixed_columns:
             result[:, fixed_columns] = fixed_data
-
+        self.unfreeze()
         return result, iteration.best_loss
     
     def log_prob(self, data, eps=1e-3,random_directions=0,return_prior=False):
         # return log_prob(self.to_target,self.to_prior(data),eps,random_directions=random_directions)
         return log_prob_inverse(self.to_prior,data,eps,random_directions=random_directions,return_prior=return_prior)
-        
+    
+    def freeze(self):
+        """
+        Disables grad on model weights
+        """
+        for p in self.parameters():
+            p.requires_grad_(False)
+    def unfreeze(self):
+        """
+        Enables grad on model weights
+        """
+        for p in self.parameters():
+            p.requires_grad_(True)
+    
