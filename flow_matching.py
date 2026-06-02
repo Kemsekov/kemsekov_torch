@@ -209,7 +209,7 @@ def rk2(model, x0, weights):
     
     k1 = model(x0, t0.unsqueeze(0))
     k2 = model(x0+half*k1, t_mid.unsqueeze(0))
-    x1 = h1*k1+h2*k2+w1*x0+k1.pow(2)*k1.sign()*w2+k2.pow(2)*k2.sign()*w3
+    x1 = h1*k1+h2*k2+w1*x0#+k1.pow(2)*k1.sign()*w2+k2.pow(2)*k2.sign()*w3
     return x1
 
 def one_step(model,x0 : torch.Tensor,weights):
@@ -247,8 +247,8 @@ class FlowMatching(nn.Module):
             start_time = self.time_scaler(0.5)
             self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0],device=device))
             self.one_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time,-0.5,1,0],device=device))
-            self.rk2_weights     = torch.nn.Parameter(torch.tensor([0., 0.5,  0, 1.0, 0.5, 1.0, 0.0, 0.0],device=device))
-            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1.0, 0.5, 0, -1.0, -0.5, 1.0, 0.0, 0.0],device=device))
+            self.rk2_weights     = torch.nn.Parameter(torch.tensor([start_time,   1.0,  0.5, 0.5, 1.0, 1.0, 0.0, 0.0],device=device))
+            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time, 0.0, -0.5, -0.5, -1.0, 1.0, 0.0, 0.0],device=device))
     
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
