@@ -841,9 +841,8 @@ class FlowModel1d(nn.Module):
             # samples to reflow model training, this step empirically helps a lot
             # with reflowed model quality
             
-            x_gen = sample_base(self.sobol,len(x),self.device)
-            
-            # x_gen=torch.randn_like(x)
+            # x_gen = sample_base(self.sobol,len(x),self.device)
+            x_gen=torch.randn_like(x)
             y_gen = base_model.to_target(x_gen)
             
             x = torch.concat([x,x_gen],0)
@@ -999,7 +998,7 @@ class FlowModel1d(nn.Module):
             out = out.to(input_device)
         return out
     
-    def sample(self,num_samples,steps=None):
+    def sample(self,num_samples,steps=None,sobol=False):
         """
         Generates samples from the learned target distribution.
 
@@ -1011,13 +1010,18 @@ class FlowModel1d(nn.Module):
             num_samples (int): Number of samples to generate
             steps (int, optional): Number of integration steps to use for transformation.
                                  If None, uses the model's default steps.
+            sobol: use sobol for sampling
 
         Returns:
             torch.Tensor: Generated samples from the target distribution.
                          Shape: [num_samples, input_dim]
         """
         if not steps: steps = self.default_steps
-        return self.to_target(sample_base(self.sobol,num_samples,self.device),steps)
+        if sobol:
+            x = sample_base(self.sobol,num_samples,self.device)
+        else:
+            x = torch.randn((num_samples,self.in_dim),device=self.device)
+        return self.to_target(x,steps)
     
     def conditional_sample(
         self,
