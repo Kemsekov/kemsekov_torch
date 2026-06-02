@@ -201,45 +201,23 @@ def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, l
     
     return (xt_next, intermediates) if return_intermediates else xt_next
 
-def rk2(model, x0, weights, return_intermediates=False):
+def rk2(model, x0, weights):
     device = next(model.parameters()).device
     x0 = x0.to(device)
-    xt = x0.clone()
     
+    t0,t_mid,h1,h2,half,w1,w2,w3 = weights
     
-    left = weights[0]
-    dt = weights[1]
-    weight_k1 = weights[2]
-    weight_k2 = weights[3]
-    model_eval_t = weights[4]
-    
-    t_start =   left
-    
-    intermediates = []
-    
-    # === First evaluation (k1 at start) - weight = 1/4 ===
-    
-    k1 = model(xt, model_eval_t.unsqueeze(0))
-    
-    # === Second evaluation (k2 at 2/3 point) - Ralston's optimal point ===
-    t_ralston = t_start + weights[4] * dt  # = 1/3 for reverse, 2/3 for forward
-    x_ralston = xt + weights[5] * dt * k1
-    t_expand_ralston = t_ralston.expand(x0.shape[0])
-    k2 = model(x_ralston, t_expand_ralston)
-    
-    xt_next = xt + dt * (weight_k1 * k1 + weight_k2 * k2)
-    
-    if return_intermediates:
-        intermediates.extend([x_ralston, xt_next])
-    
-    return (xt_next, intermediates) if return_intermediates else xt_next
+    k1 = model(x0, t0.unsqueeze(0))
+    k2 = model(x0+half*k1, t_mid.unsqueeze(0))
+    x1 = h1*k1+h2*k2+w1*x0+k1.pow(2)*k1.sign()*w2+k2.pow(2)*k2.sign()*w3
+    return x1
 
-def one_step(model,x0,weights):
+def one_step(model,x0 : torch.Tensor,weights):
     """One-step integration"""
     t=weights[0].unsqueeze(0)
     pred = model(x0,t)
-    # add bias term
-    return weights[1]*pred+weights[2]*x0+weights[3]*x0*x0
+    return weights[1]*pred+weights[2]*x0+x0.pow(2)*x0.sign()*weights[3]
+
 class FlowMatching(nn.Module):
     def __init__(self):
         super().__init__()
@@ -267,10 +245,10 @@ class FlowMatching(nn.Module):
             device=None
         with torch.no_grad():
             start_time = self.time_scaler(0.5)
-            self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0,0],device=device))
-            self.one_weights_inv = torch.nn.Parameter(torch.tensor([start_time,-0.5,1,0,0],device=device))
-            self.rk2_weights     = torch.nn.Parameter(torch.tensor([0,1,1/4,3/4,2/3,2/3,0.0],device=device))
-            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1,-1,1/4,3/4,2/3,2/3,1.0],device=device))
+            self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0],device=device))
+            self.one_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time,-0.5,1,0],device=device))
+            self.rk2_weights     = torch.nn.Parameter(torch.tensor([0., 0.5,  0, 1.0, 0.5, 1.0, 0.0, 0.0],device=device))
+            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1.0, 0.5, 0, -1.0, -0.5, 1.0, 0.0, 0.0],device=device))
     
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
@@ -427,7 +405,7 @@ class FlowMatching(nn.Module):
             steps=steps.int().item()
         match steps:
             case 1: return one_step(model,x0,self.one_weights_inv if inverse else self.one_weights)
-            case 2: return rk2(model,x0,self.rk2_weights_inv if inverse else self.rk2_weights,return_intermediates)
+            case 2: return rk2(model,x0,self.rk2_weights_inv if inverse else self.rk2_weights)
             case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
             case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_scaler,no_grad_model=no_grad_model)
 
