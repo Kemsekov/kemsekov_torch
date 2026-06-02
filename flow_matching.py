@@ -12,6 +12,15 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.func import vmap, jacrev
+from torch.quasirandom import SobolEngine
+
+def sample_base(sobol : SobolEngine,count,device):
+    half=count//2
+    # efficient uniform-like space coverage sobol standard normal distribution sampler
+    u = sobol.draw(half).to(device)           # [count, latent_dim] in [0, 1]
+    z = torch.erfinv(2 * u - 1) * math.sqrt(2)      # Transform to N(0, 1)
+    # reduce variance
+    return torch.concat([z,-z],0)[:count]
 
 def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates = False, time_transform : nn.Module = nn.Identity(),no_grad_model=False):
     """
@@ -528,6 +537,8 @@ class FlowModel1d(nn.Module):
     def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01) -> None:
         super().__init__()
         self.fm = FlowMatching()
+        self.sobol = SobolEngine(in_dim, scramble=True)
+        
         # time scaler for training
         self.time_scaler = torch.nn.Parameter(torch.tensor([float(default_time_scaler)]))
         # this thing will dynamically shift training to harder part of vector-space
@@ -643,7 +654,6 @@ class FlowModel1d(nn.Module):
         device = model.device
         batch_size = min(batch_size,data.shape[0])
         
-        
         trainable_weights = list(model.parameters())
         if distribution_matching>0:
             loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
@@ -694,7 +704,8 @@ class FlowModel1d(nn.Module):
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
                     
                     batch = data_shuf[start : start + batch_size]
-                    prior_batch.normal_()
+                    # prior_batch.normal_()
+                    prior_batch = sample_base(self.sobol,batch_size,device)
                     time.uniform_()
                     
                     B = batch.shape[0]
@@ -778,27 +789,7 @@ class FlowModel1d(nn.Module):
         # update current model with best checkpoint
         model.load_state_dict(best_trained_model)
         model.eval()
-    
-    def mmd2_with_data(self,data : torch.Tensor) -> float:
-        """
-        Computes the Maximum Mean Discrepancy (MMD) squared between the model's samples and given data.
 
-        This method generates samples from the trained model and compares them to the provided data
-        using the RBF kernel-based MMD metric. Lower values indicate that the model's samples
-        are more similar to the provided data, suggesting better model performance.
-
-        Args:
-            data (torch.Tensor): Reference data tensor to compare against model samples.
-                               Expected shape: [num_samples, input_dim]
-
-        Returns:
-            float: MMD^2 value indicating the discrepancy between model samples and reference data.
-                   Lower values indicate better similarity between the distributions.
-        """
-        with torch.no_grad():
-            sampled = self.sample(len(data))
-            return mmd_rbf(data.to(self.device),sampled)[0].item()
-    
     def reflow(
             self,
             data : torch.Tensor,
@@ -849,7 +840,10 @@ class FlowModel1d(nn.Module):
             # samples to target distribution, so, we also include generated from base model
             # samples to reflow model training, this step empirically helps a lot
             # with reflowed model quality
-            x_gen = torch.randn_like(x)
+            
+            x_gen = sample_base(self.sobol,len(x),self.device)
+            
+            # x_gen=torch.randn_like(x)
             y_gen = base_model.to_target(x_gen)
             
             x = torch.concat([x,x_gen],0)
@@ -1023,7 +1017,7 @@ class FlowModel1d(nn.Module):
                          Shape: [num_samples, input_dim]
         """
         if not steps: steps = self.default_steps
-        return self.to_target(torch.randn((num_samples,self.in_dim),device=self.device),steps)
+        return self.to_target(sample_base(self.sobol,num_samples,self.device),steps)
     
     def conditional_sample(
         self,
@@ -1058,8 +1052,7 @@ class FlowModel1d(nn.Module):
         self.freeze()
         device = self.device
         # Initialize z from standard normal distribution
-        z = torch.randn(num_samples, model.in_dim, device=device, requires_grad=True)
-
+        z = sample_base(self.sobol,num_samples,device=device).requires_grad_(True)
         original_prior = (z * z).mean().detach()
 
         # Create optimizer for the latent variable z
