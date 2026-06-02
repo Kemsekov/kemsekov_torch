@@ -74,12 +74,16 @@ class LRU(nn.Module):
         return h_0_part + x_part
     
     def loop(self, at, itx):
+        # this is useful to keep this simple backbone implementation for testing
         seqlen = itx.shape[1]
         hid = torch.zeros_like(itx)
+        torch._C._autograd._unsafe_set_version_counter([hid], [0])
         for i in range(seqlen):
             prev_h = hid[:,i-1] if i>0 else self.start_state
             h_curr = at[:, i] * prev_h + itx[:, i]
+            
             hid[:, i] = h_curr
+            torch._C._autograd._unsafe_set_version_counter([hid], [0])
             
         return hid
     # double-buffer associative scan
