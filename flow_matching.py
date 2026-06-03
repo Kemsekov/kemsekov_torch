@@ -215,8 +215,15 @@ def rk2(model, x0, weights):
 def one_step(model,x0 : torch.Tensor,weights):
     """One-step integration"""
     t=weights[0].unsqueeze(0)
+    
+    x0_pow2=x0.pow(2)*x0.sign()
+    x0_term_add=x0_pow2*weights[3]
+    # x0_term_arg=x0_pow2*weights[4]
     pred = model(x0,t)
-    return weights[1]*pred+weights[2]*x0+x0.pow(2)*x0.sign()*weights[3]
+    
+    # pred_2term = pred.pow(2)*pred.sign()*weights[4]
+    
+    return weights[1]*pred+weights[2]*x0+x0_term_add
 
 class FlowMatching(nn.Module):
     def __init__(self):
@@ -245,8 +252,8 @@ class FlowMatching(nn.Module):
             device=None
         with torch.no_grad():
             start_time = self.time_scaler(0.5)
-            self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0],device=device))
-            self.one_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time,-0.5,1,0],device=device))
+            self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0,0],device=device))
+            self.one_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time,-0.5,1,0,0],device=device))
             self.rk2_weights     = torch.nn.Parameter(torch.tensor([start_time,   1.0,  0.5, 0.5, 1.0, 1.0, 0.0, 0.0],device=device))
             self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time, 0.0, -0.5, -0.5, -1.0, 1.0, 0.0, 0.0],device=device))
     
