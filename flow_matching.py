@@ -1320,3 +1320,28 @@ class FlowModel1d(nn.Module):
         for p in self.parameters():
             p.requires_grad_(True)
     
+    def interpolate(self,A:torch.Tensor,B:torch.Tensor,t:torch.Tensor|float):
+        """
+        Interpolates A and B trough learned latent space
+        
+        A: start datapoints of shape [BATCH,dim]
+        B: end datapoints of shape [BATCH,dim]
+        t: float or tensor with interpolation points in range [0;1] (like `torch.linspace(0,1,128)`)
+        """
+        
+        if isinstance(t,float):t=torch.tensor([t])
+
+        if A.ndim==1:A=A.unsqueeze(0)
+        if B.ndim==1:B=B.unsqueeze(0)
+        if t.ndim==1:t=t.unsqueeze(1).unsqueeze(1)
+
+        with torch.no_grad():
+            A_prior = self.to_prior(A)
+            B_prior = self.to_prior(B)
+
+            prior_interp = torch.lerp(A_prior,B_prior,t)
+            AB_interp = self.to_target(prior_interp)
+        
+        return AB_interp
+        
+    
