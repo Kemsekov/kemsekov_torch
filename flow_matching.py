@@ -717,13 +717,15 @@ class FlowModel1d(nn.Module):
                     # sample-wise loss
                     sample_loss = pred_loss-contrastive_loss
                     
+                    dm = (1-(1+epoch)/epochs)*distribution_matching
+                    # dm=distribution_matching
                     if distribution_matching>0:
                         with torch.no_grad():  # Stop-gradient via detach
                             sg_log_losses = pred_loss_det.log()
                             target_log_w = -sg_log_losses  # log(1/L)
-                        
+                        # dm = distribution_matching
                         weights = loss_normalizer(target_dir, t) # it equals to log(1/loss)
-                        loss_weighted = (weights.detach()*distribution_matching).exp() # it equals to 1/loss
+                        loss_weighted = (weights.detach()*dm).exp() # it equals to 1/loss
                         aux_loss = F.mse_loss(weights, target_log_w)
                     else:
                         loss_weighted=1
@@ -733,7 +735,7 @@ class FlowModel1d(nn.Module):
                     weighed_loss = (loss_weighted*sample_loss).mean()
                     # print(r2_score(weights, (1/sample_loss).log()))
                     # print(weighed_loss)
-                    loss = weighed_loss+distribution_matching*aux_loss
+                    loss = weighed_loss+dm*aux_loss
                     loss.backward()
                     
                     torch.nn.utils.clip_grad_norm_(
@@ -844,19 +846,16 @@ class FlowModel1d(nn.Module):
         
         loss_normalizer = nn.Sequential(
             nn.Linear(self.in_dim*2,self.hidden_dim),
-            nn.LayerNorm(self.hidden_dim),
             Residual([
                 nn.SiLU(),
                 zero_module(nn.Linear(self.hidden_dim,self.hidden_dim)),
             ],init_at_zero=False),
-            Prod(
-                nn.Sequential(
-                    nn.Linear(self.hidden_dim,self.hidden_dim),
-                    nn.LayerNorm(self.hidden_dim),
-                    nn.Tanh(),
-                )
-            ),
-            nn.LayerNorm(self.hidden_dim),
+            nn.RMSNorm(self.hidden_dim),
+            Prod([
+                nn.Linear(self.hidden_dim,self.hidden_dim),
+                # nn.RMSNorm(self.hidden_dim),
+                nn.Tanh(),
+            ]),
             nn.SiLU(),
             nn.Linear(self.hidden_dim,2),
         ).to(self.device)
