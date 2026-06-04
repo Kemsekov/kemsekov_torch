@@ -255,7 +255,7 @@ def train(
     ema_args: dict
         contains arguments passed to the EMA wrapper. If set to `None`, EMA is not used.\n
         **USE EMA WHEN YOU HAVE UNSTABLE TRAINING SETUP (GAN,VAE,DIFFUSION, FLOW).**\n
-        When `ema_args` is not null, the resulting model will have a added field `model._ema_model=[ema_model]` that can be used to access ema model.
+        When `ema_args` is not null, the resulting model will have a added field `model.ema_model__=[ema_model]` that can be used to access ema model.
         
         `modules`: List[str] | None = None\n
             Name of modules that EMA should be applied to. By default all weights of passed model is used.\n
@@ -521,7 +521,7 @@ def train(
             ema = EMA(to_ema,**ema_args)
         else:
             ema = EMA(model,**ema_args)
-        model._ema_model=[ema.ema_model]
+        model.ema_model__=[ema.ema_model]
         update_ema = lambda: ema.update()
         if 'update_model_with_ema_every' not in ema_args:
             update_model_with_ema = lambda : ema.update_model_with_ema()
