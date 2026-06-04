@@ -83,6 +83,8 @@ def train_simple(
         ema = EMA(model,beta=ema_beta)
         ema_update = ema.update
         ema_model_update = ema.update_model_with_ema
+        
+        model.ema_model__=[ema.ema_model]
     else:
         ema_update = no_op
         ema_model_update = no_op
