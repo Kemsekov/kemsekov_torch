@@ -482,11 +482,13 @@ class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim) -> None:
         super().__init__()
         self.prod = nn.Sequential(
+            # nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim,hidden_dim,bias=False),
-            # nn.Tanh()
+            nn.Tanh()
         )
         self.out = nn.Sequential(
+            nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             zero_module(nn.Linear(hidden_dim,hidden_dim,bias=False))
         )
@@ -589,7 +591,7 @@ class FlowModel1d(nn.Module):
         data: torch.Tensor,
         epochs: int = 64,
         batch_size: int = 256,
-        contrastive_loss_weight=0.1,
+        contrastive_loss_weight=1.0,
         lr: float = 0.02,
         distribution_matching=0.0,
         debug: bool = False,
