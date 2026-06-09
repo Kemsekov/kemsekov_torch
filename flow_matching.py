@@ -488,7 +488,7 @@ class FusedFlowResidual(nn.Module):
             # nn.Tanh()
         )
         self.out = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
+            # nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             zero_module(nn.Linear(hidden_dim,hidden_dim,bias=False))
         )
@@ -903,7 +903,8 @@ class FlowModel1d(nn.Module):
         
         device=self.device
         # loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
-        opt = torch.optim.AdamW(get_fm_optim_groups(self,loss_normalizer),lr=lr,fused=True)
+        # opt = torch.optim.AdamW(get_fm_optim_groups(self,loss_normalizer,weight_decay=weight_decay),lr=lr,fused=True)
+        opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),weight_decay=weight_decay,lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
         
