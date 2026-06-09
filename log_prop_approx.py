@@ -92,7 +92,7 @@ def log_prob_inverse(model, target, eps=1e-3, random_directions=0,return_prior=F
     random_directions: if random_directions>0 then algorithm will use random directions approximation for jacobian approximation instead of simplex vectors. If your target is very high-dimensional data it make sense to use random_directions>0
     """
     data=target
-    device = 'cpu'
+    device = target.device
     Y = data.to(device)
 
     if random_directions>0:

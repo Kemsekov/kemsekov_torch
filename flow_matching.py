@@ -485,16 +485,18 @@ class FusedFlowResidual(nn.Module):
             # nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim,hidden_dim,bias=False),
-            nn.Tanh()
+            # nn.Tanh()
         )
+        self.norm=nn.LayerNorm(hidden_dim)
         self.out = nn.Sequential(
-            nn.RMSNorm(hidden_dim),
             nn.SiLU(),
             zero_module(nn.Linear(hidden_dim,hidden_dim,bias=False))
         )
         
     def forward(self,x):
-        return self.out(x*self.prod(x))+x
+        xn = self.norm(x)
+        prod = xn*self.prod(xn)
+        return self.out(prod)+x
     
 from kemsekov_torch.attention_residual import *
 class FlowModel1d(nn.Module):
@@ -817,6 +819,8 @@ class FlowModel1d(nn.Module):
         self.to(self.device)
         
         data = data.to(self.device)
+        dtype = next(self.parameters()).dtype
+        device= self.device
         if base_model is None: base_model=self
         with torch.no_grad():
             x = base_model.to_prior(data)
@@ -834,8 +838,8 @@ class FlowModel1d(nn.Module):
             x_gen=torch.randn_like(x)
             y_gen = base_model.to_target(x_gen)
             
-            x = torch.concat([x,x_gen],0)
-            y = torch.concat([y,y_gen],0)
+            x = torch.concat([x,x_gen],0).to(device=device,dtype=dtype)
+            y = torch.concat([y,y_gen],0).to(device=device,dtype=dtype)
             
         assert steps in [1,2],"steps parameter must be one of [1,2]"
         self.fm.reset_weights()
@@ -844,7 +848,7 @@ class FlowModel1d(nn.Module):
         
         if freeze_integrator:
             self.fm.freeze()
-
+        
         
         loss_normalizer = nn.Sequential(
             nn.Linear(self.in_dim*2,self.hidden_dim),
@@ -861,10 +865,10 @@ class FlowModel1d(nn.Module):
             nn.SiLU(),
             nn.Linear(self.hidden_dim,2),
         ).to(self.device)
-        
+
         device=self.device
-        # loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
-        opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True)
+        normalizer_weights=list(loss_normalizer.parameters())
+        opt = torch.optim.AdamW(list(self.parameters()),lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
         
@@ -873,6 +877,11 @@ class FlowModel1d(nn.Module):
             'forward_r2':[],
             'inverse_r2':[],
         }
+        
+        running_r2 = 0
+        best_r2 = 0
+        best_model = None
+        check_each=16
         
         try:
             for i in range(epochs):
@@ -890,14 +899,27 @@ class FlowModel1d(nn.Module):
                 inverse_loss-=inverse_loss.min().detach()-1e-2
                 
                 prediction_loss = forward_loss.mean()+inverse_loss.mean()
+             
+                # forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch,ybatch],-1)).chunk(2,-1)
+                # forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
+                # normalizer_loss = mse(forward_weight,forward_loss.detach().log())+mse(inverse_weight,inverse_loss.detach().log())
                 
-                forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch,ybatch],-1)).chunk(2,-1)
-                forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
-                normalizer_loss = mse(forward_weight,forward_loss.detach().log())+mse(inverse_weight,inverse_loss.detach().log())
+                # fw = (-forward_weight*distribution_matching).detach().exp()
+                # iw = (-inverse_weight*distribution_matching).detach().exp()
+                fw = 1
+                iw = 1
+                loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()#+normalizer_loss*distribution_matching
+                forward_r2 = r2_score(ybatch,y_pred)
+                inverse_r2 = r2_score(xbatch,x_pred)
                 
-                fw = (-forward_weight*distribution_matching).detach().exp()
-                iw = (-inverse_weight*distribution_matching).detach().exp()
-                loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss*distribution_matching
+                running_r2 += (forward_r2+inverse_r2)/2
+                if (i+1)%check_each==0:
+                    if running_r2>best_r2:
+                        if debug: print("Save")
+                        best_r2=running_r2
+                        best_model=deepcopy(self.state_dict())
+                    running_r2=0
+                
                 loss.backward()
                 if grad_clip_max_norm is not None:
                     torch.nn.utils.clip_grad_norm_(
@@ -908,20 +930,18 @@ class FlowModel1d(nn.Module):
                 opt.step()
                 sch.step()
                 
-                forward_r2 = r2_score(ybatch,y_pred)
-                inverse_r2 = r2_score(xbatch,x_pred)
+
                 self.reflow_history['loss'].append(loss.item())
                 self.reflow_history['forward_r2'].append(forward_r2.item())
                 self.reflow_history['inverse_r2'].append(inverse_r2.item())
                 if debug:
-                    loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
-                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
+                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]}")
         except KeyboardInterrupt as e:
             print("Stop reflowing...")
         finally:
             gc.enable()
             gc.collect()
-            
+        self.load_state_dict(best_model)
         self.eval()
   
     def to_prior(self,data : torch.Tensor,steps=None,return_intermediates=False):
@@ -1307,7 +1327,7 @@ class FlowModel1d(nn.Module):
     
     def log_prob(self, data, eps=1e-3,random_directions=0,return_prior=False):
         # return log_prob(self.to_target,self.to_prior(data),eps,random_directions=random_directions)
-        return log_prob_inverse(self.to_prior,data,eps,random_directions=random_directions,return_prior=return_prior)
+        return log_prob_inverse(self.to_prior,data.to(self.device),eps,random_directions=random_directions,return_prior=return_prior)
     
     def freeze(self):
         """
