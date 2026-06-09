@@ -542,11 +542,14 @@ class FlowModel1d(nn.Module):
             nn.Linear(1,hidden_dim),
             Prod(nn.Sequential(
                 nn.SiLU(),
+                # zero_module(nn.Linear(hidden_dim,hidden_dim)),
                 nn.Linear(hidden_dim,hidden_dim),
-                nn.RMSNorm(hidden_dim),
+                # nn.RMSNorm(hidden_dim),
                 nn.Tanh(),
             )),
+            # nn.LayerNorm(hidden_dim),
             nn.SiLU(),
+            # nn.Linear(hidden_dim,hidden_dim*2),
             zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
         )
         
