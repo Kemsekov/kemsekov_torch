@@ -488,7 +488,7 @@ class FusedFlowResidual(nn.Module):
             # nn.Tanh()
         )
         self.out = nn.Sequential(
-            # nn.RMSNorm(hidden_dim,elementwise_affine=False),
+            nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             zero_module(nn.Linear(hidden_dim,hidden_dim,bias=False))
         )
@@ -498,6 +498,39 @@ class FusedFlowResidual(nn.Module):
         return self.out(prod)+x
     
 from kemsekov_torch.attention_residual import *
+
+def get_fm_optim_groups(model, extra_model=None, weight_decay=1e-2):
+    decay_params = []
+    no_decay_params = []
+    
+    def process_model(m):
+        for mn, module in m.named_modules():
+            # recurse=False ensures we only process parameters directly belonging to this module
+            for pn, p in module.named_parameters(recurse=False):
+                if not p.requires_grad:
+                    continue
+                
+                # Rule 1: Biases should NEVER be decayed
+                if pn.endswith('bias'):
+                    no_decay_params.append(p)
+                # Rule 2: Normalization layer weights should NEVER be decayed
+                elif isinstance(module, (nn.LayerNorm, nn.RMSNorm, nn.BatchNorm1d, nn.GroupNorm)):
+                    no_decay_params.append(p)
+                # Rule 3: Protect your custom time_scaler from being shrunk to 0
+                elif 'scaler' in pn.lower():
+                    no_decay_params.append(p)
+                # Rule 4: Everything else (Linear weights, etc.) gets weight decay
+                else:
+                    decay_params.append(p)
+
+    process_model(model)
+    if extra_model is not None:
+        process_model(extra_model)
+    return [
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0}
+    ]
+
 class FlowModel1d(nn.Module):
     """
     Flow-matching model for 1-dimensional (vector) data.
@@ -646,6 +679,7 @@ class FlowModel1d(nn.Module):
         batch_size = min(batch_size,data.shape[0])
         
         trainable_weights = list(model.parameters())
+        loss_normalizer=None
         if distribution_matching>0:
             loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
             # loss_normalizer = torch.jit.trace(loss_normalizer,(torch.randn((1,self.in_dim),device=device),torch.randn((1,1),device=device)))
@@ -655,7 +689,7 @@ class FlowModel1d(nn.Module):
         
         model.train()
         
-        optim = torch.optim.AdamW(trainable_weights, lr=lr,fused=True)
+        optim = torch.optim.AdamW(get_fm_optim_groups(model,loss_normalizer), lr=lr,fused=True)
         
         best_loss = float("inf")
         best_r2 = -1e8
@@ -869,7 +903,7 @@ class FlowModel1d(nn.Module):
         
         device=self.device
         # loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
-        opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),lr=lr,fused=True,weight_decay=weight_decay)
+        opt = torch.optim.AdamW(get_fm_optim_groups(self,loss_normalizer),lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
         
