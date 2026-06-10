@@ -30,7 +30,7 @@ def compute_subspace_log_volume(x: torch.Tensor, eps: float = 1e-8):
     Q, R = torch.linalg.qr(x_t, mode='reduced')
     diag_r = torch.diagonal(R, dim1=-2, dim2=-1)
     log_vol = torch.sum(torch.log(torch.abs(diag_r) + eps), dim=-1)
-    return log_vol
+    return log_vol.clamp(-100)
 
 def log_prob(model, prior, eps=1e-3,random_directions=0):
     """"
@@ -41,7 +41,7 @@ def log_prob(model, prior, eps=1e-3,random_directions=0):
     prior: standard-normal distributed batched vector [...batch_dims...,dim]
     """
     data=prior
-    device = 'cpu'
+    device = data.device
     Y = data.to(device)
 
     if random_directions>0:
@@ -72,8 +72,6 @@ def log_prob(model, prior, eps=1e-3,random_directions=0):
     transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
     
     transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
-
-    in_dim = X_neighbors.shape[-1]
     
     # area ratio is our jacobian determinant approximation
     logdet_approx = transformed_simplex_area_log - original_simplex_area_log# - in_dim*math.log(in_dim)
@@ -109,7 +107,6 @@ def log_prob_inverse(model, target, eps=1e-3, random_directions=0,return_prior=F
         # log area of original simplex
         original_simplex_area_log = shifted_simplex.slogdet()[1]
 
-
     # make shapes match
     simplex_points = simplex_points.view(*([1]*(Y.ndim-1)),*simplex_points.shape)
 
@@ -121,11 +118,7 @@ def log_prob_inverse(model, target, eps=1e-3, random_directions=0,return_prior=F
 
     # get area of transformed simplex
     transformed_simplex = X_neighbors[...,:-1,:]-X_neighbors[...,[-1],:]
-    
     transformed_simplex_area_log = compute_subspace_log_volume(transformed_simplex)
-
-    in_dim = X_neighbors.shape[-1]
-    
     # area ratio is our jacobian determinant approximation
     logdet_approx = transformed_simplex_area_log - original_simplex_area_log# + in_dim*math.log(in_dim)
 
