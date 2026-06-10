@@ -610,11 +610,10 @@ class FlowModel1d(nn.Module):
     def forward(self,x : torch.Tensor,t : torch.Tensor):
         while t.ndim<x.ndim:
             t = t[:,None]
-        time = self.time_emb(t)
         expand = self.expand(x)
         
         # add time embedding
-        time_scale,time_shift = time.chunk(2,-1)
+        time_scale,time_shift = self.time_emb(t).chunk(2,-1)
         x = expand*(1+time_scale)+time_shift
         
         x = self.dropout(x)
