@@ -497,6 +497,7 @@ class FusedFlowResidual(nn.Module):
         return self.out(prod)+x
     
 from kemsekov_torch.attention_residual import *
+from kemsekov_torch.common_modules import AddConst
 
 def get_fm_optim_groups(model, extra_model=None, weight_decay=1e-2):
     decay_params = []
@@ -593,12 +594,15 @@ class FlowModel1d(nn.Module):
             FusedFlowResidual(hidden_dim)
             for i in range(residual_blocks)
         ])
+        self.out_norm = norm(hidden_dim)
         
         self.collapse = nn.Sequential(
-            norm(hidden_dim),
             nn.Linear(hidden_dim,in_dim)
         )
-        # self.gamma = nn.Parameter(torch.tensor([0.0]))
+        
+        self.out_prod = nn.Sequential(
+            zero_module(nn.Linear(hidden_dim,in_dim)),
+        )
         self.default_steps=16
         self.to(device)
         self.eval()
@@ -616,8 +620,8 @@ class FlowModel1d(nn.Module):
         x = self.dropout(x)
         x = self.norm(x)
         x=self.residual_blocks(x)
-        
-        return self.collapse(x)
+        x=self.out_norm(x)
+        return self.collapse(x)+self.out_prod(x)
     
     def to(self,device):
         self.device=device
