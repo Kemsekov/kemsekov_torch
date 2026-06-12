@@ -533,28 +533,144 @@ def get_fm_optim_groups(model, extra_model=None, weight_decay=1e-2):
 
 class FlowModel1d(nn.Module):
     """
-    Flow-matching model for 1-dimensional (vector) data.
+    Fully-connected Flow Matching model for vector-valued data.
 
-    This class implements a flow matching model that learns to transform simple distributions
-    (like Gaussian noise) into complex target distributions (like data samples). It supports
-    training, sampling, conditional sampling, and probability computation.
+    FlowModel1d learns a continuous transport map between a simple Gaussian
+    prior distribution and a target data distribution using Flow Matching.
+    The model supports unconditional and conditional generation, density
+    estimation, latent-space optimization, interpolation, constrained
+    generation, and ReFlow distillation into fast one-step or two-step
+    generators.
 
-    The model uses residual blocks with time embeddings to predict the vector field that
-    describes the flow between distributions. It includes methods for training with contrastive
-    flow matching, sampling from the learned distribution, and computing log probabilities.
+    The architecture combines:
 
-    Attributes:
-        fm (FlowMatching): Flow matching instance for handling core flow operations
-        in_dim (int): Input dimension of the data
-        hidden_dim (int): Hidden dimension of the neural network
-        time_emb (nn.Sequential): Time embedding network
-        expand (nn.Linear): Linear layer to expand input to hidden dimension
-        dropout (nn.Dropout): Dropout layer for regularization
-        residual_blocks (nn.ModuleList): List of residual blocks with attention mechanisms
-        collapse (nn.Linear): Linear layer to collapse hidden dimension back to input dimension
-        default_steps (int): Default number of integration steps for sampling
-        device (str): Device on which the model is located
+    - Learnable time reparameterization
+    - FiLM-style time conditioning
+    - Optional FiLM-style external conditioning
+    - Residual flow blocks
+    - Bidirectional transport between prior and target spaces
+    - Adaptive numerical integration
+    - ReFlow distillation
+
+    Parameters
+    ----------
+    in_dim : int
+        Dimensionality of input vectors.
+
+    conditional_dim : int | None, optional
+        Dimensionality of conditioning vectors.
+
+        When specified, the model becomes conditional and accepts condition
+        tensors during training, sampling, interpolation, optimization and
+        density estimation.
+
+        Expected condition shape:
+
+        ``[batch_size, conditional_dim]``
+
+        If None, the model operates as an unconditional flow.
+
+    hidden_dim : int, default=64
+        Internal feature dimension used throughout the network.
+
+    residual_blocks : int, default=5
+        Number of residual flow blocks.
+
+    dropout_p : float, default=0.0
+        Dropout probability applied before residual processing.
+
+    device : str, default="cpu"
+        Device used for model execution.
+
+    default_time_scaler : float, default=10.01
+        Initial value of the learnable time-reparameterization coefficient.
+
+        Training times are transformed according to:
+
+        .. math::
+
+            t' = \\frac{\\log((s-1)t + 1)}{\\log(s)}
+
+        where ``s`` is the learnable ``time_scaler`` parameter.
+
+        This biases training toward more difficult regions of transport space.
+
+    Attributes
+    ----------
+    fm : FlowMatching
+        Internal Flow Matching helper responsible for training pair
+        generation, integration and ReFlow distillation.
+
+    sobol : torch.quasirandom.SobolEngine
+        Sobol sequence generator used for low-discrepancy latent sampling.
+
+    time_scaler : torch.nn.Parameter
+        Learnable coefficient controlling time reparameterization.
+
+    conditional_dim : int | None
+        Dimension of conditioning vectors.
+
+    in_dim : int
+        Input dimensionality.
+
+    hidden_dim : int
+        Internal network width.
+
+    default_steps : int
+        Default integration step count used by:
+
+        - to_target()
+        - to_prior()
+        - sample()
+
+        Initially set to 16.
+
+        ReFlow automatically updates this value to the distilled step count.
+
+    fit_history : dict
+        Available after training.
+
+        Contains:
+
+        .. code-block:: python
+
+            {
+                "loss": [...],
+                "r2": [...]
+            }
+
+    reflow_history : dict
+        Available after ReFlow training.
+
+        Contains:
+
+        .. code-block:: python
+
+            {
+                "loss": [...],
+                "forward_r2": [...],
+                "inverse_r2": [...]
+            }
+
+    Notes
+    -----
+    Conditional training uses classifier-free conditioning.
+
+    During training, condition vectors are randomly replaced with zeros
+    according to ``condition_dropout``. This improves robustness and enables
+    conditional generation even when conditions are partially missing.
+
+    The same model can be used for:
+
+    - Unconditional generation
+    - Conditional generation
+    - Density estimation
+    - Inverse design
+    - Constraint-guided sampling
+    - Latent-space interpolation
+    - ReFlow acceleration
     """
+
     def __init__(self, in_dim,conditional_dim = None,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01) -> None:
         super().__init__()
         self.fm = FlowMatching()
@@ -624,7 +740,6 @@ class FlowModel1d(nn.Module):
         self.default_steps=16
         self.to(device)
         self.eval()
-        
     def forward(self,x : torch.Tensor,t : torch.Tensor,condition : Optional[torch.Tensor] = None):
         while t.ndim<x.ndim:
             t = t[:,None]
@@ -659,7 +774,6 @@ class FlowModel1d(nn.Module):
         x=self.residual_blocks(x)
         x=self.out_norm(x)
         return self.collapse(x)+self.out_prod(x)
-    
     def to(self,device):
         self.device=device
         return super().to(device)
@@ -677,34 +791,93 @@ class FlowModel1d(nn.Module):
         scheduler = True,
     ):
         """
-        Trains the flow matching model on the provided data using contrastive flow matching.
+        Train the Flow Matching model.
 
-        This method implements a sophisticated training procedure that includes:
-        - Contrastive flow matching with negative samples
-        - Dynamic loss normalization using a separate neural network
-        - Optional reflow training with custom prior datasets
-        - Gradient clipping for stable training
-        - Model checkpointing to retain the best performing version
+        Training uses Contrastive Flow Matching (CFM) together with optional
+        distribution matching and classifier-free conditioning.
 
-        The training alternates between optimizing the main flow model and the loss normalizer,
-        using a weighted loss that combines MSE between predictions and targets with a
-        contrastive term that pushes predictions away from negative samples.
+        During training, random interpolation points are sampled between
+        Gaussian prior samples and target data samples. The model learns to
+        predict the transport direction connecting both domains.
 
-        Args:
-            data (torch.Tensor): Training data tensor of shape [N, input_dim].
-            batch_size (int): Number of samples per training batch (default: 512).
-            epochs (int): Number of training epochs (default: 100).
-            contrastive_loss_weight (float): Weight for the contrastive loss term that
-                                           uses negative samples (default: 0.1).
-            lr (float): Learning rate for the AdamW optimizer (default: 0.02).
-            normalizer_loss_weight (float): Weight for the auxiliary loss that trains
-                                          the loss normalizer network (default: 0.1).
-            distribution_matching: how close to original data distributed resulting flow must be. When set to 1, model will try to match distribution exactly, when close to 0, will shift distribution closer to mode. I advice you left it with 0.0.
-            debug (bool): Whether to print training progress and best loss updates (default: False).
-            scheduler (bool): Whether to use a cosine annealing learning rate scheduler (default: True).
+        When the model is conditional, condition vectors may be randomly
+        replaced with zeros according to ``condition_dropout``. This implements
+        classifier-free conditioning and improves generalization.
 
-        Returns:
-            None: Modifies the model in-place, retaining the best checkpoint based on validation loss.
+        Parameters
+        ----------
+        data : torch.Tensor | numpy.ndarray
+            Training dataset.
+
+            Expected shape:
+
+            ``[num_samples, in_dim]``
+
+        condition : torch.Tensor | numpy.ndarray | None, optional
+            Conditioning vectors.
+
+            Required when training a conditional model.
+
+            Expected shape:
+
+            ``[num_samples, conditional_dim]``
+
+            If None and the model is unconditional, no conditioning is used.
+
+        condition_dropout : float, default=0.5
+            Probability of replacing condition vectors with zeros during
+            training.
+
+            This implements classifier-free conditioning.
+
+            Values between 0.1 and 0.5 typically work well.
+
+        epochs : int, default=64
+            Number of training epochs.
+
+        batch_size : int, default=256
+            Mini-batch size.
+
+        contrastive_loss_weight : float, default=1.0
+            Weight applied to the contrastive flow matching objective.
+
+            Larger values increase separation from negative transport
+            directions.
+
+        lr : float, default=0.02
+            Learning rate.
+
+        distribution_matching : float, default=0.0
+            Enables adaptive loss reweighting that encourages better matching
+            of the target distribution.
+
+            Recommended values:
+
+            - 0.0: disabled
+            - 0.05 - 0.25: mild correction
+            - >0.5: aggressive distribution matching
+
+        debug : bool, default=False
+            Print training statistics.
+
+        scheduler : bool, default=True
+            Enable cosine annealing learning-rate scheduling.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        Training history is stored in:
+
+        ``self.fit_history["loss"]``
+
+        ``self.fit_history["r2"]``
+
+        The best model checkpoint is automatically restored at the end of
+        training according to validation R² measured on transport direction
+        prediction.
         """
         self.unfreeze()
         # these are optimal for cpu-training
@@ -865,7 +1038,6 @@ class FlowModel1d(nn.Module):
         # update current model with best checkpoint
         model.load_state_dict(best_trained_model)
         model.eval()
-
     def __prepare_data(self, data, condition):
         if not isinstance(data,torch.Tensor):
             data = torch.tensor(data,dtype=torch.float32,device=self.device)
@@ -879,7 +1051,6 @@ class FlowModel1d(nn.Module):
         if condition is None:
             condition = torch.zeros_like(data)
         return data,condition
-
     def reflow(
             self,
             data : torch.Tensor,
@@ -896,19 +1067,170 @@ class FlowModel1d(nn.Module):
             freeze_integrator = False
         ) -> None:
         """
-        Distill a teacher flow model into one-step generation via bidirectional ReFlow training.
-        
-        This method performs online knowledge distillation by training the current model (`self`) 
-        to match a teacher model's (`base_model.to_target/to_prior`) one-step mappings using:
-        
-        Args:
-            data (torch.Tensor): Target data tensor of shape [N, input_dim] from teacher distribution
-            epochs (int): Total training iterations
-            batch_size (int): Mini-batch size for training (default: 512)
-            debug (bool): Print training progress and R² metrics (default: False)
-            base_model (Optional[nn.Module]): Teacher model with `to_prior()`/`to_target()` methods. 
-                                            If None, uses `self` (self-distillation, default: None)
+        Distill a multi-step flow into a fast one-step or two-step generator.
+
+        ReFlow trains the current model to directly approximate the transport
+        map learned by a slower flow model. The resulting model can generate
+        samples using only one or two transport evaluations while preserving
+        the distribution learned by the teacher model.
+
+        The procedure operates in both directions:
+
+        - Prior -> Target
+        - Target -> Prior
+
+        allowing the distilled model to retain generation, inversion and
+        density-estimation capabilities.
+
+        During training a synthetic dataset is created by transporting samples
+        through a teacher model. The distilled model is then trained to
+        reproduce those mappings using a reduced number of integration steps.
+
+        For conditional models the same conditioning vectors used by the
+        teacher are propagated through the distillation process.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            Dataset sampled from the target distribution.
+
+            Shape:
+
+            ``[num_samples, in_dim]``
+
+        condition : torch.Tensor | None, optional
+            Conditioning vectors associated with the dataset.
+
+            Required for conditional models.
+
+            Shape:
+
+            ``[num_samples, conditional_dim]``
+
+        epochs : int, default=512
+            Number of ReFlow optimization iterations.
+
+        steps : {1, 2}, default=1
+            Target generator complexity.
+
+            - ``1``: distill into a one-step generator
+            - ``2``: distill into a two-step generator
+
+            After successful training:
+
+            ``self.default_steps = steps``
+
+        batch_size : int, default=256
+            Mini-batch size.
+
+        debug : bool, default=False
+            Print optimization statistics.
+
+        lr : float, default=1e-2
+            Learning rate.
+
+        weight_decay : float, default=0.01
+            Weight decay used by the optimizer.
+
+        distribution_matching : float, default=0
+            Enables adaptive loss reweighting.
+
+            Larger values focus training on regions where the distilled model
+            performs poorly.
+
+            Typical values:
+
+            - 0.0 : disabled
+            - 0.05 - 0.25 : mild correction
+
+        grad_clip_max_norm : float | None, default=1
+            Maximum gradient norm.
+
+            If None, gradient clipping is disabled.
+
+        base_model : nn.Module | None, optional
+            Teacher model.
+
+            The teacher must implement:
+
+            - ``to_target()``
+            - ``to_prior()``
+
+            If None, the current model is used as the teacher
+            (self-distillation).
+
+        freeze_integrator : bool, default=False
+            Whether to freeze learned integration coefficients during ReFlow.
+
+            If True:
+
+            - one_weights
+            - one_weights_inv
+            - rk2_weights
+            - rk2_weights_inv
+
+            remain fixed.
+
+            If False, the integrator coefficients are optimized jointly with
+            the neural network.
+
+        Returns
+        -------
+        None
+
+        Notes
+        -----
+        ReFlow performs online dataset generation using the teacher model.
+
+        The generated training set contains two components:
+
+        1. Real dataset samples mapped into latent space.
+        2. Synthetic samples generated by the teacher model from randomly
+        sampled latent vectors.
+
+        Mixing both sources improves coverage of latent space and reduces
+        failures in poorly represented prior regions.
+
+        Unlike standard Flow Matching training, ReFlow optimizes direct
+        transport mappings:
+
+        .. math::
+
+            x \\rightarrow y
+
+        and
+
+        .. math::
+
+            y \\rightarrow x
+
+        rather than velocity-field prediction.
+
+        Training statistics are stored in:
+
+        .. code-block:: python
+
+            self.reflow_history["loss"]
+            self.reflow_history["forward_r2"]
+            self.reflow_history["inverse_r2"]
+
+        Examples
+        --------
+        Distill a trained flow into a one-step generator:
+
+        >>> model.fit(data)
+        >>> model.reflow(data, steps=1)
+
+        Conditional ReFlow:
+
+        >>> model.fit(data, condition)
+        >>> model.reflow(data, condition, steps=1)
+
+        Create a two-step distilled model:
+
+        >>> model.reflow(data, steps=2)
         """
+
         self.unfreeze()
         gc.disable()
         try:
@@ -1049,25 +1371,63 @@ class FlowModel1d(nn.Module):
             
         # self.load_state_dict(best_model)
         self.eval()
-  
-    def to_prior(self,data : torch.Tensor, condition : Optional[torch.Tensor] = None,steps=None,return_intermediates=False):
+    def to_prior(
+        self,
+        data: torch.Tensor,
+        condition: Optional[torch.Tensor] = None,
+        steps=None,
+        return_intermediates=False
+    ):
         """
-        Transforms data from the target distribution back to the prior (noise) distribution.
+        Transport samples from target space back into latent prior space.
 
-        This method performs the inverse transformation, mapping samples from the complex
-        target distribution (e.g., images, time series) back to the simple prior distribution
-        (typically Gaussian noise). This is achieved by integrating the flow in reverse.
+        This is the inverse transport operator of the learned flow and is used
+        internally for density estimation, interpolation, constrained
+        optimization and latent-space editing.
 
-        Args:
-            data (torch.Tensor): Input tensor from the target distribution.
-                               Expected shape: [batch_size, input_dim]
-            steps (int, optional): Number of integration steps to use.
-                                 If None, uses the model's default steps.
+        Parameters
+        ----------
+        data : torch.Tensor
+            Samples from the target distribution.
 
-        Returns:
-            torch.Tensor: Transformed tensor in the prior distribution  ace.
-                         Same shape as input tensor.
+            Expected shape:
+
+            ``[batch_size, in_dim]``
+
+        condition : torch.Tensor | None, optional
+            Conditioning vectors associated with the samples.
+
+            Expected shape:
+
+            ``[batch_size, conditional_dim]``
+
+        steps : int | None, optional
+            Number of integration steps.
+
+            If None, ``self.default_steps`` is used.
+
+        return_intermediates : bool, default=False
+            Whether to return intermediate integration states.
+
+        Returns
+        -------
+        torch.Tensor
+            Corresponding latent vectors in prior space.
+
+        tuple[torch.Tensor, list[torch.Tensor]]
+            Returned when ``return_intermediates=True``.
+
+            Contains:
+
+            - Final latent vectors
+            - Intermediate transport states
+
+        Notes
+        -----
+        The returned latent vectors approximately follow a standard Gaussian
+        distribution when the model is trained successfully.
         """
+
         if not steps: steps = self.default_steps
         input_device = data.device
         model_inference = lambda xt,t: self(xt,t,condition)
@@ -1081,25 +1441,68 @@ class FlowModel1d(nn.Module):
         else:
             out = out.to(input_device)
         return out
-    
-    def to_target(self,normal_noise : torch.Tensor, condition : Optional[torch.Tensor] = None,steps=None,return_intermediates=False):
+    def to_target(
+        self,
+        normal_noise: torch.Tensor,
+        condition: Optional[torch.Tensor] = None,
+        steps=None,
+        return_intermediates=False
+    ):
         """
-        Transforms samples from the prior (noise) distribution to the target distribution.
+        Transport samples from latent prior space into target data space.
 
-        This method performs the forward transformation, mapping samples from the simple
-        prior distribution (typically Gaussian noise) to the complex target distribution
-        (e.g., images, time series). This is achieved by integrating the learned flow.
+        This is the forward transport operator of the learned flow. Samples
+        from the Gaussian prior are iteratively transformed into samples from
+        the target distribution using the learned velocity field.
 
-        Args:
-            normal_noise (torch.Tensor): Input tensor from the prior distribution.
-                                       Expected shape: [batch_size, input_dim]
-            steps (int, optional): Number of integration steps to use.
-                                 If None, uses the model's default steps.
+        For conditional models, generation is conditioned on the supplied
+        condition vectors.
 
-        Returns:
-            torch.Tensor: Transformed tensor in the target distribution space.
-                         Same shape as input tensor.
+        Parameters
+        ----------
+        normal_noise : torch.Tensor
+            Samples from latent prior space.
+
+            Expected shape:
+
+            ``[batch_size, in_dim]``
+
+        condition : torch.Tensor | None, optional
+            Conditioning vectors.
+
+            Expected shape:
+
+            ``[batch_size, conditional_dim]``
+
+            If None and the model is conditional, zero-conditioning is used.
+
+        steps : int | None, optional
+            Number of integration steps.
+
+            If None, ``self.default_steps`` is used.
+
+        return_intermediates : bool, default=False
+            Whether to return intermediate integration states.
+
+        Returns
+        -------
+        torch.Tensor
+            Generated samples in target space.
+
+        tuple[torch.Tensor, list[torch.Tensor]]
+            Returned when ``return_intermediates=True``.
+
+            Contains:
+
+            - Final generated samples
+            - Intermediate transport states
+
+        Notes
+        -----
+        After ReFlow distillation this method may become a one-step or two-step
+        generator depending on the value of ``self.default_steps``.
         """
+
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
         model_inference = lambda xt,t: self(xt,t,condition)
@@ -1112,32 +1515,63 @@ class FlowModel1d(nn.Module):
         else:
             out = out.to(input_device)
         return out
-    
-    def sample(self,num_samples,condition : Optional[torch.Tensor] = None,steps=None,sobol=False):
+    def sample(
+        self,
+        num_samples : int,
+        condition: Optional[torch.Tensor] = None,
+        steps : Optional[int]=None,
+        sobol : bool=False
+    ):
         """
-        Generates samples from the learned target distribution.
+        Generate samples from the learned distribution.
 
-        This method creates new samples by first generating random Gaussian noise and then
-        transforming it through the learned flow to the target distribution. This is the
-        primary method for generating new data from the trained model.
+        Samples are generated by drawing latent vectors from a Gaussian prior
+        and transporting them into target space using ``to_target()``.
 
-        Args:
-            num_samples (int): Number of samples to generate
-            steps (int, optional): Number of integration steps to use for transformation.
-                                 If None, uses the model's default steps.
-            sobol: use sobol for sampling
+        Supports both unconditional and conditional generation.
 
-        Returns:
-            torch.Tensor: Generated samples from the target distribution.
-                         Shape: [num_samples, input_dim]
+        Parameters
+        ----------
+        num_samples : int
+            Number of samples to generate.
+
+        condition : torch.Tensor | None, optional
+            Conditioning vectors.
+
+            Expected shape:
+
+            ``[num_samples, conditional_dim]``
+
+            If None and the model is conditional, zero-conditioning is used.
+
+        steps : int | None, optional
+            Number of transport steps.
+
+            If None, ``self.default_steps`` is used.
+
+        sobol : bool, default=False
+            Use Sobol low-discrepancy sampling instead of standard Gaussian
+            sampling.
+
+            Sobol sampling often improves latent-space coverage and may reduce
+            variance for small sample counts.
+
+        Returns
+        -------
+        torch.Tensor
+            Generated samples.
+
+            Shape:
+
+            ``[num_samples, in_dim]``
         """
+
         if not steps: steps = self.default_steps
         if sobol:
             x = sample_base(self.sobol,num_samples,self.device)
         else:
             x = torch.randn((num_samples,self.in_dim),device=self.device)
         return self.to_target(x,condition,steps=steps)
-    
     def constrained_sample(
         self,
         constraint : Callable[[torch.Tensor],torch.Tensor],
@@ -1150,22 +1584,65 @@ class FlowModel1d(nn.Module):
         sampler_steps = None
     ) -> torch.Tensor:
         """
-        Make constrained sampling of trained flow matching model.
-        
-        I **strongly** advice you to call `reflow(...)` method before using conditional sampling,
-        otherwise you will need a lot more time to execute this method.
-        
-        Args:
-            constraint: Constraint loss function. Accepts generated target in `(num_samples,dim)` shape and returns loss `(scalar tensor)` that defines condition for sampling.
-            num_samples: Number of samples to generate
-            noise_scale: Scale of noise added during Langevin dynamics (default 0.00). Increasing this value will result in samples more spread from condition. Values around [0 to 0.05] are generally good enough.
-            steps: Number of optimization steps (default 2)
-            lr: Learning rate for the optimization (default 1)
-            mode_closeness_weight: Weight for trying to sample closer to distribution mode. Increasing this value make samples cluster more around closest distribution mode, potentially leading to mode collapse (all samples are the same).
-            sampler_steps: sampler steps for flow matching models.
-        Returns:
-            torch.Tensor: Samples of shape `[num_samples, input_dim]` satisfying the conditions
-        
+        Generate samples satisfying arbitrary differentiable constraints.
+
+        The optimization is performed in latent space rather than data space.
+        Latent vectors are adjusted using LBFGS while balancing:
+
+        - Constraint satisfaction
+        - Prior probability preservation
+        - Optional mode-seeking behavior
+
+        This method is particularly useful for inverse design problems where
+        generated samples must satisfy user-defined objectives.
+
+        Parameters
+        ----------
+        constraint : Callable[[torch.Tensor], torch.Tensor]
+            Differentiable constraint function.
+
+            Receives generated samples:
+
+            ``[batch_size, in_dim]``
+
+            Returns a scalar loss.
+
+        num_samples : int
+            Number of samples to generate.
+
+        condition : torch.Tensor | None, optional
+            Conditioning vectors.
+
+        noise_scale : float, default=0.0
+            Langevin-style noise added after optimization steps.
+
+            Small values can improve exploration.
+
+            Typical range:
+
+            ``0.0 - 0.05``
+
+        steps : int, default=2
+            Number of latent optimization iterations.
+
+        lr : float, default=1
+            LBFGS learning rate.
+
+        mode_closeness_weight : float, default=0.0
+            Additional penalty encouraging solutions closer to latent-space
+            modes.
+
+            Large values may cause mode collapse.
+
+        sampler_steps : int | None, optional
+            Number of flow integration steps used during optimization.
+
+            If None, ``self.default_steps`` is used.
+
+        Returns
+        -------
+        torch.Tensor
+            Generated samples satisfying the constraint as closely as possible.
         """
         model = self
         model.eval()
@@ -1218,7 +1695,6 @@ class FlowModel1d(nn.Module):
             final_x = model.to_target(self._iteration.best_sample,condition,steps=sampler_steps)
         self.unfreeze()
         return final_x
-
     def constrained_optimize(
         self,
         constraint : Callable[[torch.Tensor],torch.Tensor],
@@ -1231,24 +1707,49 @@ class FlowModel1d(nn.Module):
         sampler_steps = None
     ) -> torch.Tensor:
         """
-        Make constrained optimization of data from trained flow matching model.
-        
-        It tries to minimize constraint for given data points, keeping probability of points distribution same as it is in data
-        points. If `mode_closeness_weight`>0 then it will shift points closer to mode.
-        
-        I **strongly** advice you to call `reflow(...)` method before using conditional sampling,
-        otherwise you will need a lot more time to execute this method.
-        
-        Args:
-            constraint: Constraint loss function. Accepts generated target in `(num_samples,dim)` shape and returns loss `(scalar tensor)` that defines condition for optimization.
-            noise_scale: Scale of noise added during Langevin dynamics (default 0.00). Increasing this value will result in samples more spread from condition. Values around [0 to 0.05] are generally good enough.
-            steps: Number of optimization steps (default 2)
-            lr: Learning rate for the optimization (default 1)
-            mode_closeness_weight: Weight for trying to sample closer to distribution mode. Increasing this value make samples cluster more around closest distribution mode, potentially leading to mode collapse (all samples are the same).
-            sampler_steps: sampler steps for flow matching models.
-        Returns:
-            torch.Tensor: Data of shape `[num_samples, input_dim]` satisfying the conditions
-        
+        Optimize existing samples subject to a differentiable constraint.
+
+        Unlike ``constrained_sample()``, this method starts from existing data,
+        maps it into latent space, performs optimization there, and then maps
+        the optimized latent vectors back into target space.
+
+        The optimization attempts to preserve original sample probability while
+        minimizing the supplied constraint.
+
+        Parameters
+        ----------
+        constraint : Callable[[torch.Tensor], torch.Tensor]
+            Differentiable objective function.
+
+        data : torch.Tensor
+            Initial samples.
+
+            Shape:
+
+            ``[batch_size, in_dim]``
+
+        condition : torch.Tensor | None, optional
+            Conditioning vectors.
+
+        noise_scale : float, default=0.0
+            Langevin-style exploration noise.
+
+        steps : int, default=2
+            Number of optimization iterations.
+
+        lr : float, default=1
+            LBFGS learning rate.
+
+        mode_closeness_weight : float, default=0.0
+            Additional mode-seeking regularization.
+
+        sampler_steps : int | None, optional
+            Number of transport steps used during optimization.
+
+        Returns
+        -------
+        torch.Tensor
+            Optimized samples in target space.
         """
         model = self
         model.eval()
@@ -1304,7 +1805,6 @@ class FlowModel1d(nn.Module):
             final_x = model.to_target(self._iteration.best_sample,condition,steps=sampler_steps)
         self.unfreeze()
         return final_x
-    
     def optimize(
         self, 
         data: torch.Tensor,
@@ -1406,7 +1906,6 @@ class FlowModel1d(nn.Module):
             result[:, fixed_columns] = fixed_data
         self.unfreeze()
         return result, iteration.best_loss
-    
     def log_prob(
         self, 
         data, 
@@ -1414,12 +1913,63 @@ class FlowModel1d(nn.Module):
         eps=1e-3,
         random_directions=0,
         return_prior=False):
+        """
+        Estimate log-probability under the learned distribution.
+
+        Density estimation is performed by transporting samples into latent
+        space and estimating the inverse-flow Jacobian determinant.
+
+        Supports conditional densities when condition vectors are supplied.
+
+        Parameters
+        ----------
+        data : torch.Tensor
+            Samples for density evaluation.
+
+            Shape:
+
+            ``[batch_size, in_dim]``
+
+        condition : torch.Tensor | None, optional
+            Conditioning vectors.
+
+        eps : float, default=1e-3
+            Finite-difference step size used for Jacobian estimation.
+
+        random_directions : int, default=0
+            Number of random projection directions used for Jacobian
+            approximation.
+
+            Values:
+
+            - 0 : exact directional evaluation
+            - >0 : stochastic approximation
+
+            Larger values are typically faster for high-dimensional problems.
+
+        return_prior : bool, default=False
+            Forwarded to ``log_prob_inverse``.
+
+        Returns
+        -------
+        torch.Tensor
+            Estimated log-probabilities.
+
+        Notes
+        -----
+        For conditional models the returned density corresponds to:
+
+        .. math::
+
+            \\log p(x \\mid c)
+
+        rather than the unconditional density.
+        """
         
         if condition is not None:condition=condition.to(self.device)
         to_prior = lambda xt:self.to_prior(xt,condition)
         # return log_prob(self.to_target,self.to_prior(data),eps,random_directions=random_directions)
         return log_prob_inverse(to_prior,data.to(self.device),eps,random_directions=random_directions,return_prior=return_prior)
-    
     def freeze(self):
         """
         Disables grad on model weights
@@ -1440,11 +1990,75 @@ class FlowModel1d(nn.Module):
         A_condition : Optional[torch.Tensor] = None,
         B_condition : Optional[torch.Tensor] = None):
         """
-        Interpolates A and B trough learned latent space
-        
-        A: start datapoints of shape [BATCH,dim]
-        B: end datapoints of shape [BATCH,dim]
-        t: float or tensor with interpolation points in range [0;1] (like `torch.linspace(0,1,128)`)
+        Interpolate between samples through the learned latent space.
+
+        Samples are first mapped into latent space, interpolated linearly,
+        and then mapped back into target space.
+
+        Compared to direct interpolation in data space, latent interpolation
+        often produces smoother and more realistic trajectories.
+
+        Conditional interpolation is also supported.
+
+        When both condition vectors are supplied, conditions are interpolated
+        together with latent representations.
+
+        Parameters
+        ----------
+        A : torch.Tensor
+            Starting samples.
+
+            Shape:
+
+            ``[batch_size, in_dim]``
+
+        B : torch.Tensor
+            Ending samples.
+
+            Shape:
+
+            ``[batch_size, in_dim]``
+
+        t : float | torch.Tensor
+            Interpolation locations.
+
+            Values must lie in:
+
+            ``[0, 1]``
+
+            Examples:
+
+            .. code-block:: python
+                t = 0.5
+                t = torch.linspace(0, 1, 128)
+
+        A_condition : torch.Tensor | None, optional
+            Conditions associated with A.
+
+        B_condition : torch.Tensor | None, optional
+            Conditions associated with B.
+
+        Returns
+        -------
+        torch.Tensor
+            Interpolated samples.
+
+        Notes
+        -----
+        The interpolation is performed as:
+
+        1. A -> latent space
+        2. B -> latent space
+        3. Linear interpolation in latent space
+        4. Transport back into target space
+
+        If both conditions are supplied:
+
+        .. math::
+
+            c_t = (1-t)c_A + tc_B
+
+        is used during decoding.
         """
         
         if isinstance(t,float):t=torch.tensor([t])
