@@ -83,7 +83,7 @@ def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates 
     return xt
 
 def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False, time_transform : nn.Module = nn.Identity(),no_grad_model = False):
-    device = list(model.parameters())[0].device
+    device = x0.device
     if inverse:
         ts = torch.linspace(1, 0, steps+1, device=device)  # steps intervals = steps+1 points
     else:
@@ -497,7 +497,7 @@ class FusedFlowResidual(nn.Module):
         return self.out(prod)+x
     
 from kemsekov_torch.attention_residual import *
-from kemsekov_torch.common_modules import AddConst
+from kemsekov_torch.common_modules import AddConst, ConstModule
 
 def get_fm_optim_groups(model, extra_model=None, weight_decay=1e-2):
     decay_params = []
@@ -555,11 +555,11 @@ class FlowModel1d(nn.Module):
         default_steps (int): Default number of integration steps for sampling
         device (str): Device on which the model is located
     """
-    def __init__(self, in_dim,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01) -> None:
+    def __init__(self, in_dim,conditional_dim = None,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01) -> None:
         super().__init__()
         self.fm = FlowMatching()
         self.sobol = SobolEngine(in_dim, scramble=True)
-        
+        self.conditional_dim=conditional_dim
         # time scaler for training
         self.time_scaler = torch.nn.Parameter(torch.tensor([float(default_time_scaler)]))
         # this thing will dynamically shift training to harder part of vector-space
@@ -585,6 +585,24 @@ class FlowModel1d(nn.Module):
             zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
         )
         
+        if conditional_dim is not None:
+            self.condition_emb = nn.Sequential(
+                nn.Linear(conditional_dim,hidden_dim),
+                Prod(nn.Sequential(
+                    nn.SiLU(),
+                    # zero_module(nn.Linear(hidden_dim,hidden_dim)),
+                    nn.Linear(hidden_dim,hidden_dim),
+                    # nn.RMSNorm(hidden_dim),
+                    nn.Tanh(),
+                )),
+                # nn.LayerNorm(hidden_dim),
+                nn.SiLU(),
+                # nn.Linear(hidden_dim,hidden_dim*2),
+                zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
+            )
+        else:
+            self.condition_emb = ConstModule(0)
+            
         self.expand = nn.Linear(in_dim,hidden_dim)
         
         self.dropout = nn.Dropout(dropout_p) if dropout_p>0 else nn.Identity()
@@ -607,13 +625,33 @@ class FlowModel1d(nn.Module):
         self.to(device)
         self.eval()
         
-    def forward(self,x : torch.Tensor,t : torch.Tensor):
+    def forward(self,x : torch.Tensor,t : torch.Tensor,condition : Optional[torch.Tensor] = None):
         while t.ndim<x.ndim:
             t = t[:,None]
         expand = self.expand(x)
-        
+        x=x.to(self.device)
+
         # add time embedding
         time_scale,time_shift = self.time_emb(t).chunk(2,-1)
+        
+        if self.conditional_dim is not None:
+            if condition is None:
+                condition=torch.zeros((len(x),self.conditional_dim),device=x.device,dtype=x.dtype)
+            else:
+                condition=condition.to(self.device)
+            c_scale,c_shift = self.condition_emb(condition).chunk(2,-1)
+            
+            # print('before',time_scale.shape,c_scale.shape)
+
+            time_shape = list(time_scale.shape)
+            time_shape[0]=max(time_shape[0],c_scale.shape[0])
+            c_scale=c_scale.view(time_shape)
+            c_shift=c_shift.view(time_shape)
+            
+            # print('after',time_scale.shape,c_scale.shape)
+            
+            time_scale=time_scale+c_scale
+            time_shift=time_shift+c_shift
         x = expand*(1+time_scale)+time_shift
         
         x = self.dropout(x)
@@ -628,6 +666,8 @@ class FlowModel1d(nn.Module):
     def fit(
         self,
         data: torch.Tensor,
+        condition: Optional[torch.Tensor] = None,
+        condition_dropout: float = 0.5,
         epochs: int = 64,
         batch_size: int = 256,
         contrastive_loss_weight=1.0,
@@ -672,9 +712,9 @@ class FlowModel1d(nn.Module):
             torch.set_num_threads(4)
             torch.set_num_interop_threads(1)
         except: pass
-        if not isinstance(data,torch.Tensor):
-            data = torch.tensor(data,dtype=torch.float32,device=self.device)
         gc.disable()
+        
+        data, condition = self.__prepare_data(data, condition)
         
         model = self
         device = model.device
@@ -687,8 +727,8 @@ class FlowModel1d(nn.Module):
             # loss_normalizer = torch.jit.trace(loss_normalizer,(torch.randn((1,self.in_dim),device=device),torch.randn((1,1),device=device)))
             trainable_weights=trainable_weights+list(loss_normalizer.parameters())
         
-        data = data.to(device)
-        
+
+        assert data.shape[-1]==self.in_dim, f'Dataset dimension must match in_dim on model. data.shape[-1]({data.shape[-1]})!=model.in_dim({self.in_dim})'
         model.train()
         
         optim = torch.optim.AdamW(get_fm_optim_groups(model,loss_normalizer), lr=lr,fused=True)
@@ -724,6 +764,7 @@ class FlowModel1d(nn.Module):
                 # shuffle each epoch
                 torch.randperm(n, device=device,out=perm)
                 data_shuf = data[perm]
+                condition_shuf = condition[perm]
 
                 losses = 0
                 r2s = 0
@@ -731,14 +772,20 @@ class FlowModel1d(nn.Module):
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
                     
                     batch = data_shuf[start : start + batch_size]
+                    B = batch.shape[0]
+                    
+                    zero_mask = (torch.rand(batch_size,device=device)<condition_dropout)[:B].unsqueeze(-1)
+                    condition_batch = condition_shuf[start : start + batch_size]*zero_mask
+                    
+                    model_inference = lambda xt,t: model_trace(xt,t,condition_batch)
+                    
                     # prior_batch.normal_()
                     prior_batch = sample_base(self.sobol,batch_size,device)
                     time.uniform_()
                     
-                    B = batch.shape[0]
                     pred_dir,target_dir,contrast_dir,t = \
                         model.fm.contrastive_flow_matching_pair(
-                            model_trace,
+                            model_inference,
                             prior_batch[:B],
                             batch,
                             time=time[:B]
@@ -819,9 +866,24 @@ class FlowModel1d(nn.Module):
         model.load_state_dict(best_trained_model)
         model.eval()
 
+    def __prepare_data(self, data, condition):
+        if not isinstance(data,torch.Tensor):
+            data = torch.tensor(data,dtype=torch.float32,device=self.device)
+        if condition is not None and not isinstance(condition,torch.Tensor):
+            condition = torch.tensor(condition,dtype=torch.float32,device=self.device)
+        data = data.to(self.device)
+        if condition is not None:
+            condition = condition.to(self.device)
+            assert len(condition)==len(data),'Dataset length and condition length must match'
+            assert condition.shape[-1]==self.conditional_dim, f'Condition dimension must match conditional_dim on model. condition.shape[-1]({data.shape[-1]})!=model.conditional_dim({self.conditional_dim})'
+        if condition is None:
+            condition = torch.zeros_like(data)
+        return data,condition
+
     def reflow(
             self,
             data : torch.Tensor,
+            condition : Optional[torch.Tensor] = None,
             epochs = 512,
             steps : Literal[1,2] = 1,
             batch_size=256,
@@ -859,8 +921,14 @@ class FlowModel1d(nn.Module):
         
         data = data.to(self.device)
         if base_model is None: base_model=self
+        if self.conditional_dim is not None:
+            assert condition is not None,'Cannot reflow conditional model with None condition'
+        if condition is None:
+            condition = torch.zeros((len(data),self.conditional_dim or 1))
+        condition = condition.to(self.device)
+        
         with torch.no_grad():
-            x = base_model.to_prior(data)
+            x = base_model.to_prior(data,condition)
             y = data
             
             # balance generated and original dataset 50/50
@@ -872,11 +940,13 @@ class FlowModel1d(nn.Module):
             # with reflowed model quality
             
             # x_gen = sample_base(self.sobol,len(x),self.device)
-            x_gen=torch.randn_like(x)
-            y_gen = base_model.to_target(x_gen)
+            x_gen = torch.randn_like(x)
+            cond_gen = torch.zeros_like(condition)
+            y_gen = base_model.to_target(x_gen,cond_gen)
             
             x = torch.concat([x,x_gen],0)
             y = torch.concat([y,y_gen],0)
+            cond = torch.concat([condition,cond_gen],0)
             
         assert steps in [1,2],"steps parameter must be one of [1,2]"
         self.fm.reset_weights()
@@ -925,9 +995,9 @@ class FlowModel1d(nn.Module):
                 ind = torch.randperm(x.shape[0],device=device)[:batch_size]
                 xbatch = x[ind]
                 ybatch = y[ind]
-                
-                y_pred = self.to_target(xbatch)
-                x_pred = self.to_prior(ybatch)
+                condbatch = cond[ind]
+                y_pred = self.to_target(xbatch,condbatch)
+                x_pred = self.to_prior(ybatch,condbatch)
                 
                 forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)
                 forward_loss-=forward_loss.min().detach()-1e-2
@@ -980,7 +1050,7 @@ class FlowModel1d(nn.Module):
         # self.load_state_dict(best_model)
         self.eval()
   
-    def to_prior(self,data : torch.Tensor,steps=None,return_intermediates=False):
+    def to_prior(self,data : torch.Tensor, condition : Optional[torch.Tensor] = None,steps=None,return_intermediates=False):
         """
         Transforms data from the target distribution back to the prior (noise) distribution.
 
@@ -1000,7 +1070,9 @@ class FlowModel1d(nn.Module):
         """
         if not steps: steps = self.default_steps
         input_device = data.device
-        out = self.fm.integrate(self,data.to(self.device),steps,inverse=True,return_intermediates=return_intermediates)
+        model_inference = lambda xt,t: self(xt,t,condition)
+        
+        out = self.fm.integrate(model_inference,data.to(self.device),steps,inverse=True,return_intermediates=return_intermediates)
         if return_intermediates:
             out,inter = out
             out = out.to(input_device)
@@ -1010,7 +1082,7 @@ class FlowModel1d(nn.Module):
             out = out.to(input_device)
         return out
     
-    def to_target(self,normal_noise : torch.Tensor,steps=None,return_intermediates=False):
+    def to_target(self,normal_noise : torch.Tensor, condition : Optional[torch.Tensor] = None,steps=None,return_intermediates=False):
         """
         Transforms samples from the prior (noise) distribution to the target distribution.
 
@@ -1030,7 +1102,8 @@ class FlowModel1d(nn.Module):
         """
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
-        out = self.fm.integrate(self,normal_noise.to(self.device),steps,return_intermediates=return_intermediates)
+        model_inference = lambda xt,t: self(xt,t,condition)
+        out = self.fm.integrate(model_inference,normal_noise.to(self.device),steps,return_intermediates=return_intermediates)
         if return_intermediates:
             out,inter = out
             out = out.to(input_device)
@@ -1040,7 +1113,7 @@ class FlowModel1d(nn.Module):
             out = out.to(input_device)
         return out
     
-    def sample(self,num_samples,steps=None,sobol=False):
+    def sample(self,num_samples,condition : Optional[torch.Tensor] = None,steps=None,sobol=False):
         """
         Generates samples from the learned target distribution.
 
@@ -1063,20 +1136,21 @@ class FlowModel1d(nn.Module):
             x = sample_base(self.sobol,num_samples,self.device)
         else:
             x = torch.randn((num_samples,self.in_dim),device=self.device)
-        return self.to_target(x,steps)
+        return self.to_target(x,condition,steps=steps)
     
-    def conditional_sample(
+    def constrained_sample(
         self,
         constraint : Callable[[torch.Tensor],torch.Tensor],
         num_samples: int,
+        condition : Optional[torch.Tensor] = None,
         noise_scale: float = 0.0,
         steps: int = 2,
         lr: float = 1,
-        mode_closeness_weight = 1.0,
+        mode_closeness_weight = 0.0,
         sampler_steps = None
     ) -> torch.Tensor:
         """
-        Make conditional sampling of trained flow matching model.
+        Make constrained sampling of trained flow matching model.
         
         I **strongly** advice you to call `reflow(...)` method before using conditional sampling,
         otherwise you will need a lot more time to execute this method.
@@ -1113,7 +1187,7 @@ class FlowModel1d(nn.Module):
             optimizer.zero_grad()
 
             # Forward pass: x = M_inv(z)
-            x = model.to_target(z,sampler_steps)
+            x = model.to_target(z,condition,steps=sampler_steps)
 
             # Balance original prior probability/vs likelihood maximization
             L_prior = (z * z).mean()
@@ -1141,22 +1215,23 @@ class FlowModel1d(nn.Module):
 
 
         with torch.no_grad():
-            final_x = model.to_target(self._iteration.best_sample)
+            final_x = model.to_target(self._iteration.best_sample,condition,steps=sampler_steps)
         self.unfreeze()
         return final_x
 
-    def conditional_optimize(
+    def constrained_optimize(
         self,
-        data,
         constraint : Callable[[torch.Tensor],torch.Tensor],
+        data,
+        condition : Optional[torch.Tensor] = None,
         noise_scale: float = 0.0,
         steps: int = 2,
         lr: float = 1,
-        mode_closeness_weight = 1.0,
+        mode_closeness_weight = 0.0,
         sampler_steps = None
     ) -> torch.Tensor:
         """
-        Make conditional optimization of data from trained flow matching model.
+        Make constrained optimization of data from trained flow matching model.
         
         It tries to minimize constraint for given data points, keeping probability of points distribution same as it is in data
         points. If `mode_closeness_weight`>0 then it will shift points closer to mode.
@@ -1181,7 +1256,7 @@ class FlowModel1d(nn.Module):
         device = self.device
         # Move data to prior
         with torch.no_grad():
-            z : torch.Tensor = self.to_prior(data)
+            z : torch.Tensor = self.to_prior(data,condition,steps=sampler_steps)
         z=z.requires_grad_(True)
         
         original_prior = (z * z).mean().detach()
@@ -1198,7 +1273,7 @@ class FlowModel1d(nn.Module):
             optimizer.zero_grad()
 
             # Forward pass: x = M_inv(z)
-            x = model.to_target(z,sampler_steps)
+            x = model.to_target(z,condition,steps=sampler_steps)
 
             # Balance original prior probability/vs likelihood maximization
             L_prior = (z * z).mean()
@@ -1226,48 +1301,19 @@ class FlowModel1d(nn.Module):
 
 
         with torch.no_grad():
-            final_x = model.to_target(self._iteration.best_sample)
+            final_x = model.to_target(self._iteration.best_sample,condition,steps=sampler_steps)
         self.unfreeze()
         return final_x
- 
-    def full_log_prob(self, data: torch.Tensor,steps=None) -> torch.Tensor:
-        """
-        Computes the full log probability of the data using exact Jacobian computation.
-
-        This method calculates the exact log probability using the change-of-variables formula:
-        log p(x) = log p(z) + log |det(J)|, where z is the corresponding latent variable
-        and J is the Jacobian of the transformation. This is computationally expensive
-        due to the Jacobian determinant calculation, so the log_prob method is recommended
-        for most use cases.
-
-        Args:
-            data (torch.Tensor): Input tensor for which to compute log probability.
-                               Expected shape: [batch_size, input_dim]
-            steps (int, optional): Number of integration steps to use for transformation.
-                                 If None, uses the model's default steps.
-
-        Returns:
-            torch.Tensor: Log probability values for each sample in the batch.
-                         Shape: [batch_size,]
-        """
-        if not steps: steps = self.default_steps
-
-        Y = data.to(self.device) # complex domain
-        X = self.to_prior(Y,steps) # normal noise
-        def elementwise_prior(x): return self.to_prior(x,steps).view(-1,dim).sum(0)
-
-        # change of variables stuff
-        dim = Y.shape[-1]
-        Y_flat = Y.view(-1,dim)
-        output_shape = *Y.shape[:-1],dim,dim
-        batch_jac = vmap(jacrev(elementwise_prior),randomness='same')(Y_flat).view(output_shape)
-        log_jac_det = batch_jac.slogdet()[1]
-        prior_log_prob = Normal(0,1).log_prob(X).sum(-1)
-
-        return (prior_log_prob+log_jac_det).to(data.device)
     
-    def optimize(self, data: torch.Tensor, lr: float = 1.0, epochs: int = 1,
-             columns_to_optimize: list[int] = None,random_directions=0):
+    def optimize(
+        self, 
+        data: torch.Tensor,
+        condition : Optional[torch.Tensor] = None,
+        lr: float = 1.0, 
+        epochs: int = 1,
+        columns_to_optimize: list[int] = None,
+        random_directions=0
+    ):
         """
         Optimize specific columns of data to maximize log probability.
 
@@ -1296,7 +1342,7 @@ class FlowModel1d(nn.Module):
         # Validate column indices
         columns_to_optimize = [c for c in columns_to_optimize if 0 <= c < input_dim]
         if not columns_to_optimize:
-            return data.clone(), -self.log_prob(data,random_directions=random_directions).sum().detach()
+            return data.clone(), -self.log_prob(data,condition=condition,random_directions=random_directions).sum().detach()
 
         # Identify fixed columns as those not in columns_to_optimize
         all_columns = list(range(input_dim))
@@ -1337,7 +1383,7 @@ class FlowModel1d(nn.Module):
                 current_data[:, fixed_columns] = fixed_data
 
             # Compute loss on the full tensor
-            loss = -self.log_prob(current_data,random_directions=random_directions).sum()
+            loss = -self.log_prob(current_data,condition=condition,random_directions=random_directions).sum()
 
             if loss<iteration.best_loss:
                 iteration.best_loss=loss
@@ -1361,9 +1407,18 @@ class FlowModel1d(nn.Module):
         self.unfreeze()
         return result, iteration.best_loss
     
-    def log_prob(self, data, eps=1e-3,random_directions=0,return_prior=False):
+    def log_prob(
+        self, 
+        data, 
+        condition:Optional[torch.Tensor] = None,
+        eps=1e-3,
+        random_directions=0,
+        return_prior=False):
+        
+        if condition is not None:condition=condition.to(self.device)
+        to_prior = lambda xt:self.to_prior(xt,condition)
         # return log_prob(self.to_target,self.to_prior(data),eps,random_directions=random_directions)
-        return log_prob_inverse(self.to_prior,data.to(self.device),eps,random_directions=random_directions,return_prior=return_prior)
+        return log_prob_inverse(to_prior,data.to(self.device),eps,random_directions=random_directions,return_prior=return_prior)
     
     def freeze(self):
         """
@@ -1377,8 +1432,13 @@ class FlowModel1d(nn.Module):
         """
         for p in self.parameters():
             p.requires_grad_(True)
-    
-    def interpolate(self,A:torch.Tensor,B:torch.Tensor,t:torch.Tensor|float):
+    def interpolate(
+        self,
+        A:torch.Tensor,
+        B:torch.Tensor,
+        t:torch.Tensor|float,
+        A_condition : Optional[torch.Tensor] = None,
+        B_condition : Optional[torch.Tensor] = None):
         """
         Interpolates A and B trough learned latent space
         
@@ -1392,13 +1452,22 @@ class FlowModel1d(nn.Module):
         if A.ndim==1:A=A.unsqueeze(0)
         if B.ndim==1:B=B.unsqueeze(0)
         if t.ndim==1:t=t.unsqueeze(1).unsqueeze(1)
+        if A_condition is not None:
+            if A_condition.ndim==1:A_condition=A_condition.unsqueeze(0)
+        
+        if B_condition is not None:
+            if B_condition.ndim==1:B_condition=B_condition.unsqueeze(0)
 
         with torch.no_grad():
-            A_prior = self.to_prior(A)
-            B_prior = self.to_prior(B)
+            A_prior = self.to_prior(A,A_condition)
+            B_prior = self.to_prior(B,B_condition)
 
             prior_interp = torch.lerp(A_prior,B_prior,t)
-            AB_interp = self.to_target(prior_interp)
+            if A_condition is not None and B_condition is not None:
+                condition_interp = torch.lerp(A_condition,B_condition,t)
+            else:
+                condition_interp=None
+            AB_interp = self.to_target(prior_interp,condition_interp)
         
         return AB_interp
         
