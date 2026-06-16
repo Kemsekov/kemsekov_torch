@@ -463,6 +463,42 @@ def kl_divergence(mu : torch.Tensor, logvar : torch.Tensor ,latent_dimension=[-1
     
     return kl.mean()
 
+def weak_sigreg(x: torch.Tensor, K: int) -> torch.Tensor:
+    """
+    Computes the Weak-SIGReg regularization loss for a batch of latent embeddings.
+    
+    Args:
+        x (torch.Tensor): Latent embeddings tensor of shape (B, D).
+        K (int): Number of random 1D projections (sketches) to sample.
+        
+    Returns:
+        torch.Tensor: Scalar loss term penalizing deviation from isotropy.
+    """
+    B, D = x.shape
+    device = x.device
+    dtype = x.dtype
+
+    # 1. Standardize/Center the batch along the batch dimension
+    # This ensures the global mean is at the origin before tracking variance
+    x_centered = x - x.mean(dim=0, keepdim=True)
+
+    # 2. Draw a random projection matrix W ~ N(0, 1)
+    # We detach W to ensure we do not calculate gradients with respect to the random directions
+    W = torch.randn(D, K, device=device, dtype=dtype)
+
+    # 3. Project the high-dimensional space down to K 1D slices
+    # Shape transition: (B, D) @ (D, K) -> (B, K)
+    projections = torch.matmul(x_centered, W)
+
+    # 4. Compute the sample variance for each of the K random projections
+    # dim=0 calculates the variance across the batch elements
+    variances = torch.var(projections, dim=0, unbiased=True) # Shape: (K,)
+
+    # 5. Penalize the variance deviation from 1 (Unit Variance)
+    # This prevents collapse along any random projection axis
+    loss = torch.mean((variances - 1.0) ** 2)
+
+    return loss
 
 def mmd_rbf(A, B, gamma=None, eps=1e-12):
     """
