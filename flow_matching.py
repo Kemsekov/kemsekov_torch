@@ -803,6 +803,8 @@ class FlowModel1d(nn.Module):
         When the model is conditional, condition vectors may be randomly
         replaced with zeros according to ``condition_dropout``. This implements
         classifier-free conditioning and improves generalization.
+        
+        **Model is fitted enough when r2 metric is above 0.36 or so.**
 
         Parameters
         ----------
