@@ -1045,13 +1045,18 @@ class FlowModel1d(nn.Module):
             data = torch.tensor(data,dtype=torch.float32,device=self.device)
         if condition is not None and not isinstance(condition,torch.Tensor):
             condition = torch.tensor(condition,dtype=torch.float32,device=self.device)
-        data = data.to(self.device)
-        if condition is not None:
-            condition = condition.to(self.device)
+        data = data.to(self.device).float()
+        
+        if self.conditional_dim is not None and condition is not None:
+            condition = condition.to(self.device).float()
+            if condition.ndim==1:
+                condition=condition.unsqueeze(0)
+            if condition.shape[0]==1:
+                condition=condition[[0]*len(data)]
             assert len(condition)==len(data),'Dataset length and condition length must match'
             assert condition.shape[-1]==self.conditional_dim, f'Condition dimension must match conditional_dim on model. condition.shape[-1]({data.shape[-1]})!=model.conditional_dim({self.conditional_dim})'
         if condition is None:
-            condition = torch.zeros_like(data)
+            condition = torch.zeros((len(data),1))
         return data,condition
     def reflow(
             self,
@@ -1373,6 +1378,7 @@ class FlowModel1d(nn.Module):
             
         # self.load_state_dict(best_model)
         self.eval()
+    
     def to_prior(
         self,
         data: torch.Tensor,
@@ -1433,8 +1439,8 @@ class FlowModel1d(nn.Module):
         if not steps: steps = self.default_steps
         input_device = data.device
         model_inference = lambda xt,t: self(xt,t,condition)
-        
-        out = self.fm.integrate(model_inference,data.to(self.device),steps,inverse=True,return_intermediates=return_intermediates)
+        data,condition=self.__prepare_data(data,condition)
+        out = self.fm.integrate(model_inference,data,steps,inverse=True,return_intermediates=return_intermediates)
         if return_intermediates:
             out,inter = out
             out = out.to(input_device)
@@ -1508,7 +1514,8 @@ class FlowModel1d(nn.Module):
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
         model_inference = lambda xt,t: self(xt,t,condition)
-        out = self.fm.integrate(model_inference,normal_noise.to(self.device),steps,return_intermediates=return_intermediates)
+        normal_noise,condition=self.__prepare_data(normal_noise,condition)
+        out = self.fm.integrate(model_inference,normal_noise,steps,return_intermediates=return_intermediates)
         if return_intermediates:
             out,inter = out
             out = out.to(input_device)
@@ -1968,7 +1975,6 @@ class FlowModel1d(nn.Module):
         rather than the unconditional density.
         """
         
-        if condition is not None:condition=condition.to(self.device)
         to_prior = lambda xt:self.to_prior(xt,condition)
         # return log_prob(self.to_target,self.to_prior(data),eps,random_directions=random_directions)
         return log_prob_inverse(to_prior,data.to(self.device),eps,random_directions=random_directions,return_prior=return_prior)
@@ -2087,4 +2093,3 @@ class FlowModel1d(nn.Module):
         
         return AB_interp
         
-    
