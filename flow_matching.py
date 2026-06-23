@@ -1043,15 +1043,17 @@ class FlowModel1d(nn.Module):
     def __prepare_data(self, data, condition):
         if not isinstance(data,torch.Tensor):
             data = torch.tensor(data,dtype=torch.float32,device=self.device)
+        else:
+            data = data.to(self.device).float()
         if data.ndim==1:
             data = data.unsqueeze(0)
         assert data.shape[-1]==self.in_dim,f"Data input shape must equal (BATCH,{self.in_dim}), got {data.shape}"
-        data = data.to(self.device).float()
         
         if self.conditional_dim is not None and condition is not None:
             if not isinstance(condition,torch.Tensor):
                 condition = torch.tensor(condition,dtype=torch.float32,device=self.device)
-            condition = condition.to(self.device).float()
+            else:
+                condition = condition.to(self.device).float()
             if condition.ndim==1:
                 condition=condition.unsqueeze(0)
             if condition.shape[0]==1:
