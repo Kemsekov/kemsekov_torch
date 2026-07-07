@@ -255,7 +255,7 @@ class FlowMatching(nn.Module):
             self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0,0],device=device))
             self.one_weights_inv = torch.nn.Parameter(torch.tensor([start_time,-0.5,1,0,0],device=device))
             self.rk2_weights     = torch.nn.Parameter(torch.tensor([start_time,   1.0,  0.5, 0.5, 1.0, 1.0, 0.0, 0.0],device=device))
-            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time, 0.0, -0.5, -0.5, -1.0, 1.0, 0.0, 0.0],device=device))
+            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([start_time, 0.0, -0.5, -0.5, -1.0, 1.0, 0.0, 0.0],device=device))
     
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
