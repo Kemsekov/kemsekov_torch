@@ -249,11 +249,13 @@ class CycleGan(torch.nn.Module):
             self.critic_a,
             batch_a,
             self.grl(fake_a),
+            # fake_a
         )
         c2,fake_scores_b,real_scores_b,grad_penalty_b = critic_loss(
             self.critic_b,
             batch_b,
             self.grl(fake_b),
+            # fake_b
         )
         
         adversarial_loss = (c1+c2)
@@ -344,7 +346,11 @@ def train_cycle_gan(
     ema_beta=0.995,
     loss_lambda=0.5,
     verbose=False,
-    max_grad_norm=2.0
+    max_grad_norm=2.0,
+    cycle_consistency_lambda=10.0,
+    identity_lambda=5.0,
+    adversarial_lambda=1.0,
+    gradient_penalty=5.0
 ):
     """
     Trains a CycleGAN model using a single optimizer and optional EMA stabilization.
@@ -421,8 +427,15 @@ def train_cycle_gan(
         for a,b in dataloader:
             gen_opt.zero_grad(True)
             crit_opt.zero_grad(True)
-            l = cycle_gan(a.to(device,dtype=dtype),b.to(device,dtype=dtype))
-            loss = (l.loss()-loss_lambda).abs()
+            l = cycle_gan(a.to(device,dtype=dtype),b.to(device,dtype=dtype))\
+                .loss(
+                    cycle_consistency_lambda=cycle_consistency_lambda,
+                    identity_lambda=identity_lambda,
+                    adversarial_lambda=adversarial_lambda,
+                    gradient_penalty=gradient_penalty,
+                )
+            
+            loss = (l-loss_lambda).abs()
             loss.backward()
             
             if max_grad_norm is not None:
