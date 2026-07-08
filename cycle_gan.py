@@ -6,8 +6,11 @@ from typing import Callable
 from kemsekov_torch.common_modules import GradientReversal
 import torch
 import torch.nn as nn
+from kemsekov_torch.ema_pytorch.ema_pytorch import EMA
+from copy import deepcopy
+from torch.utils.data import Dataset
 
-def get_square_mean_signed(x):
+def generator_score(x):
     return (x).mean()
 
 def critic_loss(
@@ -15,11 +18,16 @@ def critic_loss(
     real_data : torch.Tensor,
     fake_data : torch.Tensor):
     
-    fake_scores = get_square_mean_signed(critic(fake_data))
+    fake_scores = generator_score(critic(fake_data))
     
     if torch.is_grad_enabled():    
-        noise = torch.rand(fake_data.shape,device=real_data.device)
-        interpolated_samples = (real_data*noise+(1-noise)*fake_data).detach().requires_grad_(True)
+        alpha_shape = [real_data.shape[0]] + [1] * (real_data.ndim - 1)
+        alpha = torch.rand(alpha_shape, device=real_data.device,dtype=real_data.dtype)
+
+        interpolated_samples = (
+            alpha * real_data +
+            (1 - alpha) * fake_data
+        )
         interpolated_scores = critic(interpolated_samples)
         # Compute gradients w.r.t. interpolated samples
         gradients = torch.autograd.grad(
@@ -33,13 +41,13 @@ def critic_loss(
         grad_penalty=(grad_l2_norm-1).pow(2).mean()
     else:
         grad_penalty=fake_scores*0
-    real_scores = get_square_mean_signed(critic(real_data))
+    real_scores = generator_score(critic(real_data))
     loss = fake_scores-real_scores
     
     return loss,fake_scores,real_scores, grad_penalty
 
 def generator_loss(critic,generated_data):
-    generated_score = get_square_mean_signed(critic(generated_data))
+    generated_score = generator_score(critic(generated_data))
     return (-generated_score)
 
 @dataclass
@@ -121,7 +129,7 @@ class CycleGanForward:
         cycle_consistency_lambda=10.0,
         identity_lambda=5.0,
         adversarial_lambda=1.0,
-        gradient_penalty=1.0
+        gradient_penalty=5.0
     ):
         """
         Computes loss function for all generators and critics at the same time.
@@ -265,7 +273,6 @@ class CycleGan(torch.nn.Module):
             real_scores_b=real_scores_b,
         )
 
-from torch.utils.data import Dataset
 class UnpairedDataset(Dataset):
     def __init__(self, domain1_data,domain2_data):
         super().__init__()
@@ -283,3 +290,156 @@ class UnpairedDataset(Dataset):
         i2 = self.domain2_data[index % len(self.domain2_data)]
         
         return i1,i2
+
+def get_optim_groups(model, weight_decay=1e-2):
+    decay_params = set()
+    no_decay_params = set()
+    norm_layers=(
+        nn.LayerNorm, 
+        nn.RMSNorm, 
+        nn.BatchNorm1d, 
+        nn.GroupNorm,
+        nn.BatchNorm1d,
+        nn.BatchNorm2d,
+        nn.BatchNorm3d,
+        nn.GroupNorm,
+        nn.InstanceNorm1d,
+        nn.InstanceNorm2d,
+        nn.InstanceNorm3d,
+    )
+    def process_model(m):
+        for mn, module in m.named_modules():
+            # recurse=False ensures we only process parameters directly belonging to this module
+            for pn, p in module.named_parameters(recurse=False):
+                if not p.requires_grad:
+                    continue
+                
+                # Rule 1: Biases should NEVER be decayed
+                if pn.endswith('bias'):
+                    no_decay_params.add(p)
+                # Rule 2: Normalization layer weights should NEVER be decayed
+                elif isinstance(module, norm_layers):
+                    no_decay_params.add(p)
+                # Rule 3: Protect your custom time_scaler from being shrunk to 0
+                elif 'scaler' in pn.lower():
+                    no_decay_params.add(p)
+                # Rule 4: Everything else (Linear weights, etc.) gets weight decay
+                else:
+                    decay_params.add(p)
+
+    process_model(model)
+    return [
+        {"params": list(decay_params), "weight_decay": weight_decay},
+        {"params": list(no_decay_params), "weight_decay": 0.0}
+    ]
+
+
+def train_cycle_gan(
+    cycle_gan:CycleGan,
+    dataloader:torch.utils.data.DataLoader,
+    epochs=10,
+    lr=0.1,
+    best_checkpoint_loss_history_size=16,
+    ema_beta=0.995,
+    loss_lambda=0.5,
+    verbose=False,
+    max_grad_norm=1.0
+):
+    """
+    Trains a CycleGAN model using a single optimizer and optional EMA stabilization.
+
+    The training loop performs joint updates of generators and critics using the
+    combined CycleGAN loss (cycle consistency, identity, adversarial loss, and
+    gradient penalty). The best model state is tracked using a moving average of
+    recent losses and restored after training.
+
+    Parameters
+    ----------
+    cycle_gan:
+        Initialized CycleGan model to train.
+
+    dataloader:
+        DataLoader providing unpaired batches from both domains as `(domain_a, domain_b)`.
+
+    epochs:
+        Number of complete passes through the dataset.
+
+    lr:
+        Learning rate for AdamW optimizer.
+
+    best_checkpoint_loss_history_size:
+        Number of recent loss values used for selecting the best checkpoint.
+        Larger values make checkpoint selection less sensitive to noise.
+
+    ema_beta:
+        Exponential moving average coefficient for generator weights.
+        Set to 0 to disable EMA.
+
+    loss_lambda:
+        Target loss value used by absolute loss stabilization:
+        `abs(loss - loss_lambda)`.
+
+    verbose:
+        If True, prints device information and best checkpoint updates.
+
+    max_grad_norm:
+        Maximum gradient norm used for gradient clipping.
+        Set to None to disable gradient clipping.
+
+    Returns
+    -------
+    CycleGan:
+        The trained model with weights restored to the best observed checkpoint.
+    """
+    param = list(cycle_gan.parameters())[0]
+    device = param.device
+    dtype = param.dtype
+    if verbose:
+        print("Device",device)
+        print("Dtype",dtype)
+    
+    total_steps=len(dataloader)*epochs
+    opt = torch.optim.AdamW(get_optim_groups(cycle_gan),lr=lr,fused=True)
+    sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,total_steps)
+    gen_ema1 = EMA(cycle_gan.g_ab,beta=ema_beta,power=1)
+    gen_ema2 = EMA(cycle_gan.g_ba,beta=ema_beta,power=1)
+
+    running_loss = []
+    best_loss = 1e10
+    best_model = None
+
+    for i in range(epochs):
+        if ema_beta>0:
+            gen_ema1.update_model_with_ema()
+            gen_ema2.update_model_with_ema()
+        for a,b in dataloader:
+            opt.zero_grad(True)
+            l = cycle_gan(a.to(device,dtype=dtype),b.to(device,dtype=dtype))
+            loss = (l.loss()-loss_lambda).abs()
+            loss.backward()
+            
+            if max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(
+                    cycle_gan.parameters(),
+                    max_grad_norm
+                )
+            
+            running_loss.append(loss.item())
+            running_loss=running_loss[-best_checkpoint_loss_history_size:]
+            
+            mean_running = sum(running_loss)/best_checkpoint_loss_history_size
+            
+            if len(running_loss)==best_checkpoint_loss_history_size and mean_running<best_loss:
+                best_loss=mean_running
+                best_model=deepcopy(cycle_gan.state_dict())
+                if verbose: print(f"Epoch {i}\tLoss: {mean_running:0.4f}")
+                if ema_beta>0:
+                    gen_ema1.update()
+                    gen_ema2.update()
+            
+            opt.step()
+            sch.step()
+            
+    if best_model is not None:
+        cycle_gan.load_state_dict(best_model)
+    return cycle_gan
