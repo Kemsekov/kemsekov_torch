@@ -344,7 +344,7 @@ def train_cycle_gan(
     lr_critic=0.01,
     best_checkpoint_loss_history_size=16,
     ema_beta=0.995,
-    loss_lambda=None,
+    loss_lambda=0.5,
     verbose=False,
     max_grad_norm=2.0,
     cycle_consistency_lambda=10.0,
@@ -387,7 +387,8 @@ def train_cycle_gan(
 
     loss_lambda:
         Target loss value used by absolute loss stabilization:
-        `abs(loss - loss_lambda)`. Will minimize just `loss` if `loss_lambda` is `None`
+        `abs(loss - loss_lambda)`. Will minimize just `loss` if `loss_lambda` is `None`. 
+        If your training diverges into some nonsense as time passes, try to use like `0.25` or `0.5` value for this thing.
 
     verbose:
         If True, prints device information and best checkpoint updates.
