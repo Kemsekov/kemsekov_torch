@@ -343,7 +343,7 @@ def train_cycle_gan(
     ema_beta=0.995,
     loss_lambda=0.5,
     verbose=False,
-    max_grad_norm=1.0
+    max_grad_norm=2.0
 ):
     """
     Trains a CycleGAN model using a single optimizer and optional EMA stabilization.
