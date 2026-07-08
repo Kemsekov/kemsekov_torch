@@ -338,7 +338,8 @@ def train_cycle_gan(
     cycle_gan:CycleGan,
     dataloader:torch.utils.data.DataLoader,
     epochs=10,
-    lr=0.1,
+    lr_generator=0.1,
+    lr_critic=0.1,
     best_checkpoint_loss_history_size=16,
     ema_beta=0.995,
     loss_lambda=0.5,
@@ -364,8 +365,11 @@ def train_cycle_gan(
     epochs:
         Number of complete passes through the dataset.
 
-    lr:
-        Learning rate for AdamW optimizer.
+    lr_generator:
+        Learning rate for generators AdamW optimizer.
+    
+    lr_critic:
+        Learning rate for critics AdamW optimizer.
 
     best_checkpoint_loss_history_size:
         Number of recent loss values used for selecting the best checkpoint.
@@ -399,8 +403,10 @@ def train_cycle_gan(
         print("Dtype",dtype)
     
     total_steps=len(dataloader)*epochs
-    opt = torch.optim.AdamW(get_optim_groups(cycle_gan),lr=lr,fused=True)
-    sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,total_steps)
+    gen_opt = torch.optim.AdamW(get_optim_groups(cycle_gan.g_ab)+get_optim_groups(cycle_gan.g_ba),lr=lr_generator,fused=True)
+    crit_opt = torch.optim.AdamW(get_optim_groups(cycle_gan.critic_a)+get_optim_groups(cycle_gan.critic_b),lr=lr_critic,fused=True)
+    sch1 = torch.optim.lr_scheduler.CosineAnnealingLR(gen_opt,total_steps)
+    sch2 = torch.optim.lr_scheduler.CosineAnnealingLR(crit_opt,total_steps)
     gen_ema1 = EMA(cycle_gan.g_ab,beta=ema_beta,power=1)
     gen_ema2 = EMA(cycle_gan.g_ba,beta=ema_beta,power=1)
 
@@ -413,7 +419,8 @@ def train_cycle_gan(
             gen_ema1.update_model_with_ema()
             gen_ema2.update_model_with_ema()
         for a,b in dataloader:
-            opt.zero_grad(True)
+            gen_opt.zero_grad(True)
+            crit_opt.zero_grad(True)
             l = cycle_gan(a.to(device,dtype=dtype),b.to(device,dtype=dtype))
             loss = (l.loss()-loss_lambda).abs()
             loss.backward()
@@ -437,8 +444,10 @@ def train_cycle_gan(
                     gen_ema1.update()
                     gen_ema2.update()
             
-            opt.step()
-            sch.step()
+            gen_opt.step()
+            crit_opt.step()
+            sch1.step()
+            sch2.step()
             
     if best_model is not None:
         cycle_gan.load_state_dict(best_model)
