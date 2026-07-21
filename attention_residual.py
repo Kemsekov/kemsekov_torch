@@ -25,7 +25,7 @@ class AttentionResidual1(nn.Module):
         self.KV = nn.Sequential(
             nn.RMSNorm(features_dim),
             nn.SiLU(),
-            nn.Linear(features_dim,features_dim),
+            nn.Linear(features_dim,features_dim,bias=False),
         )
         # self.key_norm = nn.RMSNorm(features_dim)
         self.out = nn.Sequential(*[
@@ -118,7 +118,7 @@ class AttentionResidual2(nn.Module):
         self.KV = nn.Sequential(
             nn.RMSNorm(features_dim),
             nn.SiLU(),
-            nn.Linear(features_dim,features_dim),
+            nn.Linear(features_dim,features_dim,bias=False),
         )
         # self.key_norm = nn.RMSNorm(features_dim)
         self.out = nn.Sequential(*[
