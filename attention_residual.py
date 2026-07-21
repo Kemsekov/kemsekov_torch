@@ -134,8 +134,8 @@ class AttentionResidual2(nn.Module):
             xt=x.transpose(self.features_dimension,-1)
         
         q,k,v = self.QKV(xt).view(-1,self.head_dim*3).chunk(3,-1)
-        keys[i]=k.unsqueeze(0)
-        values[i]=v.unsqueeze(0)
+        keys[-1]=k.unsqueeze(0)
+        values[-1]=v.unsqueeze(0)
         torch._C._autograd._unsafe_set_version_counter([keys], [0])
         torch._C._autograd._unsafe_set_version_counter([values], [0])
         # return xt
