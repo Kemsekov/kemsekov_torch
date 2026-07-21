@@ -1061,7 +1061,7 @@ class FlowModel1d(nn.Module):
             assert len(condition)==len(data),'Dataset length and condition length must match'
             assert condition.shape[-1]==self.conditional_dim, f'Condition dimension must match conditional_dim on model. condition.shape[-1]({data.shape[-1]})!=model.conditional_dim({self.conditional_dim})'
         if condition is None:
-            condition = torch.zeros((len(data),1))
+            condition = torch.zeros((len(data),1),device=self.device)
         return data,condition
     def reflow(
             self,
@@ -1262,7 +1262,7 @@ class FlowModel1d(nn.Module):
         condition = condition.to(self.device)
         
         with torch.no_grad():
-            x = base_model.to_prior(data,condition)
+            x = base_model.to_prior(data,condition,steps=32)
             y = data
             
             # balance generated and original dataset 50/50
@@ -1276,7 +1276,7 @@ class FlowModel1d(nn.Module):
             # x_gen = sample_base(self.sobol,len(x),self.device)
             x_gen = torch.randn_like(x)
             cond_gen = torch.zeros_like(condition)
-            y_gen = base_model.to_target(x_gen,cond_gen)
+            y_gen = base_model.to_target(x_gen,cond_gen,steps=32)
             
             x = torch.concat([x,x_gen],0)
             y = torch.concat([y,y_gen],0)
