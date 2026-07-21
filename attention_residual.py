@@ -28,7 +28,7 @@ class AttentionResidual1(nn.Module):
             nn.Linear(features_dim,features_dim,bias=False),
         )
         # self.key_norm = nn.RMSNorm(features_dim)
-        self.out = nn.Sequential(*[
+        self.out = Residual([
             nn.RMSNorm(features_dim),
             nn.SiLU(),
             nn.Linear(features_dim,features_dim)
@@ -121,7 +121,7 @@ class AttentionResidual2(nn.Module):
             nn.Linear(features_dim,features_dim,bias=False),
         )
         # self.key_norm = nn.RMSNorm(features_dim)
-        self.out = nn.Sequential(*[
+        self.out = Residual([
             nn.RMSNorm(features_dim),
             nn.SiLU(),
             nn.Linear(features_dim,features_dim)
@@ -151,7 +151,6 @@ class AttentionResidual2(nn.Module):
                 x_next = self.get_x_next(keys, values, q)
             else:
                 x_next = self.out(v).transpose(-1,self.features_dimension)
-                # x_next = x
                 
             x = m(x_next)
             xt=x.transpose(self.features_dimension,-1)
