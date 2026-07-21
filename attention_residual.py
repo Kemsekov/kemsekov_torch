@@ -52,7 +52,7 @@ class AttentionResidual1(nn.Module):
         
         for i,m in enumerate(self.models):
             k = self.KV(xt).view(-1,self.head_dim)
-            v=xt
+            v=xt.reshape(-1,self.head_dim)
             q=self.query[i].view(1,-1).expand(k.shape)
             #q,k,v of shape [(B,...),head_dim]
             k=F.normalize(k,2.0,-1)
@@ -71,7 +71,7 @@ class AttentionResidual1(nn.Module):
             xt=x.transpose(self.features_dimension,-1)
         
         k = self.KV(xt).view(-1,self.head_dim)
-        v=xt
+        v=xt.reshape(-1,self.head_dim)
         q=self.query[-1].view(1,-1).expand(k.shape)
         keys[-1]=k.unsqueeze(0)
         values[-1]=v.view(1,-1,self.head_dim)
