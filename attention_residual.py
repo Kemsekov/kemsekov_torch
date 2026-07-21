@@ -110,14 +110,17 @@ class AttentionResidual2(nn.Module):
         """
         super().__init__()
         self.models = nn.ModuleList(modules)
-        self.QK = nn.Sequential(
+        self.query = nn.Parameter(torch.randn(len(modules)+1,features_dim))
+        self.KV = nn.Sequential(
             nn.RMSNorm(features_dim),
-            nn.Linear(features_dim,features_dim*2,bias=False),
+            nn.SiLU(),
+            nn.Linear(features_dim,features_dim*2),
         )
+        # self.key_norm = nn.RMSNorm(features_dim)
         self.out = nn.Sequential(*[
             nn.RMSNorm(features_dim),
             nn.SiLU(),
-            nn.Linear(features_dim,features_dim,bias=False),
+            nn.Linear(features_dim,features_dim)
         ])
         
         self.features_dimension=features_dimension
@@ -132,11 +135,12 @@ class AttentionResidual2(nn.Module):
         #key/values is of shape [|models|,1,(B,...),head_dim]
         
         for i,m in enumerate(self.models):
-            q,k = self.QK(xt).chunk(2,-1)
+            k,v = self.KV(xt).chunk(2,-1)
+            q = self.query[i]
             #q,k,v of shape [(B,...),head_dim]
             k=F.normalize(k,2.0,-1)
             keys.append(k)
-            values.append(xt)
+            values.append(v)
             
             if i>0:
                 x_next = self.get_x_next(keys, values, q)
@@ -146,11 +150,11 @@ class AttentionResidual2(nn.Module):
             x = m(x_next)
             xt=x.transpose(self.features_dimension,-1)
         
-        q,k = self.QK(xt).chunk(2,-1)
+        k,v = self.KV(xt).chunk(2,-1)
         keys.append(k)
-        values.append(xt)
+        values.append(v)
         # return xt
-        return self.get_x_next(keys, values, q)
+        return self.get_x_next(keys, values, self.query[-1])
 
     def get_x_next(self, keys, values, q:torch.Tensor):
         keys=torch.stack(keys)
