@@ -672,7 +672,7 @@ class FlowModel1d(nn.Module):
     - ReFlow acceleration
     """
 
-    def __init__(self, in_dim,conditional_dim = None,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01) -> None:
+    def __init__(self, in_dim,conditional_dim = None,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01,residual_blocks_impl : Literal['sequential','attention']='sequential') -> None:
         super().__init__()
         self.fm = FlowMatching()
         self.sobol = SobolEngine(in_dim, scramble=True)
@@ -724,11 +724,20 @@ class FlowModel1d(nn.Module):
         
         self.dropout = nn.Dropout(dropout_p) if dropout_p>0 else nn.Identity()
         self.norm = norm(hidden_dim)
+        allowed = ['sequential','attention']
+        assert residual_blocks_impl in allowed,f'residual_blocks_impl must be one of {allowed}'
+        if residual_blocks_impl=='sequential':
+            self.residual_blocks = nn.Sequential(*[
+                        FusedFlowResidual(hidden_dim)
+                for i in range(residual_blocks)
+            ])
         
-        self.residual_blocks = nn.Sequential(*[
-            FusedFlowResidual(hidden_dim)
-            for i in range(residual_blocks)
-        ])
+        if residual_blocks_impl=='attention':
+            self.residual_blocks = AttentionResidual2([
+                FusedFlowResidual(hidden_dim)
+                for i in range(residual_blocks)
+            ],hidden_dim,-1)
+        
         self.out_norm = norm(hidden_dim)
         
         self.collapse = nn.Sequential(
