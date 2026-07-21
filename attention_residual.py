@@ -3,82 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Union
 from typing import Iterable
-
-class AttentionResidual1(nn.Module):
-    def __init__(self, dim, residuals: Union[nn.Sequential, nn.ModuleList, List[nn.Module]]) -> None:
-        """
-        dim: data dimensions
-        residuals: list of modules to apply attention residual. Each module in `residuals` **must not return residual** like `f(x)+x`, else it\
-            will kill gradients flow
-        """
-        super().__init__()
-        init_scale = 0.3
-        # use learned queries for each residual, initialized to abs positional encoding
-        self.query_pos = nn.Parameter(torch.randn((len(residuals)+1,1,dim))*init_scale)
-        self.key_pos = nn.Parameter(torch.randn((1,len(residuals)+1,dim))*init_scale)
-
-        # each residual intermediate value is reduced and key for it computed via
-        # this linear mapping
-        if isinstance(residuals,list):
-            residuals=nn.ModuleList(residuals)
-            
-        self.residuals = residuals
-
-    def forward(self, x):
-        input_shape = x.shape
-        B = x.shape[0]
-
-        x_flat = x.view(B, -1)
-
-        values = torch.empty((B, len(self.residuals) + 1, x_flat.shape[-1]), device=x.device, dtype=x.dtype)
-
-        values[:, 0] = x_flat
-        
-        torch._C._autograd._unsafe_set_version_counter([values], [0])
-
-        for ind, layer in enumerate(self.residuals):
-            query=self.query_pos[ind][[0]*B]
-            # [batch,1,dim]
-            query = query[:,None]
-            
-            # [batch,seqlen,dim] — view, no clone
-            ks = self.key_pos[:,:ind + 1][[0]*B]
-            # [batch,seqlen,val_dim] — view, no clone
-            vals = values[:, :ind + 1]
-
-            # reshape query keys and values to 1-head inputs for attention
-            query = query[:, None]
-            ks = ks[:, None]
-            vals = vals[:, None]
-
-            # compute cross-attention
-            out = F.scaled_dot_product_attention(query, ks, vals).reshape(input_shape)
-            x = layer(out)
-
-            values[:, ind + 1] = x.view(B, -1)
-
-            torch._C._autograd._unsafe_set_version_counter([values], [0])
-        
-        query=self.query_pos[-1][[0]*B]
-        # [batch,1,dim]
-        query = query[:,None]
-        
-        # [batch,seqlen,dim] — view, no clone
-        ks = self.key_pos[[0]*B]
-        # [batch,seqlen,val_dim] — view, no clone
-        vals = values
-
-        # reshape query keys and values to 1-head inputs for attention
-        query = query[:, None]
-        ks = ks[:, None]
-        vals = vals[:, None]
-
-        # compute cross-attention
-        # print(query.shape,ks.shape,vals.shape)
-        out = F.scaled_dot_product_attention(query, ks, vals).reshape(input_shape)
-        torch._C._autograd._unsafe_set_version_counter([values], [0])
-            
-        return out
 class AttentionResidual2(nn.Module):
     def __init__(
         self, 
@@ -139,7 +63,7 @@ class AttentionResidual2(nn.Module):
         torch._C._autograd._unsafe_set_version_counter([keys], [0])
         torch._C._autograd._unsafe_set_version_counter([values], [0])
         # return xt
-        return self.get_x_next(xt, keys, values, len(self.models), q)
+        return self.get_x_next(xt, keys, values, len(self.models)+1, q)
 
     def get_x_next(self, xt, keys, values, i, q):
         prev_keys=keys[:i]
