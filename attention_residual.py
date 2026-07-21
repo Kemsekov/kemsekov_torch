@@ -21,6 +21,7 @@ class AttentionResidual1(nn.Module):
         super().__init__()
         self.models = nn.ModuleList(modules)
         self.query = nn.Parameter(torch.randn(len(modules)+1,features_dim))
+        # nn.init.orthogonal_(self.query)
         self.KV = nn.Sequential(
             nn.RMSNorm(features_dim),
             nn.SiLU(),
@@ -63,7 +64,7 @@ class AttentionResidual1(nn.Module):
             if i>0:
                 x_next = self.get_x_next(xt, keys, values, i, q)
             else:
-                x_next = self.out(v).transpose(-1,self.features_dimension)
+                x_next = self.out(v).view(xt.shape).transpose(-1,self.features_dimension)
                 
             x = m(x_next)
             xt=x.transpose(self.features_dimension,-1)
@@ -111,6 +112,7 @@ class AttentionResidual2(nn.Module):
         super().__init__()
         self.models = nn.ModuleList(modules)
         self.query = nn.Parameter(torch.randn(len(modules)+1,features_dim))
+        # nn.init.orthogonal_(self.query)
         self.KV = nn.Sequential(
             nn.RMSNorm(features_dim),
             nn.SiLU(),
