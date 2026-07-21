@@ -13,6 +13,8 @@ import torch.nn.functional as F
 from torch.distributions import Normal
 from torch.func import vmap, jacrev
 from torch.quasirandom import SobolEngine
+from kemsekov_torch.attention_residual import *
+from kemsekov_torch.common_modules import AddConst, ConstModule
 
 def sample_base(sobol : SobolEngine,count,device):
     half=count//2
@@ -496,8 +498,7 @@ class FusedFlowResidual(nn.Module):
         prod = x*self.prod(x)
         return self.out(prod)+x
     
-from kemsekov_torch.attention_residual import *
-from kemsekov_torch.common_modules import AddConst, ConstModule
+
 
 def get_fm_optim_groups(model, extra_model=None, weight_decay=1e-2):
     decay_params = []
@@ -723,7 +724,7 @@ class FlowModel1d(nn.Module):
         
         self.dropout = nn.Dropout(dropout_p) if dropout_p>0 else nn.Identity()
         self.norm = norm(hidden_dim)
-
+        
         self.residual_blocks = nn.Sequential(*[
             FusedFlowResidual(hidden_dim)
             for i in range(residual_blocks)

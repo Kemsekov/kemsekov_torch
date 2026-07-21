@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Union
 from typing import Iterable
-class AttentionResidual2(nn.Module):
+class AttentionResidual1(nn.Module):
     def __init__(
         self, 
         modules : Iterable[nn.Module],
@@ -80,3 +80,4 @@ class AttentionResidual2(nn.Module):
         x_next=x_next.view(xt.shape).transpose(-1,self.features_dimension)
 
         return x_next
+
