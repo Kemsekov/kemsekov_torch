@@ -25,7 +25,7 @@ class AttentionResidual1(nn.Module):
         self.KV = nn.Sequential(
             nn.RMSNorm(features_dim),
             nn.SiLU(),
-            nn.Linear(features_dim,features_dim*2),
+            nn.Linear(features_dim,features_dim),
         )
         # self.key_norm = nn.RMSNorm(features_dim)
         self.out = nn.Sequential(*[
@@ -51,7 +51,8 @@ class AttentionResidual1(nn.Module):
         torch._C._autograd._unsafe_set_version_counter([values], [0])
         
         for i,m in enumerate(self.models):
-            k,v = self.KV(xt).view(-1,self.head_dim*2).chunk(2,-1)
+            k = self.KV(xt).view(-1,self.head_dim)
+            v=xt
             q=self.query[i].view(1,-1).expand(k.shape)
             #q,k,v of shape [(B,...),head_dim]
             k=F.normalize(k,2.0,-1)
@@ -69,7 +70,8 @@ class AttentionResidual1(nn.Module):
             x = m(x_next)
             xt=x.transpose(self.features_dimension,-1)
         
-        k,v = self.KV(xt).view(-1,self.head_dim*2).chunk(2,-1)
+        k = self.KV(xt).view(-1,self.head_dim)
+        v=xt
         q=self.query[-1].view(1,-1).expand(k.shape)
         keys[-1]=k.unsqueeze(0)
         values[-1]=v.view(1,-1,self.head_dim)
@@ -116,7 +118,7 @@ class AttentionResidual2(nn.Module):
         self.KV = nn.Sequential(
             nn.RMSNorm(features_dim),
             nn.SiLU(),
-            nn.Linear(features_dim,features_dim*2),
+            nn.Linear(features_dim,features_dim),
         )
         # self.key_norm = nn.RMSNorm(features_dim)
         self.out = nn.Sequential(*[
@@ -137,7 +139,8 @@ class AttentionResidual2(nn.Module):
         #key/values is of shape [|models|,1,(B,...),head_dim]
         
         for i,m in enumerate(self.models):
-            k,v = self.KV(xt).chunk(2,-1)
+            k = self.KV(xt)
+            v=xt
             q = self.query[i]
             #q,k,v of shape [(B,...),head_dim]
             k=F.normalize(k,2.0,-1)
@@ -153,7 +156,8 @@ class AttentionResidual2(nn.Module):
             x = m(x_next)
             xt=x.transpose(self.features_dimension,-1)
         
-        k,v = self.KV(xt).chunk(2,-1)
+        k = self.KV(xt)
+        v=xt
         keys.append(k)
         values.append(v)
         # return xt
