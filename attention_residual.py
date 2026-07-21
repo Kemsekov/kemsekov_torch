@@ -2,9 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Union
-from kemsekov_torch.positional_emb import PositionalEncoding, AddPositionalEmbedding
+from typing import Iterable
 
-class AttentionResidual(nn.Module):
+class AttentionResidual1(nn.Module):
     def __init__(self, dim, residuals: Union[nn.Sequential, nn.ModuleList, List[nn.Module]]) -> None:
         """
         dim: data dimensions
@@ -79,51 +79,80 @@ class AttentionResidual(nn.Module):
         torch._C._autograd._unsafe_set_version_counter([values], [0])
             
         return out
-
-class GRUResidual(nn.Module):
-    def __init__(self, dim,reduction_dim : int, residuals : Union[nn.Sequential,nn.ModuleList,List[nn.Module]]) -> None:
+class AttentionResidual2(nn.Module):
+    def __init__(
+        self, 
+        modules : Iterable[nn.Module],
+        features_dim,
+        features_dimension=1,
+    ):
         """
-        dim: data dimensions
-        reduction_dim: data reduction dimension. If you passing images in shape [B,C,W,H] set it to 1 (channels), if \
-            you processing timeseries of shape [B,seqlength,dim], set it to -1 (dim).\
-            It must be a 'representative'\
-            dimension that all other dimensions (except for batch) can be reduced to by mean.
-        residuals: list of modules to apply gru residual
+        for (B,C,H,W) images use features_dim=C,features_dimension=1
+        
+        for (B,L,C) where L is sequence length, use features_dim=C, features_dimension=2
+        
+        for (B,C) vectors use features_dim=C, features_dimension=1
         """
         super().__init__()
+        self.models = nn.ModuleList(modules)
+        self.QKV = nn.Sequential(
+            nn.RMSNorm(features_dim),
+            nn.Linear(features_dim,features_dim*3,bias=False),
+        )
         
-        # each residual intermediate value is reduced and key for it computed via
-        # this linear mapping
-        self.to_key = nn.Linear(dim,dim)
-        if isinstance(residuals,list):
-            residuals = nn.ModuleList(residuals)
-        self.residuals = residuals
-        self.reduction_dim=reduction_dim
-        self.transaction=nn.Linear(2*dim,2)
-    
-    def forward(self,x):
-        if x.ndim>2:
-            mean_dims = list([i for i in range(1,x.ndim) if i!=self.reduction_dim%x.ndim])
-        else:
-            mean_dims = None
+        self.features_dimension=features_dimension
+        self.head_dim=features_dim
         
-        x_state = x
+    def forward(self,x : torch.Tensor):
+        #xt is [B,...,head_dim]
+        xt=x.transpose(self.features_dimension,-1)
+        input_dimension_prod = x.numel()//self.head_dim
         
-        for layer in self.residuals:
+        keys = torch.zeros((len(self.models)+1,1,input_dimension_prod,self.head_dim),device=x.device,dtype=x.dtype)
+        values = torch.zeros((len(self.models)+1,1,input_dimension_prod,self.head_dim),device=x.device,dtype=x.dtype)
+        #key/values is of shape [|models|,1,(B,...),head_dim]
+        
+        # these ugly autograd things allows us to use efficient preallocated buffers for
+        # keys and values with inplace operations, without having autograd problems
+        torch._C._autograd._unsafe_set_version_counter([keys], [0])
+        torch._C._autograd._unsafe_set_version_counter([values], [0])
+        
+        for i,m in enumerate(self.models):
+            q,k,v = self.QKV(xt).view(-1,self.head_dim*3).chunk(3,-1)
+            #q,k,v of shape [(B,...),head_dim]
+            keys[i]=k.unsqueeze(0)
+            values[i]=v.unsqueeze(0)
+            torch._C._autograd._unsafe_set_version_counter([keys], [0])
+            torch._C._autograd._unsafe_set_version_counter([values], [0])
+            
+            if i>0:
+                x_next = self.get_x_next(xt, keys, values, i, q)
+            else:
+                x_next = x
+                
+            x = m(x_next)
+            xt=x.transpose(self.features_dimension,-1)
+        
+        q,k,v = self.QKV(xt).view(-1,self.head_dim*3).chunk(3,-1)
+        keys[i]=k.unsqueeze(0)
+        values[i]=v.unsqueeze(0)
+        torch._C._autograd._unsafe_set_version_counter([keys], [0])
+        torch._C._autograd._unsafe_set_version_counter([values], [0])
+        # return xt
+        return self.get_x_next(xt, keys, values, len(self.models), q)
 
-            y_state = layer(x_state)
+    def get_x_next(self, xt, keys, values, i, q):
+        prev_keys=keys[:i]
+        prev_values=values[:i]
+        #key/values is of shape [i,1,(B,...),,head_dim]
+            
+        prev_keys=prev_keys.transpose(0,2)
+        prev_values=prev_values.transpose(0,2)
+        #key/values is of shape [(B,...),1,i,head_dim]
+            
+        q = q.view(-1,1,1,self.head_dim)
+        #q is of shape [(B,...),1,1,head_dim]
+        x_next = nn.functional.scaled_dot_product_attention(q,prev_keys,prev_values)[:,0,0]
+        x_next=x_next.view(xt.shape).transpose(-1,self.features_dimension)
 
-            x_key = self.to_key(x_state.mean(mean_dims) if mean_dims is not None else x_state)
-            y_key = self.to_key(y_state.mean(mean_dims) if mean_dims is not None else y_state)
-            
-            transaction_pair = torch.concat([x_key,y_key],-1)
-            transaction_value = self.transaction(transaction_pair).sigmoid()
-            
-            while transaction_value.ndim!=x.ndim:
-                transaction_value=transaction_value.unsqueeze(-2)
-            keep_old,keep_new = transaction_value.chunk(2,-1)
-            
-            x_state = x_state*keep_old+y_state*keep_new
-            
-        return x_state
-
+        return x_next
