@@ -736,6 +736,7 @@ class FlowModel1d(nn.Module):
         
         self.out_prod = nn.Sequential(
             zero_module(nn.Linear(hidden_dim,in_dim)),
+            nn.RMSNorm(in_dim),
         )
         self.default_steps=16
         self.to(device)
@@ -773,7 +774,7 @@ class FlowModel1d(nn.Module):
         x = self.norm(x)
         x=self.residual_blocks(x)
         x=self.out_norm(x)
-        return self.collapse(x)+self.out_prod(x)
+        return self.collapse(x)*self.out_prod(x).sigmoid()
     def to(self,device):
         self.device=device
         return super().to(device)
