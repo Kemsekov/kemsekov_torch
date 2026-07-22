@@ -146,6 +146,48 @@ def momentum_heun(model, x0, steps, churn_scale=0.0, inverse=False, return_inter
     # print("total_evals",total_evals)
     return xt
 
+def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False, time_transform: nn.Module = nn.Identity(), no_grad_model=False):
+    device = x0.device
+    if inverse:
+        ts = torch.linspace(1, 0, steps+1, device=device)
+    else:
+        ts = torch.linspace(0, 1, steps+1, device=device)
+
+    ts = time_transform(ts[:, None])[:, 0]
+    dt = ts[1:] - ts[:-1]
+    xt = x0.to(device)
+    intermediates = []
+    
+    pred_fn = (lambda x, t: model(x, t)) if not no_grad_model else (lambda x, t: model(x, t).detach())
+    
+    for i in range(steps):
+        t_current = ts[i]
+        t_next = ts[i+1]
+        
+        if churn_scale > 0:
+            noise = xt.std() * torch.randn_like(xt) + xt.mean()
+            xt = churn_scale * noise + (1 - churn_scale) * xt
+        
+        t_expand_current = t_current.expand(x0.shape[0])
+        t_expand_next = t_next.expand(x0.shape[0])
+        
+        # 1-е вычисление: производная в текущей исправленной точке
+        pred_current = pred_fn(xt, t_expand_current)
+        
+        # Предиктор (Эйлер)
+        x_pred = xt + dt[i] * pred_current
+        
+        # 2-е вычисление: производная в прогнозной точке
+        pred_next = pred_fn(x_pred, t_expand_next)
+        
+        # Корректор (Хёйн)
+        xt = xt + dt[i] * 0.5 * (pred_current + pred_next)
+        
+        if return_intermediates:
+            intermediates.append(xt.clone())
+            
+    return (xt, intermediates) if return_intermediates else xt
+
 def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, left = 0.0, right = 1.0):
     device = next(model.parameters()).device
     x0 = x0.to(device)
