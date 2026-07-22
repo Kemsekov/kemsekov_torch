@@ -1937,7 +1937,8 @@ class FlowModel1d(nn.Module):
         condition:Optional[torch.Tensor] = None,
         eps=1e-3,
         random_directions=0,
-        return_prior=False):
+        return_prior=False,
+        steps=None):
         """
         Estimate log-probability under the learned distribution.
 
@@ -1991,7 +1992,7 @@ class FlowModel1d(nn.Module):
         rather than the unconditional density.
         """
         
-        to_prior = lambda xt:self.to_prior(xt,condition)
+        to_prior = lambda xt:self.to_prior(xt,condition,steps=steps)
         # return log_prob(self.to_target,self.to_prior(data),eps,random_directions=random_directions)
         return log_prob_inverse(to_prior,data.to(self.device),eps,random_directions=random_directions,return_prior=return_prior)
     def freeze(self):
