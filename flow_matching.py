@@ -90,7 +90,8 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
         ts = torch.linspace(1, 0, steps+1, device=device)  # steps intervals = steps+1 points
     else:
         ts = torch.linspace(0, 1, steps+1, device=device)
-        # ts = time_transform(ts[:,None])[:,0]
+
+    ts = time_transform(ts[:,None])[:,0]
     dt = ts[1:]-ts[:-1]
     x0 = x0.to(device)
     xt = x0
@@ -1993,8 +1994,8 @@ class FlowModel1d(nn.Module):
         """
         
         to_prior = lambda xt:self.to_prior(xt,condition,steps=steps)
-        # return log_prob(self.to_target,self.to_prior(data),eps,random_directions=random_directions)
         return log_prob_inverse(to_prior,data.to(self.device),eps,random_directions=random_directions,return_prior=return_prior)
+    
     def freeze(self):
         """
         Disables grad on model weights
