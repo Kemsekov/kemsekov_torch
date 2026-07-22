@@ -105,6 +105,7 @@ def momentum_heun(model, x0, steps, churn_scale=0.0, inverse=False, return_inter
             return model(xt,t)
     
     pred = no_grad_model_pred if no_grad_model else model
+    
     # total_evals=0
     for i in range(steps):
         t_current = ts[i]
@@ -120,36 +121,22 @@ def momentum_heun(model, x0, steps, churn_scale=0.0, inverse=False, return_inter
         if i == 0:
             # First step: full Heun evaluation (2 evaluations)
             # Current derivative
-            pred_current = pred(xt, t_expand_current)
-            
-            # Predictor step (Euler)
-            x_pred = xt + dt[i] * pred_current
-            
-            # Evaluate at predicted point
-            t_expand_next = t_next.expand(x0.shape[0])
-            pred_next = pred(x_pred, t_expand_next)
-            
-            # Corrector step (Heun's method)
-            xt = xt + dt[i] * 0.5 * (pred_current + pred_next)
-            
-            # Store the predictor derivative for next step
-            prev_pred = pred_next
-            # total_evals+=2
-        else:
-            # Subsequent steps: reuse previous derivative (1 evaluation per step)
-            # Predictor using previous derivative (Euler step)
-            x_pred = xt + dt[i] * prev_pred
-            
-            # Evaluate at predicted point (ONLY ONE EVAL PER STEP)
-            t_expand_next = t_next.expand(x0.shape[0])
-            pred_next = pred(x_pred, t_expand_next)
-            
-            # Corrector step using stored previous derivative
-            xt = xt + dt[i] * 0.5 * (prev_pred + pred_next)
-            
-            # Update stored derivative for next step
-            prev_pred = pred_next
-            # total_evals+=1
+            prev_pred = pred(xt, t_expand_current)
+
+        # Subsequent steps: reuse previous derivative (1 evaluation per step)
+        # Predictor using previous derivative (Euler step)
+        x_pred = xt + dt[i] * prev_pred
+        
+        # Evaluate at predicted point (ONLY ONE EVAL PER STEP)
+        t_expand_next = t_next.expand(x0.shape[0])
+        pred_next = pred(x_pred, t_expand_next)
+        
+        # Corrector step using stored previous derivative
+        xt = xt + dt[i] * 0.5 * (prev_pred + pred_next)
+        
+        # Update stored derivative for next step
+        prev_pred = pred_next
+        # total_evals+=1
         
         if return_intermediates:
             intermediates.append(xt.clone())
