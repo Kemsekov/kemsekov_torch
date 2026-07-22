@@ -84,7 +84,7 @@ def euler(model, x0, steps, churn_scale=0.0, inverse=False,return_intermediates 
         return xt, intermediates
     return xt
 
-def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False, time_transform : nn.Module = nn.Identity(),no_grad_model = False):
+def momentum_heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=False, time_transform : nn.Module = nn.Identity(),no_grad_model = False):
     device = x0.device
     if inverse:
         ts = torch.linspace(1, 0, steps+1, device=device)  # steps intervals = steps+1 points
@@ -105,7 +105,7 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
             return model(xt,t)
     
     pred = no_grad_model_pred if no_grad_model else model
-    
+    # total_evals=0
     for i in range(steps):
         t_current = ts[i]
         t_next = ts[i+1]
@@ -134,6 +134,7 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
             
             # Store the predictor derivative for next step
             prev_pred = pred_next
+            # total_evals+=2
         else:
             # Subsequent steps: reuse previous derivative (1 evaluation per step)
             # Predictor using previous derivative (Euler step)
@@ -148,12 +149,14 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
             
             # Update stored derivative for next step
             prev_pred = pred_next
+            # total_evals+=1
         
         if return_intermediates:
             intermediates.append(xt.clone())
     
     if return_intermediates:
         return xt, intermediates
+    # print("total_evals",total_evals)
     return xt
 
 def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, left = 0.0, right = 1.0):
@@ -417,7 +420,7 @@ class FlowMatching(nn.Module):
             case 1: return one_step(model,x0,self.one_weights_inv if inverse else self.one_weights)
             case 2: return rk2(model,x0,self.rk2_weights_inv if inverse else self.rk2_weights)
             case 3: return rk3(model,x0,churn_scale,inverse,return_intermediates)
-            case _: return heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_scaler,no_grad_model=no_grad_model)
+            case _: return momentum_heun(model,x0,steps-1,churn_scale,inverse,return_intermediates,time_transform=self.time_scaler,no_grad_model=no_grad_model)
 
 class LossNormalizer1d(nn.Module):
     """
