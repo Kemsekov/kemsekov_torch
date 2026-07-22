@@ -28,11 +28,13 @@ class AttentionResidual1(nn.Module):
             nn.Linear(features_dim,features_dim,bias=False),
         )
         # self.key_norm = nn.RMSNorm(features_dim)
-        self.out = Residual([
+        self.out = nn.Sequential(
             nn.RMSNorm(features_dim),
-            nn.SiLU(),
-            nn.Linear(features_dim,features_dim)
-        ])
+            Residual([
+                nn.SiLU(),
+                nn.Linear(features_dim,features_dim)
+            ])
+        )
         
         self.features_dimension=features_dimension
         self.head_dim=features_dim
@@ -121,11 +123,14 @@ class AttentionResidual2(nn.Module):
             nn.Linear(features_dim,features_dim,bias=False),
         )
         # self.key_norm = nn.RMSNorm(features_dim)
-        self.out = Residual([
+        
+        self.out = nn.Sequential(
             nn.RMSNorm(features_dim),
-            nn.SiLU(),
-            nn.Linear(features_dim,features_dim)
-        ])
+            Residual([
+                nn.SiLU(),
+                nn.Linear(features_dim,features_dim)
+            ])
+        )
         
         self.features_dimension=features_dimension
         self.head_dim=features_dim
