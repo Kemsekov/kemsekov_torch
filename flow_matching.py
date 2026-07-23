@@ -1179,7 +1179,7 @@ class FlowModel1d(nn.Module):
             self,
             data : torch.Tensor,
             condition : Optional[torch.Tensor] = None,
-            epochs = 1024,
+            epochs = 2048,
             steps : Literal[1,2] = 1,
             batch_size=1024,
             debug = False,
