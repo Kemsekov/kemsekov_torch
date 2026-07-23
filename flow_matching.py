@@ -1183,7 +1183,7 @@ class FlowModel1d(nn.Module):
             steps : Literal[1,2] = 1,
             batch_size=1024,
             debug = False,
-            lr = 0.005,
+            lr = 0.01,
             weight_decay=0.01,
             distribution_matching = 0,
             grad_clip_max_norm : float|None=1,
