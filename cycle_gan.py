@@ -3,7 +3,7 @@ File for cycle-gan implementations
 """
 from dataclasses import dataclass
 from typing import Callable
-from kemsekov_torch.common_modules import GradientReversal
+from kemsekov_torch.common_modules import GradientReversal, get_optim_groups
 import torch
 import torch.nn as nn
 from kemsekov_torch.ema_pytorch.ema_pytorch import EMA
@@ -293,47 +293,6 @@ class UnpairedDataset(Dataset):
         
         return i1,i2
 
-def get_optim_groups(model, weight_decay=1e-2):
-    decay_params = set()
-    no_decay_params = set()
-    norm_layers=(
-        nn.LayerNorm, 
-        nn.RMSNorm, 
-        nn.BatchNorm1d, 
-        nn.GroupNorm,
-        nn.BatchNorm1d,
-        nn.BatchNorm2d,
-        nn.BatchNorm3d,
-        nn.GroupNorm,
-        nn.InstanceNorm1d,
-        nn.InstanceNorm2d,
-        nn.InstanceNorm3d,
-    )
-    def process_model(m):
-        for mn, module in m.named_modules():
-            # recurse=False ensures we only process parameters directly belonging to this module
-            for pn, p in module.named_parameters(recurse=False):
-                if not p.requires_grad:
-                    continue
-                
-                # Rule 1: Biases should NEVER be decayed
-                if pn.endswith('bias'):
-                    no_decay_params.add(p)
-                # Rule 2: Normalization layer weights should NEVER be decayed
-                elif isinstance(module, norm_layers):
-                    no_decay_params.add(p)
-                # Rule 3: Protect your custom time_scaler from being shrunk to 0
-                elif 'scaler' in pn.lower():
-                    no_decay_params.add(p)
-                # Rule 4: Everything else (Linear weights, etc.) gets weight decay
-                else:
-                    decay_params.add(p)
-
-    process_model(model)
-    return [
-        {"params": list(decay_params), "weight_decay": weight_decay},
-        {"params": list(no_decay_params), "weight_decay": 0.0}
-    ]
 
 
 def train_cycle_gan(

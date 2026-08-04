@@ -69,13 +69,14 @@ def compute_loss_and_metric(model, X, y):
 
 class MLP(nn.Module):
     """Simple MLP model for regression."""
-    def __init__(self, in_dim: int, out_dim: int, hid: int = 256) -> None:
+    def __init__(self, in_dim: int, out_dim: int, hid: int = 256,dropout=0.5) -> None:
         super().__init__()
         self.in_dim = in_dim
         self.out_dim = out_dim
         self.mlp = nn.Sequential(
             nn.Linear(in_dim, hid),
             nn.SiLU(),
+            nn.Dropout(dropout),
             nn.Linear(hid, hid),
             nn.SiLU(),
         )
@@ -108,6 +109,7 @@ class OptimalFeatureImportance:
     def __init__(
         self,
         hid: int = 128,
+        dropout=0.5,
         epochs: int = 512,
         lr: float = 1e-3,
         batch_size: int = 32,
@@ -168,6 +170,7 @@ class OptimalFeatureImportance:
         self.best_fitted_model = None
         self.feature_importance_history = []
         self.all_columns = None
+        self.dropout=dropout
     
     def fit(
         self, 
@@ -264,7 +267,7 @@ class OptimalFeatureImportance:
             
             trained_models = []
             for i in range(self.n_model_init):
-                mlp = MLP(X_train_prep.shape[-1], y_full.shape[-1], hid=self.hid)
+                mlp = MLP(X_train_prep.shape[-1], y_full.shape[-1], hid=self.hid,dropout=self.dropout)
                 model, metrics = train_simple(
                     mlp,
                     compute_loss_and_metric,
