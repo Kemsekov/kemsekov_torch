@@ -464,7 +464,7 @@ class Structure:
                 
             # 2. Get the continuous conditional distribution 
             # `dependency` contains the original indices, which `conditional_dist` expects
-            interp = self.conditional_dist(cond_values, dependency, softmax=False, log_softmax=True)
+            interp = self.conditional_dist(cond_values, dependency, log_softmax=True)
             
             # 3. Evaluate at the target variable's actual continuous values
             target_col = var_to_col[target_var]
