@@ -205,7 +205,7 @@ class Structure:
             else:
                 conditional_mask = torch.rand_like(mask)<0.5
                 mask[conditional_mask]=-1
-                mask[running,modelled_variable]=1
+                mask[running,torch.randint(0,self.dim,(batch_size,))]=1
             opt.zero_grad(True)
             modelled_variable=(mask == 1).long().argmax(dim=-1)
 
@@ -291,7 +291,7 @@ class Structure:
             
         return samples
 
-    def conditional_dist(self,condition : torch.Tensor,variables: List[int],softmax=True):
+    def conditional_dist(self,condition : torch.Tensor,variables: List[int],log_softmax=True):
         """
         Return conditional distribution over provided condition variables.
         You can condition by any variables(it may even not be learned).
@@ -317,5 +317,163 @@ class Structure:
         grid = self.quantize.dequantize(torch.arange(self.bins)[None,:],[infer_ind])
         points = self.model.forward(inp,mask)
         grid = grid.expand_as(points)
-        if softmax: points=points.softmax(-1)
+        if log_softmax: points=points.log_softmax(-1)
         return Interpolation(grid,points)
+
+    def full_joint_log(self, data: torch.Tensor):
+        """
+        Computes log of the full joint probability of the provided data points
+        using the chain rule defined by the bayesian_network.
+        
+        P(X) = prod P(X_i | Parents(X_i))
+        
+        data: tensor of shape [B, dim]
+        """
+        if not isinstance(data, torch.Tensor):
+            data = torch.tensor(data, dtype=torch.float32)
+        if data.ndim == 1:
+            data = data.unsqueeze(0)
+            
+        device = data.device
+        log_joint = torch.zeros(data.shape[0], device=device)
+        
+        bayesian_network = self.bayesian_network
+        if bayesian_network is None:
+            all_vars = list(range(self.dim))
+            bayesian_network = [all_vars[-p-1:] for p in range(self.dim)]
+            
+        # --- Robust Topological Sort (Ensures valid chain rule order) ---
+        sorted_bn = []
+        sampled_vars = set()
+        remaining_bn = list(bayesian_network)
+        
+        while remaining_bn:
+            for dependency in list(remaining_bn):
+                target_var = dependency[0]
+                cond_vars = set(dependency[1:])
+                if cond_vars.issubset(sampled_vars):
+                    sorted_bn.append(dependency)
+                    sampled_vars.add(target_var)
+                    remaining_bn.remove(dependency)
+                    
+        # --- Accumulate Conditional Log-Probabilities ---
+        for dependency in sorted_bn:
+            target_var = dependency[0]
+            cond_vars = dependency[1:]
+            
+            # 1. Extract condition values from the data
+            if len(cond_vars) > 0:
+                cond_values = data[:, cond_vars]
+            else:
+                # Handle unconditional probabilities (e.g., P(Z))
+                cond_values = torch.empty((data.shape[0], 0), device=device)
+                
+            # 2. Get the continuous conditional distribution 
+            # We use log_softmax=True to match the geometric interpolation of your MLE loss!
+            interp = self.conditional_dist(cond_values, dependency, log_softmax=True)
+            
+            # 3. Evaluate at the target variable's actual continuous values
+            target_values = data[:, target_var]
+            
+            # interp expects [K, B]. target_values is [B]. Unsqueeze to [1, B]
+            log_p_y = interp(target_values.unsqueeze(0)).squeeze(0) # Shape: [B]
+            
+            # 4. Accumulate log-probabilities
+            log_joint += log_p_y
+            
+        return log_joint
+    def partial_joint_log(self, data: torch.Tensor, variables: List[int]):
+        """
+        Computes the joint probability over a specific subset of variables.
+        
+        data: tensor of shape [Batch, d] where d is the number of variables in the subset
+        variables: List[int] containing the original indices of the variables in the subset
+        return_log: if True, returns log-probabilities (prevents underflow)
+        """
+        if not isinstance(data, torch.Tensor):
+            data = torch.tensor(data, dtype=torch.float32)
+        if data.ndim == 1:
+            data = data.unsqueeze(0)
+            
+        if data.shape[1] != len(variables):
+            raise ValueError(f"data shape {data.shape} does not match number of variables {len(variables)}")
+            
+        device = data.device
+        log_joint = torch.zeros(data.shape[0], device=device)
+        
+        is_bn_specified = self.bayesian_network is not None and len(self.bayesian_network) > 0
+        
+        if is_bn_specified:
+            # 1. Build mapping from variable to its parents in the original BN
+            parents_map = {}
+            for dep in self.bayesian_network:
+                parents_map[dep[0]] = set(dep[1:])
+                
+            sub_bn = []
+            target_vars_set = set(variables)
+            
+            # 2. Check if the subset is computable from the provided BN (The Closure Check)
+            for v in variables:
+                if v not in parents_map:
+                    raise ValueError(f"Variable {v} is not defined in the provided bayesian_network.")
+                
+                parents = parents_map[v]
+                if not parents.issubset(target_vars_set):
+                    missing = parents - target_vars_set
+                    raise ValueError(
+                        f"Cannot compute partial joint for subset {variables}. "
+                        f"Variable {v} depends on parents {list(parents)} in the bayesian_network, "
+                        f"but the following parents are missing from the subset: {list(missing)}. "
+                        f"(Marginalizing them out requires numerical integration, which is not supported)."
+                    )
+                sub_bn.append([v] + list(parents))
+                
+            # 3. Topologically sort the sub-BN to ensure valid chain rule order
+            sorted_bn = []
+            sampled_vars = set()
+            remaining_bn = list(sub_bn)
+            
+            while remaining_bn:
+                for dependency in list(remaining_bn):
+                    target_var = dependency[0]
+                    cond_vars = set(dependency[1:])
+                    if cond_vars.issubset(sampled_vars):
+                        sorted_bn.append(dependency)
+                        sampled_vars.add(target_var)
+                        remaining_bn.remove(dependency)
+                        
+        else:
+            # If no BN is specified, build an arbitrary autoregressive chain for the subset
+            # e.g., variables = [0, 1, 2] -> [[2, 1, 0], [1, 0], [0]]
+            sorted_bn = [variables[-p-1:] for p in range(len(variables))]
+            
+        # --- Accumulate Conditional Log-Probabilities ---
+        # Map original variable indices to their column index in the `data` tensor
+        var_to_col = {v: i for i, v in enumerate(variables)}
+        
+        for dependency in sorted_bn:
+            target_var = dependency[0]
+            cond_vars = dependency[1:]
+            
+            # 1. Extract condition values from the subset data
+            if len(cond_vars) > 0:
+                cond_cols = [var_to_col[c] for c in cond_vars]
+                cond_values = data[:, cond_cols]
+            else:
+                cond_values = torch.empty((data.shape[0], 0), device=device)
+                
+            # 2. Get the continuous conditional distribution 
+            # `dependency` contains the original indices, which `conditional_dist` expects
+            interp = self.conditional_dist(cond_values, dependency, softmax=False, log_softmax=True)
+            
+            # 3. Evaluate at the target variable's actual continuous values
+            target_col = var_to_col[target_var]
+            target_values = data[:, target_col]
+            
+            # interp expects [K, B]. target_values is [B]. Unsqueeze to [1, B]
+            log_p_y = interp(target_values.unsqueeze(0)).squeeze(0)
+            
+            # 4. Accumulate log-probabilities
+            log_joint += log_p_y
+            
+        return log_joint
