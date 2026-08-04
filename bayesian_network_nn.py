@@ -177,7 +177,7 @@ class Structure:
             grids.append(grid)
         self.grids=torch.concat(grids)
         
-    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'cross_entropy'):
+    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'mle'):
         opt = torch.optim.AdamW(get_optim_groups(self.model),lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         dataset=self.dataset
