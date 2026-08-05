@@ -20,12 +20,16 @@ class Quantize:
         self.scale[self.scale==0]=1 
         
         self.bins=bins
-    def quantize(self,x: torch.Tensor,dimensions : List[int]):
-        if not isinstance(x,torch.Tensor):x=torch.tensor(x)
-        # x is some subset of data features, x=data[:,dimensions]
+    def normalize(self,x,dimensions):
         centers = self.center[dimensions].unsqueeze(0)
         scales = self.scale[dimensions].unsqueeze(0)
         normalized = ((x-centers)/scales+1)/2
+        return normalized
+    
+    def quantize(self,x: torch.Tensor,dimensions : List[int]):
+        if not isinstance(x,torch.Tensor):x=torch.tensor(x)
+        # x is some subset of data features, x=data[:,dimensions]
+        normalized = self.normalize(x,dimensions)
         quantized = torch.floor(normalized * self.bins).clamp(0, self.bins - 1).long()
         return quantized
     
@@ -40,30 +44,65 @@ class Quantize:
 class Prod(nn.Module):
     def __init__(self, module):
         super().__init__()
+        if isinstance(module,list) or isinstance(module,tuple):module = nn.Sequential(*module)
         self.m=module
     def forward(self,x):
         return x*self.m(x)
+class Residual(nn.Module):
+    def __init__(self, module):
+        super().__init__()
+        if isinstance(module,list) or isinstance(module,tuple):module = nn.Sequential(*module)
+        self.m=module
+    def forward(self,x):
+        return x+self.m(x)
 
 class Generative(nn.Module):
-    def __init__(self, dim : int,hid_dim=32,bins=16):
+    def __init__(self, dim : int,hid_dim=32,bins=16,dist_hid=16,hid_residuals=2,dist_residuals=2):
         super().__init__()
         #accept input dim + mask of same length
         self.expand = nn.Linear(dim*2,hid_dim)
         self.mlp = nn.Sequential(*[
-            nn.RMSNorm(hid_dim),
-            Prod(nn.Sequential(
+            *[Residual((
+                nn.RMSNorm(hid_dim),
+                Prod((
+                    nn.Linear(hid_dim,hid_dim),
+                    nn.Tanh()
+                )),
+                nn.SiLU(),
                 nn.Linear(hid_dim,hid_dim),
-                nn.Tanh()
-            )),
-            nn.SiLU(),
-            nn.Linear(hid_dim,hid_dim),
+            )) for i in range(hid_residuals)],
             nn.RMSNorm(hid_dim),
             nn.SiLU(),
-            nn.Linear(hid_dim,hid_dim),
+            nn.Linear(hid_dim,dist_hid),
         ])
+        self.residual_linear = nn.Linear(hid_dim,dist_hid)
         # output log-probability table.
         self.out = nn.Linear(hid_dim,bins)
-    def forward(self,x,mask):
+        
+        self.time_emb = nn.Sequential(
+            nn.Linear(1,dist_hid),
+            nn.SiLU(),
+            nn.Linear(dist_hid,dist_hid),
+        )
+        self.out_prob = nn.Sequential(
+          *[Residual((
+                nn.RMSNorm(dist_hid),
+                Prod((
+                    nn.Linear(dist_hid,dist_hid),
+                    nn.Tanh()
+                )),
+                nn.SiLU(),
+                nn.Linear(dist_hid,dist_hid),
+            )) for i in range(dist_residuals)],
+            nn.RMSNorm(dist_hid),
+            nn.SiLU(),
+        )
+        self.final = nn.Linear(dist_hid,1)
+        self.bins=bins
+        
+        self.scale=(-3,3)
+        
+    def forward(self,x,mask,return_hid=False):
         """
         Assume we inference P(X0|X1,X2) for x=[X0,X1,X2,X3], then
         
@@ -77,6 +116,19 @@ class Generative(nn.Module):
         mask=[1,-1,-1,0]
         
         """
+        x = self.encode(x,mask)
+        t = torch.linspace(self.scale[0],self.scale[1],self.bins,device=x.device,dtype=x.dtype).unsqueeze(-1) #[BINS,1]
+        out = self.log_prob(x,t)
+        return (out,x) if return_hid else out
+    
+    def encode(self,x,mask):
+        """
+        x: [Batch,dim]
+        
+        mask: [Batch,dim]
+        
+        return: [batch,dist_dim]
+        """
         c = torch.concat([x,mask],-1)
         dim = x.shape[-1]
         c_slice = c[:,:dim]
@@ -86,28 +138,73 @@ class Generative(nn.Module):
         c_slice[mask==0]=0
         
         x = self.expand(c)
-        x = self.mlp(x)+x
+        x = self.mlp(x)+self.residual_linear(x)
+        return x
+    
+    def log_prob(self,x,t):
+        """
+        x: [batch,dim]
         
-        # result is log-probability table for X0 values
-        # ln P(X0|X1,X2)
-        probs = self.out(x)
-        return probs
-
+        t: [bins,1] or [batch,bins,1]
+        
+        returns [batch,bins]
+        """
+        t = self.time_emb(t) #[BINS,dist_hid]
+        if t.ndim==2:t=t[None,:]
+        
+        xt = x[:,None]+t #[BATCH,BINS,dist_hid]
+        probs = self.out_prob(xt) #[BATCH,bins,dist_hid]
+        
+        return self.final(probs)[:,:,0]
+    
 class Interpolation:
     """
     Accepts a unique grid of shape [B, bins] per function,
     and points of shape [B, bins] defining B distinct functions.
     """
-    def __init__(self, grid, points):
+    def __init__(self, grid, points,hid, model : Generative,centers,scales):
         """
         grid:   [B, bins] (sorted float tensor per batch function)
         points: [B, bins] (values evaluated at the grid points)
+        hid:    [B, hid_dim] (curve parametrization hidden states)
+        centers: [B]
+        scales: [B]
         """
         if grid.shape != points.shape:
             raise ValueError(f"grid shape {grid.shape} must match points shape {points.shape}")
         self.grid = grid
         self.points = points
+        self.points_log_softmax = points.log_softmax(-1)
+        self.hid=hid
+        self.model=model
+        self.centers=centers
+        self.scales=scales
 
+    def exact(self,y):
+        """
+        Interpolates points at continuous coordinates y.
+
+        y:      [K, B] (K inference query sets, each evaluating all B functions)
+        Returns: [K, B] tensor of interpolated values
+        """
+        if y.ndim==1:
+            y=y.unsqueeze(-1)
+        
+        #y is [K,B]
+        yt = y.transpose(0,1)[:,:,None] #yt is [B,K,1]
+        
+        y_normalized = ((yt-self.centers[:,None,None])/self.scales[:,None,None]+1)/2
+        # now y_normalized in [0;1] scale
+        width = self.model.scale[1]-self.model.scale[0]
+        y_normalized*=width
+        y_normalized+=self.model.scale[0]
+        
+        out = self.model.log_prob(self.hid,y_normalized) #[B,K]
+        # now we must concat
+        out = torch.concat([self.points,out],-1) #[B,bins+K]
+        out = out.log_softmax(-1) #use log softmax to mimic probability dist
+        return out[:,-len(y):]
+    
     def __call__(self, y):
         """
         Interpolates points at continuous coordinates y.
@@ -149,8 +246,8 @@ class Interpolation:
         grid_L = self.grid[batch_b, idx_L]     # Shape: [K, B]
         grid_R = self.grid[batch_b, idx_R]     # Shape: [K, B]
         
-        points_L = self.points[batch_b, idx_L] # Shape: [K, B]
-        points_R = self.points[batch_b, idx_R] # Shape: [K, B]
+        points_L = self.points_log_softmax[batch_b, idx_L] # Shape: [K, B]
+        points_R = self.points_log_softmax[batch_b, idx_R] # Shape: [K, B]
         
         # 5. Calculate weights
         denom = grid_R - grid_L
@@ -163,21 +260,28 @@ class Interpolation:
         return weight_L * points_L + weight_R * points_R
 
 class Structure:
-    def __init__(self,dataset,bayesian_network,bins,hid_dim):
-        self.quantize = Quantize(dataset,bins=bins)
+    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64,dist_hid=64):
         self.bayesian_network=bayesian_network
         self.dim = dataset.shape[-1]
-        self.model = Generative(self.dim,hid_dim,bins=bins)
-        self.dataset=self.quantize.dequantize(self.quantize.quantize(dataset,list(range(self.dim))),list(range(self.dim)))
-        self.bins = bins
+        self.model = Generative(self.dim,hid_dim,bins=bins,dist_hid=dist_hid)
+        self.raw_dataset=dataset
+        self.set_bins(bins)
+    
+    def set_bins(self,bins):
+        self.bins=bins
+        self.model.bins=bins
+        self.quantize = Quantize(self.raw_dataset,bins=bins)
+
+        self.dataset=self.raw_dataset
+        self.dataset=self.quantize.dequantize(self.quantize.quantize(self.raw_dataset,list(range(self.dim))),list(range(self.dim)))
         
         grids = []
         for infer_ind in range(self.dim):
             grid = self.quantize.dequantize(torch.arange(self.bins)[None,:],[infer_ind])
             grids.append(grid)
         self.grids=torch.concat(grids)
-        
-    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'mle'):
+    
+    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'cross_entropy',random_conditional_prob=0.4):
         opt = torch.optim.AdamW(get_optim_groups(self.model),lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         dataset=self.dataset
@@ -203,7 +307,7 @@ class Structure:
                     for cond_var in imp[1:]:
                         mask_slice[:,cond_var]=-1
             else:
-                conditional_mask = torch.rand_like(mask)<0.5
+                conditional_mask = torch.rand_like(mask)<random_conditional_prob
                 mask[conditional_mask]=-1
                 mask[running,torch.randint(0,self.dim,(batch_size,))]=1
             opt.zero_grad(True)
@@ -228,10 +332,17 @@ class Structure:
     
     def forward(self,batch,mask,log_softmax=False):
         modelled_variable=(mask == 1).long().argmax(dim=-1)
-        pred = self.model(batch,mask)
+        pred,hid = self.model(batch,mask,return_hid=True)
         grids = self.grids[modelled_variable]
-        if log_softmax: pred = pred.log_softmax(-1)
-        return Interpolation(grids,pred)
+        # if log_softmax: pred = pred.log_softmax(-1)
+        return Interpolation(
+            grids,
+            pred,
+            hid,
+            self.model,
+            self.quantize.center[modelled_variable],
+            self.quantize.scale[modelled_variable]
+        )
     
     @torch.no_grad()
     def generate(self, batch_size=128):
@@ -291,7 +402,7 @@ class Structure:
             
         return samples
 
-    def conditional_dist(self,condition : torch.Tensor,variables: List[int],log_softmax=True):
+    def conditional_dist(self,condition : torch.Tensor,variables: List[int]):
         """
         Return conditional distribution over provided condition variables.
         You can condition by any variables(it may even not be learned).
@@ -314,12 +425,11 @@ class Structure:
         mask=torch.zeros_like(inp)
         mask[:,infer_ind]=1
         mask[:,variables[1:]]=-1
-        grid = self.quantize.dequantize(torch.arange(self.bins)[None,:],[infer_ind])
-        points = self.model.forward(inp,mask)
+        grid = self.grids[infer_ind]
+        points,hid = self.model.forward(inp,mask,return_hid=True)
+        
         grid = grid.expand_as(points)
-        if log_softmax: points=points.log_softmax(-1)
-        return Interpolation(grid,points)
-
+        return Interpolation(grid,points,hid,self.model,self.quantize.center[[infer_ind]],self.quantize.scale[[infer_ind]])
     def full_joint_log(self, data: torch.Tensor):
         """
         Computes log of the full joint probability of the provided data points
@@ -370,13 +480,13 @@ class Structure:
                 
             # 2. Get the continuous conditional distribution 
             # We use log_softmax=True to match the geometric interpolation of your MLE loss!
-            interp = self.conditional_dist(cond_values, dependency, log_softmax=True)
+            interp = self.conditional_dist(cond_values, dependency)
             
             # 3. Evaluate at the target variable's actual continuous values
             target_values = data[:, target_var]
             
             # interp expects [K, B]. target_values is [B]. Unsqueeze to [1, B]
-            log_p_y = interp(target_values.unsqueeze(0)).squeeze(0) # Shape: [B]
+            log_p_y = interp.exact(target_values.unsqueeze(0)).squeeze(0) # Shape: [B]
             
             # 4. Accumulate log-probabilities
             log_joint += log_p_y
@@ -464,15 +574,14 @@ class Structure:
                 
             # 2. Get the continuous conditional distribution 
             # `dependency` contains the original indices, which `conditional_dist` expects
-            interp = self.conditional_dist(cond_values, dependency, log_softmax=True)
+            interp = self.conditional_dist(cond_values, dependency)
             
             # 3. Evaluate at the target variable's actual continuous values
             target_col = var_to_col[target_var]
             target_values = data[:, target_col]
             
             # interp expects [K, B]. target_values is [B]. Unsqueeze to [1, B]
-            log_p_y = interp(target_values.unsqueeze(0)).squeeze(0)
-            
+            log_p_y = interp.exact(target_values.unsqueeze(0)).squeeze(0)[:,0]
             # 4. Accumulate log-probabilities
             log_joint += log_p_y
             
