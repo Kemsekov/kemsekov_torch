@@ -286,6 +286,7 @@ class Structure:
         self.bayesian_network=bayesian_network
         self.dim = dataset.shape[-1]
         self.model = Generative(self.dim,hid_dim,bins=bins)
+        # self.dataset=dataset
         self.dataset=self.quantize.dequantize(self.quantize.quantize(dataset,list(range(self.dim))),list(range(self.dim)))
         self.bins = bins
         
@@ -295,7 +296,7 @@ class Structure:
             grids.append(grid)
         self.grids=torch.concat(grids)
         
-    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'mle',random_conditional_prob=0.4,verbose=True):
+    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'cross_entropy',random_conditional_prob=0.4,verbose=True):
         opt = torch.optim.AdamW(get_optim_groups(self.model),lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         dataset=self.dataset
