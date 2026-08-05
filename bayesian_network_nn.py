@@ -36,30 +36,38 @@ class Quantize:
         symmetric = ((q+0.5)/self.bins)*2-1
         denorm = symmetric*scales+centers
         return denorm
-
 class Prod(nn.Module):
     def __init__(self, module):
         super().__init__()
+        if isinstance(module,list) or isinstance(module,tuple):module = nn.Sequential(*module)
         self.m=module
     def forward(self,x):
         return x*self.m(x)
-
+class Residual(nn.Module):
+    def __init__(self, module):
+        super().__init__()
+        if isinstance(module,list) or isinstance(module,tuple):module = nn.Sequential(*module)
+        self.m=module
+    def forward(self,x):
+        return x+self.m(x)
+    
 class Generative(nn.Module):
-    def __init__(self, dim : int,hid_dim=32,bins=16):
+    def __init__(self, dim : int,hid_dim=32,bins=16,hid_residuals=2):
         super().__init__()
         #accept input dim + mask of same length
         self.expand = nn.Linear(dim*2,hid_dim)
         self.mlp = nn.Sequential(*[
-            nn.RMSNorm(hid_dim),
-            Prod(nn.Sequential(
+            *[Residual((
+                nn.RMSNorm(hid_dim),
+                Prod((
+                    nn.Linear(hid_dim,hid_dim),
+                    nn.Tanh()
+                )),
+                nn.SiLU(),
                 nn.Linear(hid_dim,hid_dim),
-                nn.Tanh()
-            )),
-            nn.SiLU(),
-            nn.Linear(hid_dim,hid_dim),
+            )) for i in range(hid_residuals)],
             nn.RMSNorm(hid_dim),
             nn.SiLU(),
-            nn.Linear(hid_dim,hid_dim),
         ])
         # output log-probability table.
         self.out = nn.Linear(hid_dim,bins)
@@ -281,11 +289,11 @@ class CubicInterpolation:
 Interpolation=LinearInterpolation
 
 class Structure:
-    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64):
+    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64,hid_residuals=2):
         self.quantize = Quantize(dataset,bins=bins)
         self.bayesian_network=bayesian_network
         self.dim = dataset.shape[-1]
-        self.model = Generative(self.dim,hid_dim,bins=bins)
+        self.model = Generative(self.dim,hid_dim,bins=bins,hid_residuals=hid_residuals)
         # self.dataset=dataset
         self.dataset=self.quantize.dequantize(self.quantize.quantize(dataset,list(range(self.dim))),list(range(self.dim)))
         self.bins = bins
