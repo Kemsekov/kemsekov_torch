@@ -260,10 +260,10 @@ class Interpolation:
         return weight_L * points_L + weight_R * points_R
 
 class Structure:
-    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64,dist_hid=64):
+    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64,dist_hid=64,hid_residuals=2,dist_residuals=2):
         self.bayesian_network=bayesian_network
         self.dim = dataset.shape[-1]
-        self.model = Generative(self.dim,hid_dim,bins=bins,dist_hid=dist_hid)
+        self.model = Generative(self.dim,hid_dim,bins=bins,dist_hid=dist_hid,hid_residuals=hid_residuals,dist_residuals=dist_residuals)
         self.raw_dataset=dataset
         self.set_bins(bins)
     
