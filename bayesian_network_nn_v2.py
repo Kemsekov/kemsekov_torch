@@ -281,7 +281,7 @@ class Structure:
             grids.append(grid)
         self.grids=torch.concat(grids)
     
-    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'cross_entropy',random_conditional_prob=0.4):
+    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'cross_entropy',random_conditional_prob=0.4,verbose=False):
         opt = torch.optim.AdamW(get_optim_groups(self.model),lr=lr,fused=True)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         dataset=self.dataset
@@ -328,7 +328,7 @@ class Structure:
             loss.backward()
             opt.step()
             sch.step()
-            print(f"Loss:{loss:0.3f}")
+            if verbose: print(f"Loss:{loss:0.3f}")
     
     def forward(self,batch,mask,log_softmax=False):
         modelled_variable=(mask == 1).long().argmax(dim=-1)
