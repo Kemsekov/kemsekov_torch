@@ -163,7 +163,7 @@ class Interpolation:
         return weight_L * points_L + weight_R * points_R
 
 class Structure:
-    def __init__(self,dataset,bayesian_network,bins,hid_dim):
+    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64):
         self.quantize = Quantize(dataset,bins=bins)
         self.bayesian_network=bayesian_network
         self.dim = dataset.shape[-1]
