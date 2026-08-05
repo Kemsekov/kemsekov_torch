@@ -486,7 +486,7 @@ class Structure:
             target_values = data[:, target_var]
             
             # interp expects [K, B]. target_values is [B]. Unsqueeze to [1, B]
-            log_p_y = interp.exact(target_values.unsqueeze(0)).squeeze(0) # Shape: [B]
+            log_p_y = interp.exact(target_values.unsqueeze(0)).squeeze(0)[:,0] # Shape: [B]
             
             # 4. Accumulate log-probabilities
             log_joint += log_p_y
