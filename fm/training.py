@@ -302,10 +302,10 @@ class FlowModel1dTrainingMixin:
                 
                 if last_pred is not None:
                     r2s = r2_score(last_pred, last_target)
-                    mean_r2 = r2s.item()
+                    mean_r2 = r2s.detach()
                 else:
-                    mean_r2 = (r2s/len(slices)).item()
-                mean_loss = (losses/len(slices)).item()
+                    mean_r2 = (r2s/len(slices)).detach()
+                mean_loss = (losses/len(slices)).detach()
                 if mean_r2 > best_r2:
                     best_loss = mean_loss
                     model_state_dict = model.state_dict()
