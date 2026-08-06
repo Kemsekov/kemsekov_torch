@@ -112,14 +112,6 @@ class FlowModel1dTrainingMixin:
         -------
         None
 
-        Notes
-        -----
-        Training history is stored in:
-
-        ``self.fit_history["loss"]``
-
-        ``self.fit_history["r2"]``
-
         The best model checkpoint is automatically restored at the end of
         training according to validation R² measured on transport direction
         prediction.
@@ -170,10 +162,7 @@ class FlowModel1dTrainingMixin:
         rot_idx = torch.arange(batch_size, device=device)
         # model_trace = torch.jit.trace(model,example_inputs=(torch.randn((1,self.in_dim),device=device),torch.randn((1),device=device)))
         model_trace=model
-        self.fit_history = {
-            'loss':[],
-            'r2':[]
-        }
+
         
         # capture the per-batch training step (forward + loss + backward) as
         # CUDA graphs, one per distinct batch size
@@ -230,7 +219,6 @@ class FlowModel1dTrainingMixin:
                             last_target = tg.outputs[2]
                             optim.step()
                             losses+=loss
-                            self.fit_history['loss'].append(loss.detach().clone())
                             continue
                         use_train_graphs = False
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
@@ -310,15 +298,11 @@ class FlowModel1dTrainingMixin:
                     losses+=loss
                     r2s+=r2
                     
-                    self.fit_history['loss'].append(loss.item())
-                    self.fit_history['r2'].append(r2.item())
-                    
                 if scheduler: sch.step()
                 
                 if last_pred is not None:
                     r2s = r2_score(last_pred, last_target)
                     mean_r2 = r2s.item()
-                    self.fit_history['r2'].append(r2s.item())
                 else:
                     mean_r2 = (r2s/len(slices)).item()
                 mean_loss = (losses/len(slices)).item()
@@ -339,8 +323,6 @@ class FlowModel1dTrainingMixin:
         # update current model with best checkpoint
         model.load_state_dict(best_trained_model)
         model.eval()
-        self.fit_history['loss'] = [x.item() if isinstance(x, torch.Tensor) else x for x in self.fit_history['loss']]
-        self.fit_history['r2'] = [x.item() if isinstance(x, torch.Tensor) else x for x in self.fit_history['r2']]
     def _prepare_data(self, data, condition):
         if not isinstance(data,torch.Tensor):
             data = torch.tensor(data,dtype=torch.float32,device=self.device)
@@ -519,13 +501,6 @@ class FlowModel1dTrainingMixin:
 
         rather than velocity-field prediction.
 
-        Training statistics are stored in:
-
-        .. code-block:: python
-
-            self.reflow_history["loss"]
-            self.reflow_history["forward_r2"]
-            self.reflow_history["inverse_r2"]
 
         Examples
         --------
@@ -619,11 +594,6 @@ class FlowModel1dTrainingMixin:
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
         
-        self.reflow_history = {
-            'loss':[],
-            'forward_r2':[],
-            'inverse_r2':[],
-        }
         # running_r2 = 0
         # best_r2 = 0
         # best_model = None
@@ -658,10 +628,7 @@ class FlowModel1dTrainingMixin:
                             p.grad = None
                         opt.step()
                         sch.step()
-                        self.reflow_history['loss'].append(loss)
-                        self.reflow_history['forward_r2'].append(forward_r2)
-                        self.reflow_history['inverse_r2'].append(inverse_r2)
-                        if debug and (i+1)%32==0:
+                        if debug and (i+1)%128==0:
                             loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
                             print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
                         continue
@@ -707,12 +674,8 @@ class FlowModel1dTrainingMixin:
                     )
                 opt.step()
                 sch.step()
-                
 
-                self.reflow_history['loss'].append(loss.detach())
-                self.reflow_history['forward_r2'].append(forward_r2.detach())
-                self.reflow_history['inverse_r2'].append(inverse_r2.detach())
-                if debug and (i+1)%32==0:
+                if debug and (i+1)%128==0:
                     loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
                     print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
         except KeyboardInterrupt as e:
@@ -722,8 +685,6 @@ class FlowModel1dTrainingMixin:
             gc.collect()
             
         # self.load_state_dict(best_model)
-        for _k in self.reflow_history:
-            self.reflow_history[_k] = [v.item() if isinstance(v, torch.Tensor) else v for v in self.reflow_history[_k]]
         self.eval()
     
 
