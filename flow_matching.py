@@ -189,7 +189,7 @@ def heun(model, x0, steps, churn_scale=0.0, inverse=False, return_intermediates=
     return (xt, intermediates) if return_intermediates else xt
 
 def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, left = 0.0, right = 1.0):
-    device = next(model.parameters()).device
+    device = x0.device
     x0 = x0.to(device)
     xt = x0.clone()
     
@@ -237,7 +237,7 @@ def rk3(model, x0, churn_scale=0.0, inverse=False, return_intermediates=False, l
     return (xt_next, intermediates) if return_intermediates else xt_next
 
 def rk2(model, x0, weights):
-    device = next(model.parameters()).device
+    device = x0.device
     x0 = x0.to(device)
     
     t0,t_mid,h1,h2,half,w1,w2,w3 = weights
@@ -283,14 +283,16 @@ class FlowMatching(nn.Module):
     def reset_weights(self):
         if hasattr(self,'one_weights'):
             device = self.one_weights.device
+            dtype = self.one_weights.dtype
         else:
             device=None
+            dtype=torch.float32
         with torch.no_grad():
             start_time = self.time_scaler(0.5)
-            self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0,0],device=device))
-            self.one_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time,-0.5,1,0,0],device=device))
-            self.rk2_weights     = torch.nn.Parameter(torch.tensor([start_time,   1.0,  0.5, 0.5, 1.0, 1.0, 0.0, 0.0],device=device))
-            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time, 0.0, -0.5, -0.5, -1.0, 1.0, 0.0, 0.0],device=device))
+            self.one_weights     = torch.nn.Parameter(torch.tensor([start_time,  0.5, 1,0,0],device=device,dtype=dtype))
+            self.one_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time,-0.5,1,0,0],device=device,dtype=dtype))
+            self.rk2_weights     = torch.nn.Parameter(torch.tensor([start_time,   1.0,  0.5, 0.5, 1.0, 1.0, 0.0, 0.0],device=device,dtype=dtype))
+            self.rk2_weights_inv = torch.nn.Parameter(torch.tensor([1-start_time, 0.0, -0.5, -0.5, -1.0, 1.0, 0.0, 0.0],device=device,dtype=dtype))
     
     def flow_matching_pair(self,model,input_domain,target_domain, time = None):
         """
@@ -336,7 +338,7 @@ class FlowMatching(nn.Module):
         
         return pred_direction,target, time_expand
 
-    def contrastive_flow_matching_pair(self, model, input_domain, target_domain, time=None):
+    def contrastive_flow_matching_pair(self, model, input_domain, target_domain, time=None, idx=None):
         """
         Generates flow matching training pairs along with contrastive pairs for 
         Contrastive Flow Matching (CFM).
@@ -408,7 +410,10 @@ class FlowMatching(nn.Module):
         target = (target_domain - input_domain)
 
         # Prepare negative samples by shuffling the batch
-        idx = torch.randperm(bsz, device=input_domain.device)
+        # idx can be supplied externally (e.g. by captured CUDA graphs, where
+        # drawing RNG inside the graph is illegal)
+        if idx is None:
+            idx = torch.randperm(bsz, device=input_domain.device)
         input_neg = input_domain[idx]
         target_neg = target_domain[idx]
 
@@ -630,6 +635,52 @@ def match_approximate_sliced(A, B, num_projections=4):
     
     A_matched = A[idx_A[:, chosen_slice]][inv_idx_B[:, chosen_slice]]
     return A_matched
+class _CudaGraph:
+    """
+    Captures ``fn(*inputs)`` as a CUDA graph with static input buffers.
+
+    ``inputs`` are pre-allocated static tensors whose contents are copied by
+    the caller right before each ``replay()``. ``outputs`` are the tensors
+    returned by ``fn`` during capture: each replay recomputes their values
+    in place, so they can be read after ``replay()``.
+
+    All kernel-launch and python overhead of the captured computation is
+    eliminated on replay, which is the dominant cost for this small model.
+    """
+    def __init__(self, fn, inputs, n_warmup=3):
+        self.inputs = inputs
+        self.outputs = None
+        # warmup on the current stream so that kernels/caches (and any
+        # autograd state such as gradient accumulation nodes) are created on
+        # the same stream that the capture will use; a side-stream warmup
+        # would create AccumulateGrad nodes on the wrong stream and cause the
+        # next capture to reallocate .grad, invalidating earlier graphs
+        for _ in range(n_warmup):
+            fn(*inputs)
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.outputs = fn(*inputs)
+        # detach keeps the same storage (replays update it in place) but drops
+        # the autograd references, so the capture-time autograd graph (and its
+        # AccumulateGrad nodes) is freed instead of being kept alive by the
+        # cached outputs — otherwise a later capture of a different batch size
+        # reallocates .grad and invalidates this graph's captured addresses
+        self.outputs = tuple(o.detach() for o in self.outputs)
+        self.graph = graph
+    @staticmethod
+    def capture(fn, inputs):
+        """
+        Returns a _CudaGraph, or None if the capture fails (in which case the
+        caller falls back to the eager path).
+        """
+        try:
+            return _CudaGraph(fn, inputs)
+        except Exception:
+            return None
+    def replay(self):
+        self.graph.replay()
+
 class FlowModel1d(nn.Module):
     """
     Fully-connected Flow Matching model for vector-valued data.
@@ -680,6 +731,18 @@ class FlowModel1d(nn.Module):
 
     device : str, default="cpu"
         Device used for model execution.
+
+    dtype : torch.dtype, default=torch.float32
+        Precision of the model weights: torch.float32, torch.bfloat16 or
+        torch.float16. All weights are stored and computed in this dtype;
+        training and inference both run in the provided precision.
+
+    cuda_graphs : bool, default=True
+        Enable CUDA-graph acceleration of the hot paths (forward passes,
+        whole integrations, fit/reflow training steps, log_prob). Captured
+        graphs replay the exact same kernels, so outputs are identical to
+        the eager path; they are invalidated automatically when the model is
+        moved or cast.
 
     default_time_scaler : float, default=10.01
         Initial value of the learnable time-reparameterization coefficient.
@@ -770,8 +833,12 @@ class FlowModel1d(nn.Module):
     - ReFlow acceleration
     """
 
-    def __init__(self, in_dim,conditional_dim = None,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01,residual_blocks_impl : Literal['sequential','attention']='sequential') -> None:
+    def __init__(self, in_dim,conditional_dim = None,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01,residual_blocks_impl : Literal['sequential','attention']='sequential',cuda_graphs = True,dtype = torch.float32) -> None:
         super().__init__()
+        self.cuda_graphs = bool(cuda_graphs)
+        self._fwd_graphs = {}      # (x_shape, t_shape, c_shape) -> _CudaGraph
+        self._integ_graphs = {}    # (x_shape, steps, inverse) -> _CudaGraph
+        self._train_graphs = {}    # ('fit'|'reflow', batch_size) -> _CudaGraph
         self.fm = FlowMatching()
         self.sobol = SobolEngine(in_dim, scramble=True)
         self.conditional_dim=conditional_dim
@@ -848,10 +915,27 @@ class FlowModel1d(nn.Module):
         )
         self.default_steps=16
         self.to(device)
+        # store model weights in the provided precision
+        self.to(dtype)
         self.eval()
-    def forward(self,x : torch.Tensor,t : torch.Tensor,condition : Optional[torch.Tensor] = None):
+    def _param_dtype(self) -> torch.dtype:
+        """
+        Dtype of the model's floating-point weights.
+        """
+        for p in self.parameters():
+            if p.is_floating_point():
+                return p.dtype
+        return torch.float32
+    def _eager_forward(self,x : torch.Tensor,t : torch.Tensor,condition : Optional[torch.Tensor] = None):
+        """
+        The forward pass without CUDA-graph acceleration. Bit-identical to
+        forward() with cuda_graphs disabled.
+        """
+        dtype = self._param_dtype()
+        x = x.to(self.device, dtype=dtype)
         while t.ndim<x.ndim:
             t = t[:,None]
+        t = t.to(dtype=dtype)
         expand = self.expand(x)
         x=x.to(self.device)
 
@@ -862,7 +946,7 @@ class FlowModel1d(nn.Module):
             if condition is None:
                 condition=torch.zeros((len(x),self.conditional_dim),device=x.device,dtype=x.dtype)
             else:
-                condition=condition.to(self.device)
+                condition=condition.to(self.device, dtype=dtype)
             c_scale,c_shift = self.condition_emb(condition).chunk(2,-1)
             
             # print('before',time_scale.shape,c_scale.shape)
@@ -883,9 +967,90 @@ class FlowModel1d(nn.Module):
         x=self.residual_blocks(x)
         x=self.out_norm(x)
         return self.collapse(x)*self.out_prod(x).sigmoid()
-    def to(self,device):
-        self.device=device
-        return super().to(device)
+    def _graphs_available(self) -> bool:
+        """
+        Whether CUDA-graph acceleration is enabled and usable on this model.
+        """
+        return (self.cuda_graphs and torch.cuda.is_available()
+                and str(self.device).startswith('cuda'))
+    def _can_graph(self) -> bool:
+        """
+        Whether the inference forward/integration paths can use CUDA graphs
+        (disabled under grad, since gradients need the autograd engine).
+        """
+        return self._graphs_available() and not torch.is_grad_enabled()
+    def _invalidate_graphs(self):
+        """
+        Drops all captured graphs. Must be called whenever parameter tensors
+        are replaced or moved (device/dtype casts, reset_weights), since
+        captured graphs reference the old memory addresses.
+        """
+        self._fwd_graphs.clear()
+        self._integ_graphs.clear()
+        self._train_graphs.clear()
+    def _apply(self, fn, recurse=True):
+        # _apply is the common path for to()/half()/bfloat16()/float()/...
+        # device and dtype casts; invalidate graphs since they pin memory
+        self._invalidate_graphs()
+        return super()._apply(fn, recurse)
+    def forward(self,x : torch.Tensor,t : torch.Tensor,condition : Optional[torch.Tensor] = None):
+        if self._can_graph() and not self.training:
+            key = (tuple(x.shape), tuple(t.shape), None if condition is None else tuple(condition.shape))
+            cg = self._fwd_graphs.get(key)
+            if cg is None:
+                xb = torch.empty_like(x)
+                tb = torch.empty_like(t)
+                cb = None if condition is None else torch.empty_like(condition)
+                def fn(xb, tb, cb):
+                    return (self._eager_forward(xb, tb, cb),)
+                cg = _CudaGraph.capture(fn, [xb, tb, cb])
+                if cg is None:
+                    self.cuda_graphs = False
+                    return self._eager_forward(x, t, condition)
+                self._fwd_graphs[key] = cg
+            cg.inputs[0].copy_(x)
+            cg.inputs[1].copy_(t)
+            if cg.inputs[2] is not None:
+                cg.inputs[2].copy_(condition)
+            cg.replay()
+            return cg.outputs[0].clone()
+        return self._eager_forward(x, t, condition)
+    def to(self, *args, **kwargs):
+        """
+        Tracks the model device while also supporting dtype casts.
+        """
+        device = kwargs.get('device', None)
+        if device is None and len(args) > 0 and isinstance(args[0], (str, torch.device, int)):
+            device = args[0]
+        if device is not None:
+            self.device = device
+        return super().to(*args, **kwargs)
+    def __deepcopy__(self, memo):
+        """
+        Deep-copies the model but not the captured CUDA graphs (a CUDAGraph
+        object cannot be copied; the copy simply starts with empty caches).
+        """
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k in ('_fwd_graphs', '_integ_graphs', '_train_graphs'):
+                continue
+            setattr(result, k, deepcopy(v, memo))
+        result._fwd_graphs = {}
+        result._integ_graphs = {}
+        result._train_graphs = {}
+        return result
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        for k in ('_fwd_graphs', '_integ_graphs', '_train_graphs'):
+            state.pop(k, None)
+        return state
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._fwd_graphs = {}
+        self._integ_graphs = {}
+        self._train_graphs = {}
     def fit(
         self,
         data: torch.Tensor,
@@ -1015,7 +1180,8 @@ class FlowModel1d(nn.Module):
         assert data.shape[-1]==self.in_dim, f'Dataset dimension must match in_dim on model. data.shape[-1]({data.shape[-1]})!=model.in_dim({self.in_dim})'
         model.train()
         
-        optim = torch.optim.AdamW(get_fm_optim_groups(model,loss_normalizer), lr=lr,fused=True)
+        # fused AdamW requires float32 parameters
+        optim = torch.optim.AdamW(get_fm_optim_groups(model,loss_normalizer), lr=lr,fused=self._param_dtype()==torch.float32)
         
         best_loss = float("inf")
         best_r2 = -1e8
@@ -1039,8 +1205,15 @@ class FlowModel1d(nn.Module):
             'r2':[]
         }
         
+        # capture the per-batch training step (forward + loss + backward) as
+        # CUDA graphs, one per distinct batch size
+        use_train_graphs = self._graphs_available() and torch.is_grad_enabled()
+        epoch_t = torch.zeros(1, device=device)
+        
         try:
             for epoch in range(epochs):
+                if use_train_graphs:
+                    epoch_t.fill_(epoch)
                 if debug and improved:
                     print(f"Epoch {epoch}: best_loss={best_loss:0.3f}\tbest r2={best_r2:0.3f}")
                 improved = False
@@ -1053,6 +1226,41 @@ class FlowModel1d(nn.Module):
                 losses = 0
                 r2s = 0
                 for start in slices:
+                    if use_train_graphs:
+                        # CUDA-graph training step: draw all randomness eagerly
+                        # (in the same order as the eager path), copy inputs
+                        # into static buffers, replay the captured forward+loss
+                        # +backward graph, then step the optimizer
+                        B = min(batch_size, n - start)
+                        zero_mask = (torch.rand(batch_size,device=device)<condition_dropout)[:B].unsqueeze(-1)
+                        prior_batch = sample_base(self.sobol,batch_size,device)
+                        time.uniform_()
+                        idx = torch.randperm(B, device=device)
+                        tg = self._get_fit_graph(B, model, condition_dropout, distribution_matching, epochs, device, loss_normalizer, contrastive_loss_weight)
+                        if tg is not None:
+                            tg.inputs[0].copy_(data_shuf[start : start + B])
+                            tg.inputs[1].copy_(condition_shuf[start : start + B])
+                            tg.inputs[2].copy_(zero_mask)
+                            tg.inputs[3].copy_(prior_batch[:B])
+                            tg.inputs[4].copy_(time[:B])
+                            tg.inputs[5].copy_(epoch_t)
+                            tg.inputs[6].copy_(idx)
+                            tg.replay()
+                            # expose the shared gradient buffers as p.grad
+                            # (matches eager: unused params keep None grads)
+                            for p, buf in tg.grad_buffers.items():
+                                p.grad = buf
+                            for p in tg.unused_params:
+                                p.grad = None
+                            loss = tg.outputs[0].detach()
+                            r2 = tg.outputs[1]
+                            optim.step()
+                            losses+=loss
+                            r2s+=r2
+                            self.fit_history['loss'].append(loss.item())
+                            self.fit_history['r2'].append(r2.item())
+                            continue
+                        use_train_graphs = False
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
                     
                     batch = data_shuf[start : start + batch_size]
@@ -1077,6 +1285,8 @@ class FlowModel1d(nn.Module):
                             batch,
                             time=time[:B]
                         )
+                    # model predicts in the model dtype; losses are computed in float32
+                    pred_dir = pred_dir.float()
                     
                     pred_loss = F.mse_loss(pred_dir,target_dir,reduction='none')+1
                     contrastive_loss = F.mse_loss(pred_dir,contrast_dir,reduction='none')
@@ -1396,6 +1606,9 @@ class FlowModel1d(nn.Module):
             
         assert steps in [1,2],"steps parameter must be one of [1,2]"
         self.fm.reset_weights()
+        # reset_weights() replaces the integration-weight tensors, so any
+        # captured graphs referencing the old ones must be dropped
+        self._invalidate_graphs()
         self.train()
         self.default_steps=steps
         
@@ -1422,7 +1635,8 @@ class FlowModel1d(nn.Module):
         device=self.device
         # loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
         # opt = torch.optim.AdamW(get_fm_optim_groups(self,loss_normalizer,weight_decay=weight_decay),lr=lr,fused=True)
-        opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),weight_decay=weight_decay,lr=lr,fused=True)
+        # fused AdamW requires float32 parameters
+        opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),weight_decay=weight_decay,lr=lr,fused=self._param_dtype()==torch.float32)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
         
@@ -1435,10 +1649,36 @@ class FlowModel1d(nn.Module):
         # best_r2 = 0
         # best_model = None
         # check_each=16
+        # capture the per-iteration distillation step (forward + losses +
+        # backward + clip) as a CUDA graph
+        use_train_graphs = self._graphs_available() and torch.is_grad_enabled()
         try:
             for i in range(epochs):
-                opt.zero_grad(True)
                 ind = torch.randperm(x.shape[0],device=device)[:batch_size]
+                if use_train_graphs:
+                    rg = self._get_reflow_graph(batch_size, opt, loss_normalizer, grad_clip_max_norm, distribution_matching, device)
+                    if rg is not None:
+                        rg.inputs[0].copy_(x[ind])
+                        rg.inputs[1].copy_(y[ind])
+                        rg.inputs[2].copy_(cond[ind])
+                        rg.replay()
+                        loss, forward_r2, inverse_r2, prediction_loss, forward_weight, inverse_weight, forward_loss, inverse_loss = rg.outputs
+                        # expose the shared gradient buffers as p.grad
+                        for p, buf in rg.grad_buffers.items():
+                            p.grad = buf
+                        for p in rg.unused_params:
+                            p.grad = None
+                        opt.step()
+                        sch.step()
+                        self.reflow_history['loss'].append(loss.item())
+                        self.reflow_history['forward_r2'].append(forward_r2.item())
+                        self.reflow_history['inverse_r2'].append(inverse_r2.item())
+                        if debug and (i+1)%32==0:
+                            loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
+                            print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
+                        continue
+                    use_train_graphs = False
+                opt.zero_grad(True)
                 xbatch = x[ind]
                 ybatch = y[ind]
                 condbatch = cond[ind]
@@ -1555,6 +1795,8 @@ class FlowModel1d(nn.Module):
 
         if not steps: steps = self.default_steps
         input_device = data.device
+        if self._can_graph() and not return_intermediates:
+            return self._graph_integrate(data, condition, steps, input_device, inverse=True)
         model_inference = lambda xt,t: self(xt,t,condition)
         data,condition=self.__prepare_data(data,condition)
         out = self.fm.integrate(model_inference,data,steps,inverse=True,return_intermediates=return_intermediates)
@@ -1630,6 +1872,8 @@ class FlowModel1d(nn.Module):
 
         if not steps: steps = self.default_steps
         input_device = normal_noise.device
+        if self._can_graph() and not return_intermediates:
+            return self._graph_integrate(normal_noise, condition, steps, input_device, inverse=False)
         model_inference = lambda xt,t: self(xt,t,condition)
         normal_noise,condition=self.__prepare_data(normal_noise,condition)
         out = self.fm.integrate(model_inference,normal_noise,steps,return_intermediates=return_intermediates)
@@ -1641,6 +1885,203 @@ class FlowModel1d(nn.Module):
         else:
             out = out.to(input_device)
         return out
+    def _eager_to_target(self, normal_noise: torch.Tensor, condition=None, steps=None):
+        """
+        Forward transport without CUDA-graph acceleration (used inside
+        captured training steps, where nested graph capture is illegal).
+        """
+        if not steps: steps = self.default_steps
+        model_inference = lambda xt,t: self._eager_forward(xt,t,condition)
+        normal_noise,condition=self.__prepare_data(normal_noise,condition)
+        return self.fm.integrate(model_inference,normal_noise,steps)
+    def _eager_to_prior(self, data: torch.Tensor, condition=None, steps=None):
+        """
+        Inverse transport without CUDA-graph acceleration (used inside
+        captured training steps, where nested graph capture is illegal).
+        """
+        if not steps: steps = self.default_steps
+        model_inference = lambda xt,t: self._eager_forward(xt,t,condition)
+        data,condition=self.__prepare_data(data,condition)
+        return self.fm.integrate(model_inference,data,steps,inverse=True)
+    def _graph_integrate(self, x: torch.Tensor, condition, steps, input_device, inverse=False):
+        """
+        Runs the whole integration (momentum_heun / one-step / rk2 / rk3,
+        i.e. the complete to_target/to_prior transport) as a single captured
+        CUDA graph, keyed by (input shape, steps, direction).
+        """
+        x, condition = self.__prepare_data(x, condition)
+        key = (tuple(x.shape), steps, inverse)
+        cg = self._integ_graphs.get(key)
+        if cg is None:
+            xb = torch.empty_like(x)
+            cb = torch.empty_like(condition)
+            def fn(xb, cb):
+                model_inference = lambda xt, t: self._eager_forward(xt, t, cb)
+                return (self.fm.integrate(model_inference, xb, steps, inverse=inverse),)
+            cg = _CudaGraph.capture(fn, [xb, cb])
+            if cg is None:
+                self.cuda_graphs = False
+                model_inference = lambda xt,t: self(xt,t,condition)
+                out = self.fm.integrate(model_inference, x, steps, inverse=inverse)
+                return out.to(input_device)
+            self._integ_graphs[key] = cg
+        cg.inputs[0].copy_(x)
+        cg.inputs[1].copy_(condition)
+        cg.replay()
+        return cg.outputs[0].clone().to(input_device)
+    def _get_fit_graph(self, B, model, condition_dropout, distribution_matching, epochs, device, loss_normalizer, contrastive_loss_weight):
+        """
+        Returns (capturing on first call) a CUDA graph of one fit() training
+        step for batch size B: forward + loss + gradients + clip. Gradients
+        are computed with torch.autograd.grad and copied into shared eager
+        buffers (see the docstring on _CudaGraph for why backward() cannot be
+        captured), then exposed as p.grad by the caller.
+
+        The optimizer step and all RNG draws stay eager: the learning rate is
+        scheduled by the caller and the RNG must not be frozen by the graph.
+        Returns None (and disables graphs) if the capture fails.
+        """
+        key = ('fit', B)
+        tg = self._train_graphs.get(key)
+        if tg is not None:
+            return tg
+        # shared gradient buffers: every captured graph copies its freshly
+        # computed gradients into these eager, stable addresses (loss.backward
+        # would accumulate into per-capture .grad allocations that the
+        # autograd engine reallocates on each new capture, invalidating the
+        # addresses captured by earlier graphs)
+        params = list(self.parameters())
+        gbufs = [torch.zeros_like(p) for p in params]
+        used_ids = set()
+        bx = torch.empty(B, self.in_dim, device=device)
+        bc = torch.empty(B, self.conditional_dim or 1, device=device)
+        bm = torch.empty(B, 1, device=device)
+        bp = torch.empty(B, self.in_dim, device=device)
+        bt = torch.empty(B, device=device)
+        be = torch.zeros(1, device=device)
+        bi = torch.arange(B, device=device)
+        def fn(bx, bc, bm, bp, bt, be, bi):
+            condition_batch = bc * bm
+            model_inference = lambda xt, t: self._eager_forward(xt, t, condition_batch)
+            pred_dir, target_dir, contrast_dir, t_exp = \
+                model.fm.contrastive_flow_matching_pair(model_inference, bp, bx, time=bt, idx=bi)
+            pred_dir = pred_dir.float()
+            pred_loss = F.mse_loss(pred_dir, target_dir, reduction='none') + 1
+            contrastive_loss = F.mse_loss(pred_dir, contrast_dir, reduction='none')
+            contrastive_loss_det = contrastive_loss.detach()
+            pred_loss_det = pred_loss.detach()
+            # NOTE: the eager path does this with an in-place `-=` on
+            # contrastive_loss, which also shifts the shared-storage detach
+            # view. In-place ops cannot be captured (the replay's backward
+            # would read the post-op value from the saved tensor address), so
+            # the exact same arithmetic is replicated without in-place ops.
+            contrastive_loss = contrastive_loss - contrastive_loss_det.max() - 1e-4
+            contrastive_loss_det = contrastive_loss.detach()
+            contrastive_loss = contrastive_loss / contrastive_loss_det.abs().mean() * pred_loss_det.abs().mean()
+            # scale it
+            contrastive_loss = contrastive_loss_weight * contrastive_loss
+            # sample-wise loss
+            sample_loss = pred_loss - contrastive_loss
+            dm = ((1 - (1 + be) / epochs) * distribution_matching).squeeze()
+            if distribution_matching > 0:
+                with torch.no_grad():  # Stop-gradient via detach
+                    sg_log_losses = pred_loss_det.log()
+                    target_log_w = -sg_log_losses  # log(1/L)
+                weights = loss_normalizer(target_dir, t_exp)  # it equals to log(1/loss)
+                loss_weighted = (weights.detach() * dm).exp()  # it equals to 1/loss
+                aux_loss = F.mse_loss(weights, target_log_w)
+            else:
+                loss_weighted = 1
+                aux_loss = 0
+            # scale loss by it's prediction
+            weighed_loss = (loss_weighted * sample_loss).mean()
+            loss = weighed_loss + dm * aux_loss
+            r2 = r2_score(pred_dir, target_dir)
+            grads = torch.autograd.grad(loss, params, allow_unused=True)
+            used_bufs = []
+            for p, g, buf in zip(params, grads, gbufs):
+                if g is not None:
+                    buf.copy_(g)
+                    used_ids.add(id(p))
+                    used_bufs.append(buf)
+            # clip the shared buffers in place (torch.nn.utils.clip_grad_norm_
+            # is a no-op on plain tensors, and its python branch on the norm
+            # value cannot be captured; the eager path scales by the same
+            # factor max_norm / (norm + 1e-6) clamped to 1, with the norm
+            # computed over the same gradient set)
+            norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(g, 2.0) for g in used_bufs]), 2.0)
+            scale = torch.clamp(1.0 / (norm + 1e-6), max=1.0)
+            for buf in used_bufs:
+                buf.mul_(scale)
+            return loss, r2
+        tg = _CudaGraph.capture(fn, [bx, bc, bm, bp, bt, be, bi])
+        if tg is None:
+            self.cuda_graphs = False
+            return None
+        tg.grad_buffers = {p: buf for p, buf in zip(params, gbufs) if id(p) in used_ids}
+        tg.unused_params = [p for p in params if id(p) not in used_ids]
+        self._train_graphs[key] = tg
+        return tg
+    def _get_reflow_graph(self, batch_size, opt, loss_normalizer, grad_clip_max_norm, distribution_matching, device):
+        """
+        Returns (capturing on first call) a CUDA graph of one reflow()
+        distillation iteration: zero_grad + forward transports + losses +
+        backward + clip. The optimizer step and batch sampling stay eager.
+        Returns None (and disables graphs) if the capture fails.
+        """
+        key = 'reflow'
+        rg = self._train_graphs.get(key)
+        if rg is not None:
+            return rg
+        # shared gradient buffers (see _get_fit_graph): reflow's loss involves
+        # both the model and the loss_normalizer
+        params = list(self.parameters()) + list(loss_normalizer.parameters())
+        gbufs = [torch.zeros_like(p) for p in params]
+        used_ids = set()
+        bx = torch.empty(batch_size, self.in_dim, device=device)
+        by = torch.empty(batch_size, self.in_dim, device=device)
+        bc = torch.empty(batch_size, self.conditional_dim or 1, device=device)
+        def fn(bx, by, bc):
+            y_pred = self._eager_to_target(bx, bc)
+            x_pred = self._eager_to_prior(by, bc)
+            forward_loss = F.mse_loss(by, y_pred, reduction='none').mean(-1)
+            # no in-place ops inside the capture (see _get_fit_graph); note the
+            # eager path does `-= (min - 1e-2)`, i.e. subtracts min and ADDS 1e-2
+            forward_loss = forward_loss - forward_loss.min().detach() + 1e-2
+            inverse_loss = F.mse_loss(bx, x_pred, reduction='none').mean(-1)
+            inverse_loss = inverse_loss - inverse_loss.min().detach() + 1e-2
+            prediction_loss = forward_loss.mean() + inverse_loss.mean()
+            forward_weight, inverse_weight = loss_normalizer(torch.concat([bx, by], -1)).chunk(2, -1)
+            forward_weight, inverse_weight = forward_weight[..., 0], inverse_weight[..., 0]
+            normalizer_loss = F.mse_loss(forward_weight, forward_loss.detach().log()) + F.mse_loss(inverse_weight, inverse_loss.detach().log())
+            fw = (-forward_weight * distribution_matching).detach().exp()
+            iw = (-inverse_weight * distribution_matching).detach().exp()
+            loss = (fw * forward_loss).mean() + (iw * inverse_loss).mean() + normalizer_loss * distribution_matching
+            forward_r2 = r2_score(by, y_pred)
+            inverse_r2 = r2_score(bx, x_pred)
+            grads = torch.autograd.grad(loss, params, allow_unused=True)
+            used_bufs = []
+            for p, g, buf in zip(params, grads, gbufs):
+                if g is not None:
+                    buf.copy_(g)
+                    used_ids.add(id(p))
+                    used_bufs.append(buf)
+            if grad_clip_max_norm is not None:
+                # capture-safe clip (see _get_fit_graph)
+                norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(g, 2.0) for g in used_bufs]), 2.0)
+                scale = torch.clamp(grad_clip_max_norm / (norm + 1e-6), max=1.0)
+                for buf in used_bufs:
+                    buf.mul_(scale)
+            return (loss, forward_r2, inverse_r2, prediction_loss,
+                    forward_weight, inverse_weight, forward_loss, inverse_loss)
+        rg = _CudaGraph.capture(fn, [bx, by, bc])
+        if rg is None:
+            self.cuda_graphs = False
+            return None
+        rg.grad_buffers = {p: buf for p, buf in zip(params, gbufs) if id(p) in used_ids}
+        rg.unused_params = [p for p in params if id(p) not in used_ids]
+        self._train_graphs[key] = rg
+        return rg
     def sample(
         self,
         num_samples : int,
