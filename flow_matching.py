@@ -1666,9 +1666,18 @@ class FlowModel1d(nn.Module):
         # capture the per-iteration distillation step (forward + losses +
         # backward + clip) as a CUDA graph
         use_train_graphs = self._graphs_available() and torch.is_grad_enabled()
+        # rolling window through a precomputed permutation: reshuffle once per
+        # full pass (2*len(data)/batch_size iterations) instead of a randperm
+        # on every iteration
+        perm_roll = torch.randperm(x.shape[0], device=device)
+        roll_i = 0
         try:
             for i in range(epochs):
-                ind = torch.randperm(x.shape[0],device=device)[:batch_size]
+                ind = perm_roll[roll_i:roll_i + batch_size]
+                roll_i += batch_size
+                if roll_i + batch_size > x.shape[0]:
+                    roll_i = 0
+                    perm_roll = torch.randperm(x.shape[0], device=device)
                 if use_train_graphs:
                     rg = self._get_reflow_graph(batch_size, opt, loss_normalizer, grad_clip_max_norm, distribution_matching, device)
                     if rg is not None:
@@ -1684,9 +1693,9 @@ class FlowModel1d(nn.Module):
                             p.grad = None
                         opt.step()
                         sch.step()
-                        self.reflow_history['loss'].append(loss.item())
-                        self.reflow_history['forward_r2'].append(forward_r2.item())
-                        self.reflow_history['inverse_r2'].append(inverse_r2.item())
+                        self.reflow_history['loss'].append(loss)
+                        self.reflow_history['forward_r2'].append(forward_r2)
+                        self.reflow_history['inverse_r2'].append(inverse_r2)
                         if debug and (i+1)%32==0:
                             loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
                             print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
@@ -1735,9 +1744,9 @@ class FlowModel1d(nn.Module):
                 sch.step()
                 
 
-                self.reflow_history['loss'].append(loss.item())
-                self.reflow_history['forward_r2'].append(forward_r2.item())
-                self.reflow_history['inverse_r2'].append(inverse_r2.item())
+                self.reflow_history['loss'].append(loss.detach())
+                self.reflow_history['forward_r2'].append(forward_r2.detach())
+                self.reflow_history['inverse_r2'].append(inverse_r2.detach())
                 if debug and (i+1)%32==0:
                     loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
                     print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
@@ -1748,6 +1757,8 @@ class FlowModel1d(nn.Module):
             gc.collect()
             
         # self.load_state_dict(best_model)
+        for _k in self.reflow_history:
+            self.reflow_history[_k] = [v.item() if isinstance(v, torch.Tensor) else v for v in self.reflow_history[_k]]
         self.eval()
     
     def to_prior(
@@ -2080,7 +2091,7 @@ class FlowModel1d(nn.Module):
                 norm = torch.linalg.vector_norm(torch.stack(torch._foreach_norm([g for _, g in used], 2.0)), 2.0)
                 scale = torch.clamp(grad_clip_max_norm / (norm + 1e-6), max=1.0)
                 torch._foreach_mul_([g for _, g in used], scale)
-            rg.grads = used
+            fn.grads = used
             return (loss, forward_r2, inverse_r2, prediction_loss,
                     forward_weight, inverse_weight, forward_loss, inverse_loss)
         rg = _CudaGraph.capture(fn, [bx, by, bc])
