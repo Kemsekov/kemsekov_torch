@@ -267,11 +267,28 @@ def zero_module(module):
         for p in module.parameters():
             p.zero_()
     return module
-# FusedFlowResidual is provided by the Triton-kernel implementation in
-# triton_residual.py (same module structure and state_dict keys as the
-# original; forward routed through fused Triton kernels on CUDA fp32,
-# with an eager fallback otherwise).
-from kemsekov_torch.fm.triton_residual import FusedFlowResidual
+# Original eager FusedFlowResidual block: x + W2^T SiLU(x (W1^T SiLU(LN(x))))
+
+
+
+
+class FusedFlowResidual(nn.Module):
+    def __init__(self,hidden_dim) -> None:
+        super().__init__()
+        self.prod = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim,hidden_dim,bias=False),
+            # nn.Tanh()
+        )
+        self.out = nn.Sequential(
+            nn.SiLU(),
+            zero_module(nn.Linear(hidden_dim,hidden_dim,bias=False))
+        )
+        
+    def forward(self,x):
+        prod = x*self.prod(x)
+        return self.out(prod)+x
 
 
 
