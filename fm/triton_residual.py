@@ -229,8 +229,9 @@ class FusedFlowResidual(nn.Module):
     ``state_dict`` keys and ``get_fm_optim_groups`` behavior are identical
     to the original; non-CUDA or non-fp32 inputs use the eager path."""
 
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim, use_triton=True):
         super().__init__()
+        self.use_triton = bool(use_triton)
         self.prod = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
@@ -243,7 +244,7 @@ class FusedFlowResidual(nn.Module):
         self.out[1].weight.data.zero_()
 
     def forward(self, x):
-        if (x.is_cuda and x.dtype == torch.float32
+        if (self.use_triton and x.is_cuda and x.dtype == torch.float32
                 and x.dim() == 2 and x.shape[1] >= 1):
             try:
                 return _FusedResidualFunc.apply(

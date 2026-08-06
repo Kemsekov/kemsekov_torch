@@ -167,9 +167,10 @@ class FlowModel1dCore(nn.Module):
     - ReFlow acceleration
     """
 
-    def __init__(self, in_dim,conditional_dim = None,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01,residual_blocks_impl : Literal['sequential','attention']='sequential',cuda_graphs = True,dtype = torch.float32) -> None:
+    def __init__(self, in_dim,conditional_dim = None,hidden_dim=64,residual_blocks=5,dropout_p=0.0,device='cpu',default_time_scaler = 10.01,residual_blocks_impl : Literal['sequential','attention']='sequential',cuda_graphs = True,dtype = torch.float32,use_triton = True) -> None:
         super().__init__()
         self.cuda_graphs = bool(cuda_graphs)
+        self.use_triton = bool(use_triton)
         self._fwd_graphs = {}      # (x_shape, t_shape, c_shape) -> _CudaGraph
         self._integ_graphs = {}    # (x_shape, steps, inverse) -> _CudaGraph
         self._train_graphs = {}    # ('fit'|'reflow', batch_size) -> _CudaGraph
@@ -227,13 +228,13 @@ class FlowModel1dCore(nn.Module):
         assert residual_blocks_impl in allowed,f'residual_blocks_impl must be one of {allowed}'
         if residual_blocks_impl=='sequential':
             self.residual_blocks = nn.Sequential(*[
-                        FusedFlowResidual(hidden_dim)
+                        self._make_residual_block(hidden_dim)
                 for i in range(residual_blocks)
             ])
         
         if residual_blocks_impl=='attention':
             self.residual_blocks = AttentionResidual2([
-                FusedFlowResidual(hidden_dim)
+                self._make_residual_block(hidden_dim)
                 for i in range(residual_blocks)
             ],hidden_dim,-1)
         
@@ -252,6 +253,10 @@ class FlowModel1dCore(nn.Module):
         # store model weights in the provided precision
         self.to(dtype)
         self.eval()
+    def _make_residual_block(self, hidden_dim: int) -> nn.Module:
+        """Residual block honoring the ``use_triton`` switch (kernel-level)."""
+        return FusedFlowResidual(hidden_dim, use_triton=self.use_triton)
+
     def _param_dtype(self) -> torch.dtype:
         """
         Dtype of the model's floating-point weights.
