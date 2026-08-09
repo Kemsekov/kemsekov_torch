@@ -9,7 +9,6 @@ from typing import Literal, Optional
 import torch
 import torch.nn as nn
 from torch.quasirandom import SobolEngine
-from kemsekov_torch.attention_residual import AttentionResidual2,AttentionResidual1
 from kemsekov_torch.attention_residual_fast import AR2Fast
 from kemsekov_torch.common_modules import ConstModule, Prod
 from kemsekov_torch.fm.core import FusedFlowResidual, FlowMatching, zero_module
