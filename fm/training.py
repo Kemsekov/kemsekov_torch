@@ -47,7 +47,7 @@ class FlowModel1dTrainingMixin:
         replaced with zeros according to ``condition_dropout``. This implements
         classifier-free conditioning and improves generalization.
         
-        **Model is fitted enough when r2 metric is above 0.36 or so.**
+        **Model is fitted enough when r2 metric is above 0.45 or so.**
 
         Parameters
         ----------
