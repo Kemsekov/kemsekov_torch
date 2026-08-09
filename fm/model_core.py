@@ -9,7 +9,8 @@ from typing import Literal, Optional
 import torch
 import torch.nn as nn
 from torch.quasirandom import SobolEngine
-from kemsekov_torch.attention_residual import AttentionResidual2
+from kemsekov_torch.attention_residual import AttentionResidual2,AttentionResidual1
+from kemsekov_torch.attention_residual_fast import AR2Fast
 from kemsekov_torch.common_modules import ConstModule, Prod
 from kemsekov_torch.fm.core import FusedFlowResidual, FlowMatching, zero_module
 from kemsekov_torch.fm.cuda_graph import _CudaGraph
@@ -232,11 +233,10 @@ class FlowModel1dCore(nn.Module):
             ])
         
         if residual_blocks_impl=='attention':
-            self.residual_blocks = AttentionResidual2([
+            self.residual_blocks = AR2Fast([
                 FusedFlowResidual(hidden_dim)
                 for i in range(residual_blocks)
             ],hidden_dim,-1)
-        
         self.out_norm = norm(hidden_dim)
         
         self.collapse = nn.Sequential(
