@@ -51,13 +51,20 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
         self.register_buffer("cached_grid", torch.tensor([0]),persistent=False)
         self.register_buffer("max_dim_size", torch.tensor([0]))
         
-    def forward(self,x):
-        DIMS = x.shape[2:]
+    @torch.compiler.disable
+    def _prepare_grid(self,x,DIMS):
+        """Eager cache path: builds/updates the position grid and max size
+        buffers OUTSIDE the compiled graph so torch.compile/cudagraphs never
+        trace in-place buffer mutations."""
         dims_len = len(DIMS)
         
         if self.training:
-            max_dim_size = max(max(DIMS),self.max_dim_size)
-            self.max_dim_size+=max_dim_size-self.max_dim_size
+            if self.max_dim_size.device != x.device:
+                self.max_dim_size = self.max_dim_size.to(x.device)
+            cur = float(self.max_dim_size)
+            new = max(max(DIMS), cur)
+            if new != cur:
+                self.max_dim_size.fill_(new)
         
         if DIMS == self.cached_grid.shape[:-1]:
             POS_IND = self.cached_grid
@@ -80,9 +87,13 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
             POS_IND=POS_IND*2
             self.cached_grid = POS_IND
         
-        
         # pos ind always centered at zero, and be in range [-1,1]
-        POS_IND=POS_IND[None,:]/self.max_dim_size
+        return POS_IND, self.max_dim_size
+        
+    def forward(self,x):
+        DIMS = x.shape[2:]
+        POS_IND, max_dim_size = self._prepare_grid(x, DIMS)
+        POS_IND=POS_IND[None,:]/max_dim_size
         POS_IND=POS_IND.to(x.device,dtype=x.dtype)
         # apply CAPE Augmentation Transformations 
         if self.training and self.jit_prob>0:
@@ -250,7 +261,6 @@ class CrossAttention(nn.Module):
         add_absolute_pos=False,
         abs_pos_jit_prob=0.0,
         output_bias = True,
-        linear=False,
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False,
         xsa = False
@@ -262,7 +272,6 @@ class CrossAttention(nn.Module):
         self.heads = heads
         self.head_dim = head_dim
         self.dropout = dropout
-        self.linear = linear
         inner_dim = heads * head_dim
         context_dim = context_dim if context_dim is not None else dim
         if add_absolute_pos:
@@ -354,19 +363,16 @@ class CrossAttention(nn.Module):
         # (BATCH_SIZE, HEADS_NUM, LENGTH, HEAD_DIM)
         
         # use linear attention when needed
-        if self.linear:
-            attn_out = fast_linear_path_BHDL(q,k,v)
-        else:
-            # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
-            attn_out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.dropout if self.training else 0,
-                is_causal=self.is_causal
-            )  # [B, heads, L, head_dim]
-            # apply exclusive self attention
-            if self.xsa:
-                Vn = F.normalize(v,dim=-1)
-                attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
+        # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout if self.training else 0,
+            is_causal=self.is_causal
+        )  # [B, heads, L, head_dim]
+        # apply exclusive self attention
+        if self.xsa:
+            Vn = F.normalize(v,dim=-1)
+            attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
