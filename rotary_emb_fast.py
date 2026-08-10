@@ -12,6 +12,9 @@ frequency caching behavior). Differences:
   does a redundant cat copy of the full tensor);
 - backward avoids the zeros-fill + slice_scatter accumulation the eager
   `cat` backward forces.
+- non-CUDA inputs (CPU/MPS) transparently fall back to a pure-torch
+  implementation of the same math (`_rotary_apply_torch`), fully
+  differentiable through autograd.
 """
 from __future__ import annotations
 from typing import Dict, Tuple
@@ -124,6 +127,7 @@ class _Plan:
     __slots__ = (
         "A", "q", "rotate_dim", "nH", "e0", "e1", "e2", "bi", "grid", "D",
         "cos0", "sin0", "cos1", "sin1", "cos2", "sin2",
+        "cos_b0", "sin_b0", "cos_b1", "sin_b1", "cos_b2", "sin_b2",
     )
 
 
@@ -142,6 +146,32 @@ def _is_dense_perm(x):
         dense *= sz
     dense_strides.reverse()
     return sorted(strides) == sorted(dense_strides)
+
+
+def _rotary_apply_torch(x, plan):
+    """Pure-torch fallback for non-CUDA devices (CPU/MPS): exactly the same
+    math as the fused kernels — rotation pairs (c, c+q) per axis, tail copied —
+    so numerics and output layout match. Plain torch ops, so gradients flow
+    through autograd without any custom backward."""
+    D = plan.D
+    q = plan.q
+    rot = plan.rotate_dim
+    A = plan.A
+    if q == 0:
+        return x.clone()
+    cos_b = (plan.cos_b0, plan.cos_b1, plan.cos_b2)
+    sin_b = (plan.sin_b0, plan.sin_b1, plan.sin_b2)
+    pieces = []
+    for a in range(A):
+        cos, sin = cos_b[a], sin_b[a]
+        c1 = 2 * a * q
+        x1 = x[..., c1:c1 + q]
+        x2 = x[..., c1 + q:c1 + 2 * q]
+        pieces.append(x1 * cos - x2 * sin)
+        pieces.append(x1 * sin + x2 * cos)
+    if rot < D:
+        pieces.append(x[..., rot:])
+    return torch.cat(pieces, dim=-1)
 
 
 class _FusedRotaryApply(torch.autograd.Function):
@@ -246,6 +276,7 @@ class FastRotEmb(nn.Module):
             sin2, cos2 = sin0, cos0
         bi = max(16, min(256, triton.next_power_of_2(q)))
         grid = (triton.cdiv(R, _BLOCK_R), triton.cdiv(q, bi))
+        dims = x.dim()
         plan = _Plan()
         plan.A, plan.q, plan.rotate_dim = A, q, rotate_dim
         plan.nH, plan.e0, plan.e1, plan.e2 = nH, e0, e1, e2
@@ -253,6 +284,18 @@ class FastRotEmb(nn.Module):
         plan.cos0, plan.sin0 = cos0, sin0
         plan.cos1, plan.sin1 = cos1, sin1
         plan.cos2, plan.sin2 = cos2, sin2
+        # broadcast-shaped views for the CPU fallback (built once)
+        dims = x.dim()
+        extents = (e0, e1, e2)
+        pairs = ((cos0, sin0), (cos1, sin1), (cos2, sin2))
+        for a in range(3):
+            if a < A:
+                shape = [1] * (1 + a) + [extents[a]] + [1] * (dims - a - 3) + [q]
+                plan.__setattr__(f"cos_b{a}", pairs[a][0].reshape(shape))
+                plan.__setattr__(f"sin_b{a}", pairs[a][1].reshape(shape))
+            else:
+                plan.__setattr__(f"cos_b{a}", None)
+                plan.__setattr__(f"sin_b{a}", None)
         return plan
 
     def forward(self, x):
@@ -291,19 +334,14 @@ class FastRotEmb(nn.Module):
             cos = cos.reshape(seqlen, half_dim)
             plan = self._make_plan(x, 1, rotate_dim, nheads, seqlen, 1, 1, sin, cos)
             self._plan_1d[(x.shape, self.training)] = plan
-        return _FusedRotaryApply.apply(x, plan)
+        if x.device.type == "cuda":
+            return _FusedRotaryApply.apply(x, plan)
+        return _rotary_apply_torch(x, plan)
 
-    def get_1d_freq(self, x, base: int, seqlen: int, half_dim: int):
-        key = str((seqlen, half_dim))
-        cache = self.eval_freq_cache_1d if not self.training else self.freq_cache_1d
-
-        if key in cache:
-            sin, cos = cache[key]
-            if sin.device != x.device:
-                sin, cos = sin.to(x.device), cos.to(x.device)
-                cache[key] = sin, cos
-            return sin, cos
-
+    @torch.compiler.disable
+    def _build_1d_freq(self, x, base: int, seqlen: int, half_dim: int):
+        """Cache-miss path: runs EAGERLY (outside any compiled/cudagraph
+        region) so the cached tables are never cudagraph-pooled outputs."""
         if self.training:
             self.max_seq_len1d[0] = max(self.max_seq_len1d[0], seqlen)
         train_length = self.max_seq_len1d[0]
@@ -314,8 +352,21 @@ class FastRotEmb(nn.Module):
 
         sin = torch.sin(freqs)[None, :, None, :]  # (1, seq_len, 1, half_dim)
         cos = torch.cos(freqs)[None, :, None, :]
-        cache[key] = sin, cos
+        cache = self.eval_freq_cache_1d if not self.training else self.freq_cache_1d
+        cache[str((seqlen, half_dim))] = sin, cos
         return sin, cos
+
+    def get_1d_freq(self, x, base: int, seqlen: int, half_dim: int):
+        key = str((seqlen, half_dim))
+        cache = self.eval_freq_cache_1d if not self.training else self.freq_cache_1d
+
+        if key in cache:
+            sin, cos = cache[key]
+            if sin.device != x.device:
+                return self._build_1d_freq(x, base, seqlen, half_dim)
+            return sin, cos
+
+        return self._build_1d_freq(x, base, seqlen, half_dim)
 
     # ------------------------------------------------------------------ 2D
     def apply_2d_rotary_pos_emb(self, x):
@@ -339,19 +390,14 @@ class FastRotEmb(nn.Module):
                 sin_w.reshape(W, D_quarter), cos_w.reshape(W, D_quarter),
             )
             self._plan_2d[(x.shape, self.training)] = plan
-        return _FusedRotaryApply.apply(x, plan)
+        if x.device.type == "cuda":
+            return _FusedRotaryApply.apply(x, plan)
+        return _rotary_apply_torch(x, plan)
 
-    def get_2d_freqs(self, x, base: int, H: int, W: int, D_quarter: int):
-        key = str((D_quarter, H, W))
-        cache = self.eval_freq_cache_2d if not self.training else self.freq_cache_2d
-
-        if key in cache:
-            out = cache[key]
-            if out[0].device != x.device:
-                out = tuple(v.to(x.device) for v in out)
-                cache[key] = out
-            return out
-
+    @torch.compiler.disable
+    def _build_2d_freqs(self, x, base: int, H: int, W: int, D_quarter: int):
+        """Cache-miss path: runs EAGERLY (outside any compiled/cudagraph
+        region) so the cached tables are never cudagraph-pooled outputs."""
         h_pos = torch.arange(H, device=x.device).float()
         w_pos = torch.arange(W, device=x.device).float()
 
@@ -372,8 +418,21 @@ class FastRotEmb(nn.Module):
         sin_w = sin_w[None, None, :, None, :]
         cos_w = cos_w[None, None, :, None, :]
         out = (sin_h, cos_h, sin_w, cos_w)
-        cache[key] = out
+        cache = self.eval_freq_cache_2d if not self.training else self.freq_cache_2d
+        cache[str((D_quarter, H, W))] = out
         return out
+
+    def get_2d_freqs(self, x, base: int, H: int, W: int, D_quarter: int):
+        key = str((D_quarter, H, W))
+        cache = self.eval_freq_cache_2d if not self.training else self.freq_cache_2d
+
+        if key in cache:
+            out = cache[key]
+            if out[0].device != x.device:
+                return self._build_2d_freqs(x, base, H, W, D_quarter)
+            return out
+
+        return self._build_2d_freqs(x, base, H, W, D_quarter)
 
     # ------------------------------------------------------------------ 3D
     def apply_3d_rotary_pos_emb(self, x):
@@ -399,19 +458,14 @@ class FastRotEmb(nn.Module):
                 sin_d.reshape(D, d_quarter), cos_d.reshape(D, d_quarter),
             )
             self._plan_3d[(x.shape, self.training)] = plan
-        return _FusedRotaryApply.apply(x, plan)
+        if x.device.type == "cuda":
+            return _FusedRotaryApply.apply(x, plan)
+        return _rotary_apply_torch(x, plan)
 
-    def get_3d_freqs(self, x, base: int, B: int, H: int, W: int, D: int, d_quarter: int):
-        key = str((H, W, D, d_quarter))
-        cache = self.eval_freq_cache_3d if not self.training else self.freq_cache_3d
-
-        if key in cache:
-            out = cache[key]
-            if out[0].device != x.device:
-                out = tuple(v.to(x.device) for v in out)
-                cache[key] = out
-            return out
-
+    @torch.compiler.disable
+    def _build_3d_freqs(self, x, base: int, B: int, H: int, W: int, D: int, d_quarter: int):
+        """Cache-miss path: runs EAGERLY (outside any compiled/cudagraph
+        region) so the cached tables are never cudagraph-pooled outputs."""
         h_pos = torch.arange(H, device=x.device, dtype=torch.float32)
         w_pos = torch.arange(W, device=x.device, dtype=torch.float32)
         d_pos = torch.arange(D, device=x.device, dtype=torch.float32)
@@ -433,5 +487,18 @@ class FastRotEmb(nn.Module):
         cos_d = torch.cos(torch.einsum('i,j->ij', d_pos, inv_freq_d))[None, None, None, :, None, :]
 
         out = (sin_h, cos_h, sin_w, cos_w, sin_d, cos_d)
-        cache[key] = out
+        cache = self.eval_freq_cache_3d if not self.training else self.freq_cache_3d
+        cache[str((H, W, D, d_quarter))] = out
         return out
+
+    def get_3d_freqs(self, x, base: int, B: int, H: int, W: int, D: int, d_quarter: int):
+        key = str((H, W, D, d_quarter))
+        cache = self.eval_freq_cache_3d if not self.training else self.freq_cache_3d
+
+        if key in cache:
+            out = cache[key]
+            if out[0].device != x.device:
+                return self._build_3d_freqs(x, base, B, H, W, D, d_quarter)
+            return out
+
+        return self._build_3d_freqs(x, base, B, H, W, D, d_quarter)
