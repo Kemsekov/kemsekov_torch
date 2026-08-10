@@ -7,7 +7,7 @@ from typing import Literal, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from kemsekov_torch.rotary_emb import RotEmb
+from kemsekov_torch.rotary_emb_fast import FastRotEmb
 from kemsekov_torch.common_modules import Transpose, ChanLayerNorm
 
 def zero_module(module):
@@ -121,7 +121,6 @@ class SelfAttention(nn.Module):
         dropout=0.0,
         dimensions : Literal[1,2,3] = 2,
         add_rotary_embedding = False,
-        linear=False,
         output_bias = True,
         abs_pos_jit_prob = 0.0,
         add_absolute_pos = False,
@@ -136,7 +135,6 @@ class SelfAttention(nn.Module):
         dropout: attention dropout. Optimal value depends, but for visual tasks 0.1 is good.
         dimensions: expected input dimensions
         add_rotary_embedding: add rotary embedding to input or not. By default all three spacial resolutions are supported, so proper 1,2,3-dimensional rotary embedding is applied
-        linear: whether to use custom-linear attention or not. Current linear attention although works, but is not optimized and default non-linear attention works a lot faster.
         output_bias: add bias to output conv or not. If you use GroupNorm after self-attention, i advice you to set this value to False
         abs_pos_jit_prob: setting this value to 0.5 or 1.0, will make absolute positions embedding work as scale-translate independent feature, which will allow model to extrapolate to much larger sequence lengths
         add_absolute_pos: add absolute position embedding
@@ -149,7 +147,6 @@ class SelfAttention(nn.Module):
         self.head_dim = head_dim
         self.dropout=dropout
         inner_dim = heads * head_dim
-        self.linear = linear
         self.dimensions=dimensions
         self.xsa = xsa
         if add_absolute_pos:
@@ -158,7 +155,8 @@ class SelfAttention(nn.Module):
             self.abs_emb = nn.Identity()
         
         self.add_rotary_embedding=add_rotary_embedding
-        self.rotary_emb = RotEmb()
+        self.rotary_emb = FastRotEmb()
+        
         
         # small heuristic for groups number estimation
         groups = max(1,dim//32)
@@ -213,21 +211,18 @@ class SelfAttention(nn.Module):
         q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]  # [B, heads, head_dim, L]
         
         # (BATCH_SIZE, ... , HEADS_NUM, LENGTH, HEAD_DIM)
+   
+        # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=self.is_causal
+        )  # [B, heads, L, head_dim]
         
-        if self.linear:
-            attn_out = fast_linear_path_BHDL(q,k,v)
-        else:
-            # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
-            attn_out = F.scaled_dot_product_attention(
-                q, k, v,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=self.is_causal
-            )  # [B, heads, L, head_dim]
-            
-            # apply exclusive self-attention
-            if self.xsa:
-                Vn = F.normalize(v,dim=-1)
-                attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
+        # apply exclusive self-attention
+        if self.xsa:
+            Vn = F.normalize(v,dim=-1)
+            attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
         attn_out = attn_out.transpose(-1, -2).reshape([B, self.heads * self.head_dim]+list(x.shape[2:]))
@@ -278,7 +273,7 @@ class CrossAttention(nn.Module):
             self.mem_abs_emb = nn.Identity()
         
         self.add_rotary_embedding = add_rotary_embedding
-        self.rotary_emb = RotEmb()
+        self.rotary_emb = FastRotEmb()
         
         groups = max(1, dim // 32)
         if groups == 1 and dim // 16 >= 2: groups = 2
