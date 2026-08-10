@@ -834,7 +834,7 @@ class FastSelfAttention(SelfAttention):
                     sp1=sp1, sp2=sp2, rotate=self.add_rotary_embedding)
         self._fused_cache[key] = plan
         return plan
-
+    @torch.compiler.disable
     def forward(self, x):
         if x.device.type != "cuda" or self.head_dim not in (32, 64, 128) or not torch.cuda.is_available():
             return super().forward(x)
@@ -915,6 +915,7 @@ class FastCrossAttention(CrossAttention):
         self._fused_cache[key] = plan
         return plan
 
+    @torch.compiler.disable
     def forward(self, x, memory):
         if x.device.type != "cuda" or self.head_dim not in (32, 64, 128) or not torch.cuda.is_available():
             return super().forward(x, memory)
