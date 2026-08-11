@@ -703,15 +703,18 @@ class CheapSequential(nn.Module):
 
 
 def get_optim_groups(model, weight_decay=1e-2):
-    """Returns model weights with 0 weight_decay on normalization layers"""
+    """Returns model weights with 0 weight_decay on normalization layers and biases.
+    
+    Robust against duplicate parameters, unlisted norm modules, and name overlaps.
+    """
     decay_params = set()
     no_decay_params = set()
-    norm_layers=(
+    
+    # Deduplicated standard normalization layers
+    norm_layers = (
         nn.LayerNorm, 
         nn.RMSNorm, 
         nn.BatchNorm1d, 
-        nn.GroupNorm,
-        nn.BatchNorm1d,
         nn.BatchNorm2d,
         nn.BatchNorm3d,
         nn.GroupNorm,
@@ -719,27 +722,29 @@ def get_optim_groups(model, weight_decay=1e-2):
         nn.InstanceNorm2d,
         nn.InstanceNorm3d,
     )
-    def process_model(m):
-        for mn, module in m.named_modules():
-            # recurse=False ensures we only process parameters directly belonging to this module
-            for pn, p in module.named_parameters(recurse=False):
-                if not p.requires_grad:
-                    continue
-                
-                # Rule 1: Biases should NEVER be decayed
-                if pn.endswith('bias'):
-                    no_decay_params.add(p)
-                # Rule 2: Normalization layer weights should NEVER be decayed
-                elif isinstance(module, norm_layers):
-                    no_decay_params.add(p)
-                # Rule 3: Protect your custom time_scaler from being shrunk to 0
-                elif 'scaler' in pn.lower():
-                    no_decay_params.add(p)
-                # Rule 4: Everything else (Linear weights, etc.) gets weight decay
-                else:
-                    decay_params.add(p)
+    
+    for mn, module in model.named_modules():
+        # recurse=False isolates parameters directly owned by this specific submodule
+        for pn, p in module.named_parameters(recurse=False):
+            if not p.requires_grad:
+                continue
+            
+            # Condition 1: Biases and explicit scalers never decay
+            is_bias = pn.endswith('bias')
+            is_scaler = 'scaler' in pn.lower()
+            
+            # Condition 2: Check module type or fall back to 1D tensor shape (safety net)
+            is_norm = isinstance(module, norm_layers) or p.ndim == 1
+            
+            if is_bias or is_scaler or is_norm:
+                no_decay_params.add(p)
+            else:
+                decay_params.add(p)
 
-    process_model(model)
+    # Sanity Check: Ensure no parameter leaked into both or got mixed up
+    overlap = decay_params.intersection(no_decay_params)
+    assert len(overlap) == 0, f"Conflict: {len(overlap)} parameters found in both groups!"
+    
     return [
         {"params": list(decay_params), "weight_decay": weight_decay},
         {"params": list(no_decay_params), "weight_decay": 0.0}
