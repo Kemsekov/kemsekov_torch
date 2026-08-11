@@ -13,6 +13,7 @@ import shutil
 import time
 import tabulate
 from ema_pytorch.ema_pytorch import EMA
+from kemsekov_torch.common_modules import get_optim_groups
 
 def _print_red(text: str) -> None:
     """Print bold red text."""
@@ -69,7 +70,7 @@ def train_simple(
     model=model.to(device,dtype=dtype)
     
     model.train()
-    opt = torch.optim.AdamW(model.parameters(),lr=lr,fused=True)
+    opt = torch.optim.AdamW(get_optim_groups(model),lr=lr,fused=True)
     sh = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
     
     best_metric = -1e10
@@ -389,12 +390,12 @@ def train(
         _print_red("WARNING!!! (checkpoints_count==0) No checkpoints will be saved!")
     # only if we use deepspeed
     if  accelerate_args is not None and 'deepspeed_plugins' in accelerate_args.keys():
-        optimizer = accelerate.utils.DummyOptim(model.parameters())
+        optimizer = accelerate.utils.DummyOptim(get_optim_groups(model))
         scheduler = accelerate.utils.DummyScheduler(optimizer)
     
     if optimizer is None:
         _print_blue("Using default fused AdamW optimizer")
-        optimizer = torch.optim.AdamW(model.parameters(),fused=True)
+        optimizer = torch.optim.AdamW(get_optim_groups(model),fused=True)
     total_parameters = sum([v.numel() for v in model.parameters()])/1000/1000
     _print_blue(f"Total model parameters {total_parameters:0.2f} M")
     save_last_dir = os.path.join(save_results_dir,"last")
