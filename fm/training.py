@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.metrics import r2_score
-from kemsekov_torch.fm.core import (LossNormalizer1d, get_fm_optim_groups)
+from kemsekov_torch.fm.core import get_fm_optim_groups
 from kemsekov_torch.fm.samplers import sample_base
 from kemsekov_torch.fm.cuda_graph import _CudaGraph
 
@@ -27,7 +27,6 @@ class FlowModel1dTrainingMixin:
         batch_size: int = 512,
         contrastive_loss_weight=1.0,
         lr: float = 0.02,
-        distribution_matching=0.0,
         debug: bool = False,
         scheduler = True,
     ):
@@ -35,7 +34,7 @@ class FlowModel1dTrainingMixin:
         Train the Flow Matching model.
 
         Training uses Contrastive Flow Matching (CFM) together with optional
-        distribution matching and classifier-free conditioning.
+        classifier-free conditioning.
 
         During training, random interpolation points are sampled between
         Gaussian prior samples and target data samples. The model learns to
@@ -90,16 +89,6 @@ class FlowModel1dTrainingMixin:
         lr : float, default=0.02
             Learning rate.
 
-        distribution_matching : float, default=0.0
-            Enables adaptive loss reweighting that encourages better matching
-            of the target distribution.
-
-            Recommended values:
-
-            - 0.0: disabled
-            - 0.05 - 0.25: mild correction
-            - >0.5: aggressive distribution matching
-
         debug : bool, default=False
             Print training statistics.
 
@@ -128,19 +117,12 @@ class FlowModel1dTrainingMixin:
         device = model.device
         batch_size = min(batch_size,data.shape[0])
         
-        trainable_weights = list(model.parameters())
-        loss_normalizer=None
-        if distribution_matching>0:
-            loss_normalizer = LossNormalizer1d(model.in_dim,model.hidden_dim).to(device)
-            # loss_normalizer = torch.jit.trace(loss_normalizer,(torch.randn((1,self.in_dim),device=device),torch.randn((1,1),device=device)))
-            trainable_weights=trainable_weights+list(loss_normalizer.parameters())
-        
 
         assert data.shape[-1]==self.in_dim, f'Dataset dimension must match in_dim on model. data.shape[-1]({data.shape[-1]})!=model.in_dim({self.in_dim})'
         model.train()
         
         # fused AdamW requires float32 parameters
-        optim = torch.optim.AdamW(get_fm_optim_groups(model,loss_normalizer), lr=lr,fused=self._param_dtype()==torch.float32)
+        optim = torch.optim.AdamW(get_fm_optim_groups(model), lr=lr,fused=self._param_dtype()==torch.float32)
         
         best_loss = float("inf")
         best_r2 = -1e8
@@ -165,14 +147,11 @@ class FlowModel1dTrainingMixin:
         # capture the per-batch training step (forward + loss + backward) as
         # CUDA graphs, one per distinct batch size
         use_train_graphs = self._graphs_available() and torch.is_grad_enabled()
-        epoch_t = torch.zeros(1, device=device)
         last_pred = None
         last_target = None
         total_steps=0
         try:
             for epoch in range(epochs):
-                if use_train_graphs:
-                    epoch_t.fill_(epoch)
                 if debug and improved:
                     print(f"Epoch {epoch}: best_loss={best_loss:0.3f}\tbest r2={best_r2:0.3f}")
                 improved = False
@@ -194,15 +173,14 @@ class FlowModel1dTrainingMixin:
                         time.uniform_()
                         rot_idx.add_(1).remainder_(B)
                         idx = rot_idx[:B]
-                        tg = self._get_fit_graph(B, model, condition_dropout, distribution_matching, epochs, device, loss_normalizer, contrastive_loss_weight)
+                        tg = self._get_fit_graph(B, model, condition_dropout, device, contrastive_loss_weight)
                         if tg is not None:
                             tg.inputs[0].copy_(data[perm[start : start + B]])
                             tg.inputs[1].copy_(condition[perm[start : start + B]])
                             tg.inputs[2].copy_(zero_mask)
                             tg.inputs[3].copy_(prior_batch[:B])
                             tg.inputs[4].copy_(time[:B])
-                            tg.inputs[5].copy_(epoch_t)
-                            tg.inputs[6].copy_(idx)
+                            tg.inputs[5].copy_(idx)
                             tg.replay()
                             # expose the shared gradient buffers as p.grad
                             # (matches eager: unused params keep None grads)
@@ -260,25 +238,8 @@ class FlowModel1dTrainingMixin:
                     # sample-wise loss
                     sample_loss = pred_loss-contrastive_loss
                     
-                    dm = (1-(1+epoch)/epochs)*distribution_matching
-                    # dm=distribution_matching
-                    if distribution_matching>0:
-                        with torch.no_grad():  # Stop-gradient via detach
-                            sg_log_losses = pred_loss_det.log()
-                            target_log_w = -sg_log_losses  # log(1/L)
-                        # dm = distribution_matching
-                        weights = loss_normalizer(target_dir, t) # it equals to log(1/loss)
-                        loss_weighted = (weights.detach()*dm).exp() # it equals to 1/loss
-                        aux_loss = F.mse_loss(weights, target_log_w)
-                    else:
-                        loss_weighted=1
-                        aux_loss=0
-                    
-                    #scale loss by it's prediction
-                    weighed_loss = (loss_weighted*sample_loss).mean()
-                    # print(r2_score(weights, (1/sample_loss).log()))
-                    # print(weighed_loss)
-                    loss = weighed_loss+dm*aux_loss
+                    # scale loss by it's prediction
+                    loss = sample_loss.mean()
                     loss.backward()
                     
                     torch.nn.utils.clip_grad_norm_(
@@ -648,7 +609,7 @@ class FlowModel1dTrainingMixin:
         self.eval()
     
 
-    def _get_fit_graph(self, B, model, condition_dropout, distribution_matching, epochs, device, loss_normalizer, contrastive_loss_weight):
+    def _get_fit_graph(self, B, model, condition_dropout, device, contrastive_loss_weight):
         """
         Returns (capturing on first call) a CUDA graph of one fit() training
         step for batch size B: forward + loss + gradients + clip. Gradients
@@ -676,9 +637,8 @@ class FlowModel1dTrainingMixin:
         bm = torch.empty(B, 1, device=device)
         bp = torch.empty(B, self.in_dim, device=device)
         bt = torch.empty(B, device=device)
-        be = torch.zeros(1, device=device)
         bi = torch.arange(B, device=device)
-        def fn(bx, bc, bm, bp, bt, be, bi):
+        def fn(bx, bc, bm, bp, bt, bi):
             condition_batch = bc * bm
             model_inference = lambda xt, t: self._eager_forward(xt, t, condition_batch)
             pred_dir, target_dir, contrast_dir, t_exp = \
@@ -700,20 +660,8 @@ class FlowModel1dTrainingMixin:
             contrastive_loss = contrastive_loss_weight * contrastive_loss
             # sample-wise loss
             sample_loss = pred_loss - contrastive_loss
-            dm = ((1 - (1 + be) / epochs) * distribution_matching).squeeze()
-            if distribution_matching > 0:
-                with torch.no_grad():  # Stop-gradient via detach
-                    sg_log_losses = pred_loss_det.log()
-                    target_log_w = -sg_log_losses  # log(1/L)
-                weights = loss_normalizer(target_dir, t_exp)  # it equals to log(1/loss)
-                loss_weighted = (weights.detach() * dm).exp()  # it equals to 1/loss
-                aux_loss = F.mse_loss(weights, target_log_w)
-            else:
-                loss_weighted = 1
-                aux_loss = 0
             # scale loss by it's prediction
-            weighed_loss = (loss_weighted * sample_loss).mean()
-            loss = weighed_loss + dm * aux_loss
+            loss = sample_loss.mean()
             grads = torch.autograd.grad(loss, params, allow_unused=True)
             used = [(p, g) for p, g in zip(params, grads) if g is not None]
             for p, _ in used:
@@ -731,7 +679,7 @@ class FlowModel1dTrainingMixin:
             torch._foreach_mul_([g for _, g in used], scale)
             fn.grads = used
             return loss, pred_dir, target_dir
-        tg = _CudaGraph.capture(fn, [bx, bc, bm, bp, bt, be, bi])
+        tg = _CudaGraph.capture(fn, [bx, bc, bm, bp, bt, bi])
         if tg is None:
             self.cuda_graphs = False
             return None
