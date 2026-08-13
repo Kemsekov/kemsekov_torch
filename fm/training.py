@@ -309,11 +309,11 @@ class FlowModel1dTrainingMixin:
             self,
             data : torch.Tensor,
             condition : Optional[torch.Tensor] = None,
-            epochs = 2048,
+            epochs = 64,
             steps : Literal[1,2] = 1,
             batch_size=512,
             debug = False,
-            lr = 0.01,
+            lr = 0.02,
             weight_decay=0.01,
             grad_clip_max_norm : float|None=1,
             base_model : nn.Module|None = None,
@@ -361,7 +361,8 @@ class FlowModel1dTrainingMixin:
             ``[num_samples, conditional_dim]``
 
         epochs : int, default=512
-            Number of ReFlow optimization iterations.
+            Number of ReFlow optimization epochs. Each epoch is one pass
+            over the whole training set (generated + original samples).
 
         steps : {1, 2}, default=1
             Target generator complexity.
@@ -530,82 +531,97 @@ class FlowModel1dTrainingMixin:
         # capture the per-iteration distillation step (forward + losses +
         # backward + clip) as a CUDA graph
         use_train_graphs = self._graphs_available() and torch.is_grad_enabled()
-        # rolling window through a precomputed permutation: reshuffle once per
-        # full pass (2*len(data)/batch_size iterations) instead of a randperm
-        # on every iteration
-        perm_roll = torch.randperm(x.shape[0], device=device)
-        roll_i = 0
+        best_loss = float("inf")
+        best_r2 = -1e8
+        best_model = deepcopy(self.state_dict())
+        improved = False
+        n = x.shape[0]
+        slices = list(range(0, n, batch_size))
+        perm = torch.zeros(n, device=device, dtype=torch.int32)
         try:
-            for i in range(epochs):
-                ind = perm_roll[roll_i:roll_i + batch_size]
-                roll_i += batch_size
-                if roll_i + batch_size > x.shape[0]:
-                    roll_i = 0
-                    perm_roll = torch.randperm(x.shape[0], device=device)
-                if use_train_graphs:
-                    rg = self._get_reflow_graph(batch_size, opt, grad_clip_max_norm, device)
-                    if rg is not None:
-                        rg.inputs[0].copy_(x[ind])
-                        rg.inputs[1].copy_(y[ind])
-                        rg.inputs[2].copy_(cond[ind])
-                        rg.replay()
-                        loss, forward_r2, inverse_r2, prediction_loss = rg.outputs
-                        # expose the shared gradient buffers as p.grad
-                        for p, buf in rg.grad_buffers.items():
-                            p.grad = buf
-                        for p in rg.unused_params:
-                            p.grad = None
-                        opt.step()
-                        sch.step()
-                        if debug and (i+1)%128==0:
-                            print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]}")
-                        continue
-                    use_train_graphs = False
-                opt.zero_grad(True)
-                xbatch = x[ind]
-                ybatch = y[ind]
-                condbatch = cond[ind]
-                y_pred = self.to_target(xbatch,condbatch)
-                x_pred = self.to_prior(ybatch,condbatch)
+            for epoch in range(epochs):
+                if debug and improved:
+                    print(f"Epoch {epoch}: best_loss={best_loss:0.3f}\tbest r2={best_r2:0.3f}")
+                improved = False
                 
-                forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)
-                forward_loss-=forward_loss.min().detach()-1e-2
-                inverse_loss = mse(xbatch,x_pred,reduction='none').mean(-1)
-                inverse_loss-=inverse_loss.min().detach()-1e-2
+                # shuffle each epoch
+                torch.randperm(n, device=device, out=perm)
                 
-                prediction_loss = forward_loss.mean()+inverse_loss.mean()
-                
-                loss = prediction_loss
-                
-                forward_r2 = r2_score(ybatch,y_pred)
-                inverse_r2 = r2_score(xbatch,x_pred)
-                # running_r2 += (forward_r2+inverse_r2)/2
-                # if (i+1)%check_each==0:
-                #     if running_r2>best_r2:
-                #         if debug: print("Save")
-                #         best_r2=running_r2
-                #         best_model=deepcopy(self.state_dict())
-                #     running_r2=0
+                losses = 0
+                r2s = 0
+                for start in slices:
+                    ind = perm[start : start + batch_size]
+                    if use_train_graphs:
+                        B = min(batch_size, n - start)
+                        rg = self._get_reflow_graph(B, opt, grad_clip_max_norm, device)
+                        if rg is not None:
+                            rg.inputs[0].copy_(x[ind])
+                            rg.inputs[1].copy_(y[ind])
+                            rg.inputs[2].copy_(cond[ind])
+                            rg.replay()
+                            loss, forward_r2, inverse_r2, prediction_loss = rg.outputs
+                            # expose the shared gradient buffers as p.grad
+                            for p, buf in rg.grad_buffers.items():
+                                p.grad = buf
+                            for p in rg.unused_params:
+                                p.grad = None
+                            opt.step()
+                            losses += loss
+                            r2s += (forward_r2 + inverse_r2) / 2
+                            continue
+                        use_train_graphs = False
+                    opt.zero_grad(True)
+                    xbatch = x[ind]
+                    ybatch = y[ind]
+                    condbatch = cond[ind]
+                    y_pred = self.to_target(xbatch,condbatch)
+                    x_pred = self.to_prior(ybatch,condbatch)
                     
-                loss.backward()
-                if grad_clip_max_norm is not None:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.parameters(),
-                        max_norm=grad_clip_max_norm,
-                        norm_type=2.0,
-                    )
-                opt.step()
+                    forward_loss = mse(ybatch,y_pred,reduction='none').mean(-1)
+                    forward_loss-=forward_loss.min().detach()-1e-2
+                    inverse_loss = mse(xbatch,x_pred,reduction='none').mean(-1)
+                    inverse_loss-=inverse_loss.min().detach()-1e-2
+                    
+                    prediction_loss = forward_loss.mean()+inverse_loss.mean()
+                    
+                    loss = prediction_loss
+                    
+                    forward_r2 = r2_score(ybatch,y_pred)
+                    inverse_r2 = r2_score(xbatch,x_pred)
+                    
+                    loss.backward()
+                    if grad_clip_max_norm is not None:
+                        torch.nn.utils.clip_grad_norm_(
+                            self.parameters(),
+                            max_norm=grad_clip_max_norm,
+                            norm_type=2.0,
+                        )
+                    opt.step()
+                    
+                    loss = loss.detach()
+                    losses += loss
+                    r2s += (forward_r2 + inverse_r2) / 2
+                
                 sch.step()
-
-                if debug and (i+1)%128==0:
-                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]}")
+                
+                mean_loss = (losses/len(slices)).detach()
+                mean_r2 = (r2s/len(slices)).detach()
+                if mean_r2 > best_r2:
+                    best_loss = mean_loss
+                    model_state_dict = self.state_dict()
+                    best_model = {key:model_state_dict[key].clone() for key in model_state_dict}
+                    best_r2 = mean_r2
+                    improved = True
         except KeyboardInterrupt as e:
             print("Stop reflowing...")
         finally:
             gc.enable()
             gc.collect()
-            
-        # self.load_state_dict(best_model)
+        if debug and improved:
+            print(f"Last Epoch {epoch}: best_loss={best_loss:0.3f}\tbest r2={best_r2:0.3f}")
+        
+        # update current model with best checkpoint
+        self.load_state_dict(best_model)
         self.eval()
     
 
@@ -687,23 +703,23 @@ class FlowModel1dTrainingMixin:
         tg.unused_params = [p for p in params if id(p) not in used_ids]
         self._train_graphs[key] = tg
         return tg
-    def _get_reflow_graph(self, batch_size, opt, grad_clip_max_norm, device):
+    def _get_reflow_graph(self, B, opt, grad_clip_max_norm, device):
         """
         Returns (capturing on first call) a CUDA graph of one reflow()
-        distillation iteration: zero_grad + forward transports + losses +
+        distillation step for batch size B: forward transports + losses +
         backward + clip. The optimizer step and batch sampling stay eager.
         Returns None (and disables graphs) if the capture fails.
         """
-        key = 'reflow'
+        key = ('reflow', B)
         rg = self._train_graphs.get(key)
         if rg is not None:
             return rg
         # shared gradient buffers (see _get_fit_graph)
         params = list(self.parameters())
         used_ids = set()
-        bx = torch.empty(batch_size, self.in_dim, device=device)
-        by = torch.empty(batch_size, self.in_dim, device=device)
-        bc = torch.empty(batch_size, self.conditional_dim or 1, device=device)
+        bx = torch.empty(B, self.in_dim, device=device)
+        by = torch.empty(B, self.in_dim, device=device)
+        bc = torch.empty(B, self.conditional_dim or 1, device=device)
         def fn(bx, by, bc):
             y_pred = self._eager_to_target(bx, bc)
             x_pred = self._eager_to_prior(by, bc)
