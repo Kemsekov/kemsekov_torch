@@ -186,7 +186,7 @@ class FlowModel1dTrainingMixin:
 
                 losses = 0
                 r2s = 0
-                for start in slices:
+                for start in slices[:1]:
                     if use_train_graphs:
                         # CUDA-graph training step: draw all randomness eagerly
                         # (in the same order as the eager path), copy inputs
