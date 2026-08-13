@@ -11,10 +11,8 @@ from typing import Literal, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from kemsekov_torch.common_modules import Prod, Residual
 from kemsekov_torch.metrics import r2_score
-from kemsekov_torch.fm.core import (LossNormalizer1d, get_fm_optim_groups,
-                                    zero_module)
+from kemsekov_torch.fm.core import (LossNormalizer1d, get_fm_optim_groups)
 from kemsekov_torch.fm.samplers import sample_base
 from kemsekov_torch.fm.cuda_graph import _CudaGraph
 
@@ -356,7 +354,6 @@ class FlowModel1dTrainingMixin:
             debug = False,
             lr = 0.01,
             weight_decay=0.01,
-            distribution_matching = 0,
             grad_clip_max_norm : float|None=1,
             base_model : nn.Module|None = None,
             freeze_integrator = False
@@ -426,17 +423,6 @@ class FlowModel1dTrainingMixin:
 
         weight_decay : float, default=0.01
             Weight decay used by the optimizer.
-
-        distribution_matching : float, default=0
-            Enables adaptive loss reweighting.
-
-            Larger values focus training on regions where the distilled model
-            performs poorly.
-
-            Typical values:
-
-            - 0.0 : disabled
-            - 0.05 - 0.25 : mild correction
 
         grad_clip_max_norm : float | None, default=1
             Maximum gradient norm.
@@ -570,27 +556,9 @@ class FlowModel1dTrainingMixin:
             self.fm.freeze()
 
         
-        loss_normalizer = nn.Sequential(
-            nn.Linear(self.in_dim*2,self.hidden_dim),
-            Residual([
-                nn.SiLU(),
-                zero_module(nn.Linear(self.hidden_dim,self.hidden_dim)),
-            ],init_at_zero=False),
-            nn.RMSNorm(self.hidden_dim),
-            Prod([
-                nn.Linear(self.hidden_dim,self.hidden_dim),
-                # nn.RMSNorm(self.hidden_dim),
-                nn.Tanh(),
-            ]),
-            nn.SiLU(),
-            nn.Linear(self.hidden_dim,2),
-        ).to(self.device)
-        
         device=self.device
-        # loss_normalizer = torch.jit.trace(loss_normalizer,torch.randn((1,self.in_dim*2),device=self.device))
-        # opt = torch.optim.AdamW(get_fm_optim_groups(self,loss_normalizer,weight_decay=weight_decay),lr=lr,fused=True)
         # fused AdamW requires float32 parameters
-        opt = torch.optim.AdamW(list(self.parameters())+list(loss_normalizer.parameters()),weight_decay=weight_decay,lr=lr,fused=self._param_dtype()==torch.float32)
+        opt = torch.optim.AdamW(list(self.parameters()),weight_decay=weight_decay,lr=lr,fused=self._param_dtype()==torch.float32)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
         
@@ -614,13 +582,13 @@ class FlowModel1dTrainingMixin:
                     roll_i = 0
                     perm_roll = torch.randperm(x.shape[0], device=device)
                 if use_train_graphs:
-                    rg = self._get_reflow_graph(batch_size, opt, loss_normalizer, grad_clip_max_norm, distribution_matching, device)
+                    rg = self._get_reflow_graph(batch_size, opt, grad_clip_max_norm, device)
                     if rg is not None:
                         rg.inputs[0].copy_(x[ind])
                         rg.inputs[1].copy_(y[ind])
                         rg.inputs[2].copy_(cond[ind])
                         rg.replay()
-                        loss, forward_r2, inverse_r2, prediction_loss, forward_weight, inverse_weight, forward_loss, inverse_loss = rg.outputs
+                        loss, forward_r2, inverse_r2, prediction_loss = rg.outputs
                         # expose the shared gradient buffers as p.grad
                         for p, buf in rg.grad_buffers.items():
                             p.grad = buf
@@ -629,8 +597,7 @@ class FlowModel1dTrainingMixin:
                         opt.step()
                         sch.step()
                         if debug and (i+1)%128==0:
-                            loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
-                            print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
+                            print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]}")
                         continue
                     use_train_graphs = False
                 opt.zero_grad(True)
@@ -647,13 +614,7 @@ class FlowModel1dTrainingMixin:
                 
                 prediction_loss = forward_loss.mean()+inverse_loss.mean()
                 
-                forward_weight,inverse_weight = loss_normalizer(torch.concat([xbatch,ybatch],-1)).chunk(2,-1)
-                forward_weight, inverse_weight = forward_weight[...,0], inverse_weight[...,0]
-                normalizer_loss = mse(forward_weight,forward_loss.detach().log())+mse(inverse_weight,inverse_loss.detach().log())
-                
-                fw = (-forward_weight*distribution_matching).detach().exp()
-                iw = (-inverse_weight*distribution_matching).detach().exp()
-                loss = (fw*forward_loss).mean()+(iw*inverse_loss).mean()+normalizer_loss*distribution_matching
+                loss = prediction_loss
                 
                 forward_r2 = r2_score(ybatch,y_pred)
                 inverse_r2 = r2_score(xbatch,x_pred)
@@ -676,8 +637,7 @@ class FlowModel1dTrainingMixin:
                 sch.step()
 
                 if debug and (i+1)%128==0:
-                    loss_pred_r2 = (r2_score(forward_weight,forward_loss.log())+r2_score(inverse_weight,inverse_loss.log()))/2
-                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]} loss_pred_r2={str(loss_pred_r2.item())[:6]}")
+                    print(f"Iteration={(str(i)+" "*6)[:4]} loss={str(prediction_loss.detach().item())[:8]} forward_r2={str(forward_r2.item())[:6]} inverse_r2={str(inverse_r2.item())[:6]}")
         except KeyboardInterrupt as e:
             print("Stop reflowing...")
         finally:
@@ -779,7 +739,7 @@ class FlowModel1dTrainingMixin:
         tg.unused_params = [p for p in params if id(p) not in used_ids]
         self._train_graphs[key] = tg
         return tg
-    def _get_reflow_graph(self, batch_size, opt, loss_normalizer, grad_clip_max_norm, distribution_matching, device):
+    def _get_reflow_graph(self, batch_size, opt, grad_clip_max_norm, device):
         """
         Returns (capturing on first call) a CUDA graph of one reflow()
         distillation iteration: zero_grad + forward transports + losses +
@@ -790,9 +750,8 @@ class FlowModel1dTrainingMixin:
         rg = self._train_graphs.get(key)
         if rg is not None:
             return rg
-        # shared gradient buffers (see _get_fit_graph): reflow's loss involves
-        # both the model and the loss_normalizer
-        params = list(self.parameters()) + list(loss_normalizer.parameters())
+        # shared gradient buffers (see _get_fit_graph)
+        params = list(self.parameters())
         used_ids = set()
         bx = torch.empty(batch_size, self.in_dim, device=device)
         by = torch.empty(batch_size, self.in_dim, device=device)
@@ -807,12 +766,7 @@ class FlowModel1dTrainingMixin:
             inverse_loss = F.mse_loss(bx, x_pred, reduction='none').mean(-1)
             inverse_loss = inverse_loss - inverse_loss.min().detach() + 1e-2
             prediction_loss = forward_loss.mean() + inverse_loss.mean()
-            forward_weight, inverse_weight = loss_normalizer(torch.concat([bx, by], -1)).chunk(2, -1)
-            forward_weight, inverse_weight = forward_weight[..., 0], inverse_weight[..., 0]
-            normalizer_loss = F.mse_loss(forward_weight, forward_loss.detach().log()) + F.mse_loss(inverse_weight, inverse_loss.detach().log())
-            fw = (-forward_weight * distribution_matching).detach().exp()
-            iw = (-inverse_weight * distribution_matching).detach().exp()
-            loss = (fw * forward_loss).mean() + (iw * inverse_loss).mean() + normalizer_loss * distribution_matching
+            loss = prediction_loss
             forward_r2 = r2_score(by, y_pred)
             inverse_r2 = r2_score(bx, x_pred)
             grads = torch.autograd.grad(loss, params, allow_unused=True)
@@ -826,8 +780,7 @@ class FlowModel1dTrainingMixin:
                 scale = torch.clamp(grad_clip_max_norm / (norm + 1e-6), max=1.0)
                 torch._foreach_mul_([g for _, g in used], scale)
             fn.grads = used
-            return (loss, forward_r2, inverse_r2, prediction_loss,
-                    forward_weight, inverse_weight, forward_loss, inverse_loss)
+            return (loss, forward_r2, inverse_r2, prediction_loss)
         rg = _CudaGraph.capture(fn, [bx, by, bc])
         if rg is None:
             self.cuda_graphs = False
