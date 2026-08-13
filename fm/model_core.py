@@ -250,7 +250,7 @@ class FlowModel1dCore(nn.Module):
         
         self.out_prod = nn.Sequential(
             # nn.RMSNorm(hidden_dim),
-            zero_module(nn.Linear(hidden_dim,in_dim)),
+            zero_module(nn.Linear(hidden_dim,in_dim,bias=False)),
             nn.RMSNorm(in_dim),
         )
         # self.out_prod2 = nn.Sequential(
