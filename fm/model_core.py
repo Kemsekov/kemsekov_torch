@@ -247,12 +247,12 @@ class FlowModel1dCore(nn.Module):
             zero_module(nn.Linear(hidden_dim,in_dim)),
             nn.RMSNorm(in_dim),
         )
-        self.out_prod2 = nn.Sequential(
-            nn.RMSNorm(hidden_dim),
-            # nn.SiLU(),
-            nn.Linear(hidden_dim,in_dim),
-            # nn.RMSNorm(in_dim),
-        )
+        # self.out_prod2 = nn.Sequential(
+        #     nn.RMSNorm(hidden_dim),
+        #     # nn.SiLU(),
+        #     nn.Linear(hidden_dim,in_dim),
+        #     # nn.RMSNorm(in_dim),
+        # )
         
         self.default_steps=16
         self.to(device)
@@ -309,8 +309,8 @@ class FlowModel1dCore(nn.Module):
         x=self.residual_blocks(x)
         x=self.out_norm(x)
         merge1 = self.out_prod(x).sigmoid()
-        merge2 = self.out_prod2(x).tanh()
-        return self.collapse(x)*merge1+merge2
+        # merge2 = self.out_prod2(x).tanh()
+        return self.collapse(x)*merge1#+merge2
     def _graphs_available(self) -> bool:
         """
         Whether CUDA-graph acceleration is enabled and usable on this model.
