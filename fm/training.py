@@ -170,7 +170,7 @@ class FlowModel1dTrainingMixin:
         epoch_t = torch.zeros(1, device=device)
         last_pred = None
         last_target = None
-        
+        total_steps=0
         try:
             for epoch in range(epochs):
                 if use_train_graphs:
@@ -181,12 +181,10 @@ class FlowModel1dTrainingMixin:
                 
                 # shuffle each epoch
                 torch.randperm(n, device=device,out=perm)
-                data_shuf = data[perm]
-                condition_shuf = condition[perm]
 
                 losses = 0
                 r2s = 0
-                for start in slices[:1]:
+                for start in slices:
                     if use_train_graphs:
                         # CUDA-graph training step: draw all randomness eagerly
                         # (in the same order as the eager path), copy inputs
@@ -200,8 +198,8 @@ class FlowModel1dTrainingMixin:
                         idx = rot_idx[:B]
                         tg = self._get_fit_graph(B, model, condition_dropout, distribution_matching, epochs, device, loss_normalizer, contrastive_loss_weight)
                         if tg is not None:
-                            tg.inputs[0].copy_(data_shuf[start : start + B])
-                            tg.inputs[1].copy_(condition_shuf[start : start + B])
+                            tg.inputs[0].copy_(data[perm[start : start + B]])
+                            tg.inputs[1].copy_(condition[perm[start : start + B]])
                             tg.inputs[2].copy_(zero_mask)
                             tg.inputs[3].copy_(prior_batch[:B])
                             tg.inputs[4].copy_(time[:B])
@@ -218,16 +216,17 @@ class FlowModel1dTrainingMixin:
                             last_pred = tg.outputs[1]
                             last_target = tg.outputs[2]
                             optim.step()
+                            total_steps+=1
                             losses+=loss
                             continue
                         use_train_graphs = False
                     optim.zero_grad(set_to_none=True)  # set_to_none saves mem and can be faster [web:399]
                     
-                    batch = data_shuf[start : start + batch_size]
+                    batch = data[perm[start : start + batch_size]]
                     B = batch.shape[0]
                     
                     zero_mask = (torch.rand(batch_size,device=device)<condition_dropout)[:B].unsqueeze(-1)
-                    condition_batch = condition_shuf[start : start + batch_size]*zero_mask
+                    condition_batch = condition[perm[start : start + batch_size]]*zero_mask
                     
                     model_inference = lambda xt,t: model_trace(xt,t,condition_batch)
                     
@@ -291,15 +290,16 @@ class FlowModel1dTrainingMixin:
                     )
                         
                     optim.step()
+                    total_steps+=1
                     
                     loss=loss.detach()
                     
                     r2 = r2_score(pred_dir,target_dir)
                     losses+=loss
                     r2s+=r2
-                    
-                if scheduler: sch.step()
                 
+                if scheduler: sch.step()
+
                 if last_pred is not None:
                     r2s = r2_score(last_pred, last_target)
                     mean_r2 = r2s.detach()
