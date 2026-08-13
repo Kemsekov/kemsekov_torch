@@ -27,6 +27,7 @@ class FlowModel1dTrainingMixin:
         batch_size: int = 512,
         contrastive_loss_weight=1.0,
         lr: float = 0.02,
+        grad_clip_max_norm : float=1.0,
         debug: bool = False,
         scheduler = True,
     ):
@@ -173,7 +174,7 @@ class FlowModel1dTrainingMixin:
                         time.uniform_()
                         rot_idx.add_(1).remainder_(B)
                         idx = rot_idx[:B]
-                        tg = self._get_fit_graph(B, model, condition_dropout, device, contrastive_loss_weight)
+                        tg = self._get_fit_graph(B, model, grad_clip_max_norm, device, contrastive_loss_weight)
                         if tg is not None:
                             tg.inputs[0].copy_(data[perm[start : start + B]])
                             tg.inputs[1].copy_(condition[perm[start : start + B]])
@@ -244,7 +245,7 @@ class FlowModel1dTrainingMixin:
                     
                     torch.nn.utils.clip_grad_norm_(
                         model.parameters(),
-                        max_norm=1,
+                        max_norm=grad_clip_max_norm,
                         norm_type=2.0,
                     )
                         
@@ -315,7 +316,7 @@ class FlowModel1dTrainingMixin:
             debug = False,
             lr = 0.02,
             weight_decay=0.01,
-            grad_clip_max_norm : float|None=1,
+            grad_clip_max_norm : float|None=0.05,
             base_model : nn.Module|None = None,
             freeze_integrator = False
         ) -> None:
@@ -625,7 +626,7 @@ class FlowModel1dTrainingMixin:
         self.eval()
     
 
-    def _get_fit_graph(self, B, model, condition_dropout, device, contrastive_loss_weight):
+    def _get_fit_graph(self, B, model, grad_max_norm, device, contrastive_loss_weight):
         """
         Returns (capturing on first call) a CUDA graph of one fit() training
         step for batch size B: forward + loss + gradients + clip. Gradients
@@ -691,7 +692,7 @@ class FlowModel1dTrainingMixin:
             # fused foreach norm + scale kernels replace ~70 per-param
             # launches (results differ from eager at ULP level, which is fine)
             norm = torch.linalg.vector_norm(torch.stack(torch._foreach_norm([g for _, g in used], 2.0)), 2.0)
-            scale = torch.clamp(1.0 / (norm + 1e-6), max=1.0)
+            scale = torch.clamp(grad_max_norm / (norm + 1e-6), max=1.0)
             torch._foreach_mul_([g for _, g in used], scale)
             fn.grads = used
             return loss, pred_dir, target_dir
