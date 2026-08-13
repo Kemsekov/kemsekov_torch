@@ -14,7 +14,13 @@ from kemsekov_torch.common_modules import ConstModule, Prod
 from kemsekov_torch.fm.core import FusedFlowResidual, FlowMatching, zero_module
 from kemsekov_torch.fm.cuda_graph import _CudaGraph
 
-
+def stabilize_flow_weights(model):
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            # Orthogonal initialization prevents early structural modes splitting
+            torch.nn.init.orthogonal_(module.weight, gain=1.0)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
 class FlowModel1dCore(nn.Module):
     """
     Fully-connected Flow Matching model for vector-valued data.
@@ -239,7 +245,7 @@ class FlowModel1dCore(nn.Module):
         self.out_norm = norm(hidden_dim)
         
         self.collapse = nn.Sequential(
-            nn.Linear(hidden_dim,in_dim)
+            zero_module(nn.Linear(hidden_dim,in_dim,bias=False))
         )
         
         self.out_prod = nn.Sequential(
@@ -259,6 +265,7 @@ class FlowModel1dCore(nn.Module):
         # store model weights in the provided precision
         self.to(dtype)
         self.eval()
+        # stabilize_flow_weights(self)
     def _param_dtype(self) -> torch.dtype:
         """
         Dtype of the model's floating-point weights.
