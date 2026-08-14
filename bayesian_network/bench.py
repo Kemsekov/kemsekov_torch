@@ -20,8 +20,7 @@ def bench_all(impl_name, mod, device='cuda', dtype='fp32', epochs=256):
     torch.optim.AdamW(mod.get_optim_groups(structure.model), lr=0.01, fused=True)  # warm one-time torch cost
     torch.cuda.synchronize() if device=='cuda' else None
     t0 = time.time()
-    structure.fit(epochs=epochs, batch_size=256, loss_function='cross_entropy',
-                  lr=0.01, random_conditional_prob=0.4)
+    structure.fit(epochs=epochs, batch_size=256, lr=0.01, random_conditional_prob=0.4)
     torch.cuda.synchronize() if device=='cuda' else None
     fit_t = time.time() - t0
 

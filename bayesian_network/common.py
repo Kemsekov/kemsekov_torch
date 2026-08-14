@@ -16,7 +16,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from contextlib import nullcontext
-from typing import List, Literal, Optional, Union
+from typing import List, Optional, Union
 
 from kemsekov_torch.common_modules import get_optim_groups
 
@@ -155,12 +155,13 @@ class _FitGraph:
     eliminated.  RNG-consuming ops (randperm/rand_like/randint) stay outside.
     """
 
-    def __init__(self, structure, opt, scaler, batch_size):
+    def __init__(self, structure, opt, scaler, batch_size,smoothness):
         self.structure = structure
         self.opt = opt
         self.scaler = scaler
         dev = structure.device
         dim = structure.dim
+        self.smoothness=smoothness
         self.batch = torch.zeros(batch_size, dim, device=dev)
         self.mask = torch.zeros(batch_size, dim, device=dev)
         self.expected = torch.zeros(batch_size, dtype=torch.long, device=dev)
@@ -171,7 +172,8 @@ class _FitGraph:
         self.opt.zero_grad(set_to_none=False)
         with self.structure._amp():
             pred = self.structure.model(self.batch, self.mask)
-            loss = F.cross_entropy(pred, self.expected)
+            diff = (pred[:,1:]-pred[:,:-1]).pow(2).mean()
+            loss = F.cross_entropy(pred, self.expected)+diff*self.smoothness
         self.scaler.scale(loss).backward()
         self.loss_buf.copy_(loss.detach())
 
@@ -332,8 +334,7 @@ class _StructureBase:
 
     # ------------------------------------------------------------- training --
     def fit(self, epochs=2048, batch_size=256, lr=0.01,
-            loss_function: Literal['cross_entropy', 'mle'] = 'cross_entropy',
-            random_conditional_prob=0.4, verbose=None):
+            random_conditional_prob=0.4, verbose=None,smoothness=0.1):
         if verbose is None:
             verbose = self.verbose
         opt = torch.optim.AdamW(get_optim_groups(self.model), lr=lr,
@@ -347,8 +348,7 @@ class _StructureBase:
 
         running = torch.arange(batch_size, device=self.device)
 
-        use_graph = (self.device.type == "cuda" and loss_function == 'cross_entropy'
-                     and torch.cuda.is_available())
+        use_graph = (self.device.type == "cuda" and torch.cuda.is_available())
         # fp16's GradScaler is recreated per fit() call and its _scale tensor is
         # baked into the captured graph, so fp16 graphs must be re-captured.
         cacheable = self.dtype != torch.float16
@@ -358,7 +358,7 @@ class _StructureBase:
                 fit_graph = cached[1]
             else:
                 try:
-                    fit_graph = _FitGraph(self, opt, scaler, batch_size)
+                    fit_graph = _FitGraph(self, opt, scaler, batch_size,smoothness)
                 except Exception:
                     fit_graph = None
                 if cacheable and fit_graph is not None:
@@ -398,24 +398,20 @@ class _StructureBase:
                 scaler.update()
                 sch.step()
                 if verbose:
-                    print(f"Loss:{loss.item():0.3f}")
+                    print(f"{(str(i)+" "*5)[:5]} Loss:{loss:0.3f}")
             else:
                 opt.zero_grad(True)
                 with self._amp():
-                    if loss_function == 'mle':
-                        y = batch[running, modelled_variable]
-                        prob = self.forward(batch, mask, log_softmax=True)
-                        loss = (-prob(y.unsqueeze(0))).mean()
-                    else:
-                        pred = self.model(batch, mask)
-                        expected_ind = self.quantize.quantize(batch, list(range(self.dim)))[running, modelled_variable]
-                        loss = F.cross_entropy(pred, expected_ind)
+                    pred = self.model(batch, mask)
+                    expected_ind = self.quantize.quantize(batch, list(range(self.dim)))[running, modelled_variable]
+                    diff = (pred[:,1:]-pred[:,:-1]).pow(2).mean()
+                    loss = F.cross_entropy(pred, expected_ind)+diff*smoothness
                 scaler.scale(loss).backward()
                 scaler.step(opt)
                 scaler.update()
                 sch.step()
-                if verbose:
-                    print(f"Loss:{loss:0.3f}")
+                if verbose and i%100==0:
+                    print(f"{(str(i)+" "*5)[:5]} Loss:{loss:0.3f}")
 
     # ------------------------------------------------------------ inference --
     @torch.no_grad()
