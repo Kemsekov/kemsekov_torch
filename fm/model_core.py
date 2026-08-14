@@ -239,7 +239,6 @@ class FlowModel1dCore(nn.Module):
         
         if residual_blocks_impl=='attention':
             self.residual_blocks = AR2Fast([
-                # True: 0.447
                 FusedFlowResidual(hidden_dim)
                 for i in range(residual_blocks)
             ],hidden_dim,-1)

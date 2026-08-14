@@ -270,8 +270,6 @@ def zero_module(module):
 # Original eager FusedFlowResidual block: x + W2^T SiLU(x (W1^T SiLU(LN(x))))
 
 
-
-
 class FusedFlowResidual(nn.Module):
     def __init__(self,hidden_dim,residual=True) -> None:
         super().__init__()
@@ -279,7 +277,6 @@ class FusedFlowResidual(nn.Module):
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
             zero_module(nn.Linear(hidden_dim,hidden_dim,bias=False)),
-            # nn.Tanh()
         )
         self.out = nn.Sequential(
             nn.SiLU(),
@@ -287,10 +284,8 @@ class FusedFlowResidual(nn.Module):
         )
         self.register_buffer("residual",torch.tensor([1.0 if residual else 0.0]))
     def forward(self,x):
-        prod = self.prod(x)
-        return self.out(x*(1+prod))+x
-
-
+        prod = self.prod(x)+1
+        return self.out(x*prod)+x
 
 
 def get_fm_optim_groups(model, extra_model=None, weight_decay=1e-2):
