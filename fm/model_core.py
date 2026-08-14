@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from torch.quasirandom import SobolEngine
 from kemsekov_torch.attention_residual_fast import AR2Fast
-from kemsekov_torch.common_modules import ConstModule, Prod
+from kemsekov_torch.common_modules import AddConst, ConstModule, Prod
 from kemsekov_torch.fm.core import FusedFlowResidual, FlowMatching, zero_module
 from kemsekov_torch.fm.cuda_graph import _CudaGraph
 
@@ -194,25 +194,19 @@ class FlowModel1dCore(nn.Module):
 
         
         self.time_emb = nn.Sequential(
-            #=========================
-            # zero_module(nn.Linear(1,hidden_dim*2)),
-            #=========================
             nn.Linear(1,hidden_dim),
             nn.SiLU(),
             Prod(nn.Sequential(
                 # zero_module(nn.Linear(hidden_dim,hidden_dim)),
                 nn.Linear(hidden_dim,hidden_dim),
                 # nn.RMSNorm(hidden_dim),
-                nn.SiLU(),
+                nn.ELU(),
             )),
             # nn.LayerNorm(hidden_dim),
             # nn.SiLU(),
             # nn.Linear(hidden_dim,hidden_dim*2),
             zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
-            #=========================
-            # nn.Linear(1,hidden_dim),
-            # nn.SiLU(),
-            # zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
+            
         )
         
         if conditional_dim is not None:
@@ -223,7 +217,7 @@ class FlowModel1dCore(nn.Module):
                     # zero_module(nn.Linear(hidden_dim,hidden_dim)),
                     nn.Linear(hidden_dim,hidden_dim),
                     # nn.RMSNorm(hidden_dim),
-                    nn.SiLU(),
+                    nn.ELU(),
                 )),
                 # nn.LayerNorm(hidden_dim),
                 # nn.SiLU(),
