@@ -278,7 +278,7 @@ class FusedFlowResidual(nn.Module):
         self.prod = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.SiLU(),
-            nn.Linear(hidden_dim,hidden_dim*2,bias=False),
+            zero_module(nn.Linear(hidden_dim,hidden_dim,bias=False)),
             # nn.Tanh()
         )
         self.out = nn.Sequential(
@@ -287,30 +287,8 @@ class FusedFlowResidual(nn.Module):
         )
         self.register_buffer("residual",torch.tensor([1.0 if residual else 0.0]))
     def forward(self,x):
-        prod,gate = self.prod(x).chunk(2,-1)
-        gate=gate.sigmoid()*2#0.45
-        prod = x*prod
-        return self.out(prod)+x*gate
-
-
-class FusedFlowResidual2(nn.Module):
-    def __init__(self,hidden_dim,residual=True) -> None:
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim,hidden_dim),
-            # nn.RMSNorm(hidden_dim),
-            nn.SiLU(),
-            # nn.Linear(hidden_dim,hidden_dim*2),
-            zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
-        )
-        self.register_buffer("residual",torch.tensor([1.0 if residual else 0.0]))
-        
-    def forward(self,x):
-        a,b = self.mlp(x).chunk(2,-1)
-        b=b.sigmoid() #it starts at 0.5
-        return a+x*2*b
+        prod = self.prod(x)
+        return self.out(x*(1+prod))+x
 
 
 
