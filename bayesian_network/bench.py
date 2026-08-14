@@ -16,7 +16,7 @@ def bench_all(impl_name, mod, device='cuda', dtype='fp32', epochs=256):
     dataset = torch.tensor(np.column_stack((x, y, z)), dtype=torch.float32)
     torch.ones(1, device=device); torch.cuda.synchronize() if device=='cuda' else None
 
-    structure = mod.Structure(dataset, bayesian_network=None, bins=64, device=device, dtype=dtype)
+    structure = mod.Structure(dataset, bayesian_network="all", bins=64, device=device, dtype=dtype)
     torch.optim.AdamW(mod.get_optim_groups(structure.model), lr=0.01, fused=True)  # warm one-time torch cost
     torch.cuda.synchronize() if device=='cuda' else None
     t0 = time.time()

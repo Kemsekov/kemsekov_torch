@@ -71,6 +71,13 @@ def topological_sort(bayesian_network):
     return sorted_bn
 
 
+def make_chain_bn(dim):
+    """Sequential chain-rule bayesian network: each variable depends on all
+    variables with a higher index, e.g. dim=3 -> [[2], [2, 1], [2, 1, 0]]."""
+    all_vars = list(range(dim))
+    return [all_vars[-p - 1:] for p in range(dim)]
+
+
 class Quantize:
     """
     This is small convenience tool for converting continuous data into discrete
@@ -344,7 +351,7 @@ class _StructureBase:
         dataset = self.dataset
         bayesian_network = self.bayesian_network
 
-        is_bayesian_specified = bayesian_network is not None and len(bayesian_network) > 0
+        is_bayesian_specified = bayesian_network != "all" and len(bayesian_network) > 0
 
         running = torch.arange(batch_size, device=self.device)
 
@@ -354,7 +361,7 @@ class _StructureBase:
         cacheable = self.dtype != torch.float16
         if use_graph:
             cached = self._fit_graph
-            if cacheable and cached is not None and cached[0] == batch_size:
+            if cacheable and cached is not None and cached[0] == (batch_size, smoothness):
                 fit_graph = cached[1]
             else:
                 try:
@@ -362,7 +369,7 @@ class _StructureBase:
                 except Exception:
                     fit_graph = None
                 if cacheable and fit_graph is not None:
-                    self._fit_graph = (batch_size, fit_graph)
+                    self._fit_graph = ((batch_size, smoothness), fit_graph)
         else:
             fit_graph = None
 
@@ -423,9 +430,8 @@ class _StructureBase:
         samples = torch.zeros((batch_size, dim), device=device)
         bayesian_network = self.bayesian_network
 
-        if bayesian_network is None:
-            all_vars = list(range(self.dim))
-            bayesian_network = [all_vars[-p - 1:] for p in range(self.dim)]
+        if bayesian_network == "all":
+            bayesian_network = make_chain_bn(self.dim)
         # --- Robust Topological Sort ---
         # Ensures we only sample a variable if all its conditions have already been sampled
         sorted_bn = topological_sort(bayesian_network)
@@ -491,9 +497,8 @@ class _StructureBase:
         log_joint = torch.zeros(data.shape[0], device=device)
 
         bayesian_network = self.bayesian_network
-        if bayesian_network is None:
-            all_vars = list(range(self.dim))
-            bayesian_network = [all_vars[-p - 1:] for p in range(self.dim)]
+        if bayesian_network == "all":
+            bayesian_network = make_chain_bn(self.dim)
 
         # --- Robust Topological Sort (Ensures valid chain rule order) ---
         sorted_bn = topological_sort(bayesian_network)
@@ -544,7 +549,7 @@ class _StructureBase:
         device = self.device
         log_joint = torch.zeros(data.shape[0], device=device)
 
-        is_bn_specified = self.bayesian_network is not None and len(self.bayesian_network) > 0
+        is_bn_specified = self.bayesian_network != "all" and len(self.bayesian_network) > 0
 
         if is_bn_specified:
             # 1. Build mapping from variable to its parents in the original BN

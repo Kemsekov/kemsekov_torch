@@ -6,6 +6,7 @@ from kemsekov_torch.bayesian_network.common import (
     Residual,
     resolve_device,
     resolve_dtype,
+    make_chain_bn,
     _StructureBase,
 )
 
@@ -249,11 +250,16 @@ Interpolation=LinearInterpolation
 
 
 class Structure(_StructureBase):
-    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64,hid_residuals=2,
+    def __init__(self,dataset,bayesian_network="all",bins=32,hid_dim=64,hid_residuals=2,
                  device: Optional[Union[str, torch.device]] = None,
                  dtype: Union[str, torch.dtype] = "fp32",
                  verbose=False):
         """
+        bayesian_network:
+            - 'all' (default): train on all possible condition combinations,
+            - list[list[int]]: explicit structure [[target, parents...], ...],
+            - None: use a sequential chain-rule structure (each variable
+              depends on all variables with a higher index).
         device: 'cuda', 'cpu', 'mps' or torch.device. Defaults to the best available.
         dtype:  compute dtype for training and inference:
                 - 'fp32' : full float32 (default)
@@ -262,12 +268,14 @@ class Structure(_StructureBase):
         """
         self.device = resolve_device(device)
         self.dtype = resolve_dtype(dtype)
-        self.bayesian_network=bayesian_network
         self.verbose = verbose
         if not isinstance(dataset, torch.Tensor):
             dataset = torch.tensor(dataset, dtype=torch.float32)
         dataset = dataset.to(device=self.device, dtype=torch.float32)
         self.dim = dataset.shape[-1]
+        if bayesian_network is None:
+            bayesian_network = make_chain_bn(self.dim)
+        self.bayesian_network = bayesian_network
         self.model = Generative(self.dim,hid_dim,bins=bins,hid_residuals=hid_residuals)
         self.model = self.model.to(device=self.device)
         self.raw_dataset = dataset
