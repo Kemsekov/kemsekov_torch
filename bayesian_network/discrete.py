@@ -9,6 +9,7 @@ from kemsekov_torch.bayesian_network.common import (
     make_chain_bn,
     _StructureBase,
 )
+from kemsekov_torch.common_modules import zero_module
 
 
 class Generative(nn.Module):
@@ -20,11 +21,11 @@ class Generative(nn.Module):
             *[Residual((
                 nn.RMSNorm(hid_dim),
                 Prod((
-                    nn.Linear(hid_dim,hid_dim),
-                    nn.Tanh()
+                    nn.Linear(hid_dim,hid_dim,bias=False),
+                    nn.ELU()
                 )),
                 nn.SiLU(),
-                nn.Linear(hid_dim,hid_dim),
+                zero_module(nn.Linear(hid_dim,hid_dim)),
             )) for i in range(hid_residuals)],
             nn.RMSNorm(hid_dim),
             nn.SiLU(),
