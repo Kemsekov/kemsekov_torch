@@ -21,6 +21,7 @@ def stabilize_flow_weights(model):
             torch.nn.init.orthogonal_(module.weight, gain=1.0)
             if module.bias is not None:
                 torch.nn.init.zeros_(module.bias)
+
 class FlowModel1dCore(nn.Module):
     """
     Fully-connected Flow Matching model for vector-valued data.
@@ -193,32 +194,39 @@ class FlowModel1dCore(nn.Module):
 
         
         self.time_emb = nn.Sequential(
+            #=========================
+            # zero_module(nn.Linear(1,hidden_dim*2)),
+            #=========================
             nn.Linear(1,hidden_dim),
+            nn.SiLU(),
             Prod(nn.Sequential(
-                nn.SiLU(),
                 # zero_module(nn.Linear(hidden_dim,hidden_dim)),
                 nn.Linear(hidden_dim,hidden_dim),
                 # nn.RMSNorm(hidden_dim),
-                nn.Tanh(),
+                nn.SiLU(),
             )),
             # nn.LayerNorm(hidden_dim),
-            nn.SiLU(),
+            # nn.SiLU(),
             # nn.Linear(hidden_dim,hidden_dim*2),
             zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
+            #=========================
+            # nn.Linear(1,hidden_dim),
+            # nn.SiLU(),
+            # zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
         )
         
         if conditional_dim is not None:
             self.condition_emb = nn.Sequential(
                 nn.Linear(conditional_dim,hidden_dim),
+                nn.SiLU(),
                 Prod(nn.Sequential(
-                    nn.SiLU(),
                     # zero_module(nn.Linear(hidden_dim,hidden_dim)),
                     nn.Linear(hidden_dim,hidden_dim),
                     # nn.RMSNorm(hidden_dim),
-                    nn.Tanh(),
+                    nn.SiLU(),
                 )),
                 # nn.LayerNorm(hidden_dim),
-                nn.SiLU(),
+                # nn.SiLU(),
                 # nn.Linear(hidden_dim,hidden_dim*2),
                 zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
             )
