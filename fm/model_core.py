@@ -197,16 +197,10 @@ class FlowModel1dCore(nn.Module):
             nn.Linear(1,hidden_dim),
             nn.SiLU(),
             Prod(nn.Sequential(
-                # zero_module(nn.Linear(hidden_dim,hidden_dim)),
                 nn.Linear(hidden_dim,hidden_dim),
-                # nn.RMSNorm(hidden_dim),
                 nn.ELU(),
             )),
-            # nn.LayerNorm(hidden_dim),
-            # nn.SiLU(),
-            # nn.Linear(hidden_dim,hidden_dim*2),
             zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
-            
         )
         
         if conditional_dim is not None:
@@ -214,14 +208,9 @@ class FlowModel1dCore(nn.Module):
                 nn.Linear(conditional_dim,hidden_dim),
                 nn.SiLU(),
                 Prod(nn.Sequential(
-                    # zero_module(nn.Linear(hidden_dim,hidden_dim)),
                     nn.Linear(hidden_dim,hidden_dim),
-                    # nn.RMSNorm(hidden_dim),
                     nn.ELU(),
                 )),
-                # nn.LayerNorm(hidden_dim),
-                # nn.SiLU(),
-                # nn.Linear(hidden_dim,hidden_dim*2),
                 zero_module(nn.Linear(hidden_dim,hidden_dim*2)),
             )
         else:
