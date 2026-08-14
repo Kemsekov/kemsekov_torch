@@ -1,56 +1,15 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import List,Literal
-from kemsekov_torch.common_modules import get_optim_groups
+from typing import List,Optional,Union
+from kemsekov_torch.bayesian_network.common import (
+    Prod,
+    Residual,
+    resolve_device,
+    resolve_dtype,
+    _StructureBase,
+)
 
-class Quantize:
-    """
-    This is small convenience tool for converting continuous data into discrete
-    representation and inverse
-    """
-    def __init__(self,data : torch.Tensor,bins=32):
-        # data of shape [batch,dim]
-        if not isinstance(data,torch.Tensor):
-            data = torch.tensor(data)
-        self.center = data.mean(0)    
-        self.scale = data.std(0)*2.5
-        
-        # protect from zero features
-        self.scale[self.scale==0]=1 
-        
-        self.bins=bins
-    def quantize(self,x: torch.Tensor,dimensions : List[int]):
-        if not isinstance(x,torch.Tensor):x=torch.tensor(x)
-        # x is some subset of data features, x=data[:,dimensions]
-        centers = self.center[dimensions].unsqueeze(0)
-        scales = self.scale[dimensions].unsqueeze(0)
-        normalized = ((x-centers)/scales+1)/2
-        quantized = torch.floor(normalized * self.bins).clamp(0, self.bins - 1).long()
-        return quantized
-    
-    def dequantize(self,q:torch.Tensor,dimensions : List[int]):
-        if not isinstance(q,torch.Tensor):q=torch.tensor(q)
-        centers = self.center[dimensions].unsqueeze(0)
-        scales = self.scale[dimensions].unsqueeze(0)
-        symmetric = ((q+0.5)/self.bins)*2-1
-        denorm = symmetric*scales+centers
-        return denorm
-class Prod(nn.Module):
-    def __init__(self, module):
-        super().__init__()
-        if isinstance(module,list) or isinstance(module,tuple):module = nn.Sequential(*module)
-        self.m=module
-    def forward(self,x):
-        return x*self.m(x)
-class Residual(nn.Module):
-    def __init__(self, module):
-        super().__init__()
-        if isinstance(module,list) or isinstance(module,tuple):module = nn.Sequential(*module)
-        self.m=module
-    def forward(self,x):
-        return x+self.m(x)
-    
+
 class Generative(nn.Module):
     def __init__(self, dim : int,hid_dim=32,bins=16,hid_residuals=2):
         super().__init__()
@@ -288,70 +247,36 @@ class CubicInterpolation:
 
 Interpolation=LinearInterpolation
 
-class Structure:
-    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64,hid_residuals=2):
-        self.quantize = Quantize(dataset,bins=bins)
+
+class Structure(_StructureBase):
+    def __init__(self,dataset,bayesian_network,bins=32,hid_dim=64,hid_residuals=2,
+                 device: Optional[Union[str, torch.device]] = None,
+                 dtype: Union[str, torch.dtype] = "fp32",
+                 verbose=False):
+        """
+        device: 'cuda', 'cpu', 'mps' or torch.device. Defaults to the best available.
+        dtype:  compute dtype for training and inference:
+                - 'fp32' : full float32 (default)
+                - 'fp16' : half precision via AMP autocast + grad scaling (CUDA)
+                - 'bf16' : bfloat16 via AMP autocast (CUDA/CPU)
+        """
+        self.device = resolve_device(device)
+        self.dtype = resolve_dtype(dtype)
         self.bayesian_network=bayesian_network
+        self.verbose = verbose
+        if not isinstance(dataset, torch.Tensor):
+            dataset = torch.tensor(dataset, dtype=torch.float32)
+        dataset = dataset.to(device=self.device, dtype=torch.float32)
         self.dim = dataset.shape[-1]
         self.model = Generative(self.dim,hid_dim,bins=bins,hid_residuals=hid_residuals)
-        # self.dataset=dataset
-        self.dataset=self.quantize.dequantize(self.quantize.quantize(dataset,list(range(self.dim))),list(range(self.dim)))
-        self.bins = bins
-        
-        grids = []
-        for infer_ind in range(self.dim):
-            grid = self.quantize.dequantize(torch.arange(self.bins)[None,:],[infer_ind])
-            grids.append(grid)
-        self.grids=torch.concat(grids)
-        
-    def fit(self,epochs=2048,batch_size=256,lr=0.01,loss_function : Literal['cross_entropy','mle'] = 'cross_entropy',random_conditional_prob=0.4,verbose=True):
-        opt = torch.optim.AdamW(get_optim_groups(self.model),lr=lr,fused=True)
-        sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
-        dataset=self.dataset
-        bayesian_network=self.bayesian_network
-        
-        is_bayesian_specified = bayesian_network is not None and len(bayesian_network)>0
-        
-        running = torch.arange(batch_size)
-        for i in range(epochs):
-            batch = dataset[torch.randperm(len(dataset))[:batch_size]]
-            # now we must create random masks out of provided bayesian network
-            # for P(X0|X1,X2) with X=[X0,X1,X2,X3]
-            # mask=[1,-1,-1,0]
-            mask = torch.zeros_like(batch)
-            modelled_variable = torch.zeros(batch_size,dtype=torch.long)
-            
-            if is_bayesian_specified:
-                size = batch_size//len(bayesian_network)+1
-                for ind,imp in enumerate(bayesian_network):
-                    part = batch_size*ind//len(bayesian_network)
-                    mask_slice = mask[part:part+size]
-                    mask_slice[:,imp[0]]=1
-                    for cond_var in imp[1:]:
-                        mask_slice[:,cond_var]=-1
-            else:
-                conditional_mask = torch.rand_like(mask)<random_conditional_prob
-                mask[conditional_mask]=-1
-                mask[running,torch.randint(0,self.dim,(batch_size,))]=1
-            opt.zero_grad(True)
-            modelled_variable=(mask == 1).long().argmax(dim=-1)
-
-            #why this version of loss does not work?
-            #============================
-            if loss_function=='mle':
-                y=batch[running,modelled_variable]
-                prob = self.forward(batch,mask,log_softmax=True)
-                loss = (-prob(y.unsqueeze(0))).mean()
-            #============================
-            else:
-                pred = self.model(batch,mask)
-                expected_ind = self.quantize.quantize(batch,list(range(self.dim)))[running,modelled_variable]
-                loss = F.cross_entropy(pred, expected_ind)
-            #============================
-            loss.backward()
-            opt.step()
-            sch.step()
-            if verbose: print(f"Loss:{loss:0.3f}")
+        self.model = self.model.to(device=self.device)
+        self.raw_dataset = dataset
+        self.set_bins(bins)
+        # lazily populated cuda-graph caches (fit / forward per batch size)
+        self._fit_graph = None
+        self._fwd_graphs = {}
+        if self.verbose:
+            print(f"Structure on {self.device} (dtype={self.dtype})")
     
     def forward(self,batch,mask,log_softmax=False):
         modelled_variable=(mask == 1).long().argmax(dim=-1)
@@ -359,64 +284,6 @@ class Structure:
         grids = self.grids[modelled_variable]
         if log_softmax: pred = pred.log_softmax(-1)
         return Interpolation(grids,pred)
-    
-    @torch.no_grad()
-    def generate(self, batch_size=128):
-        dim = self.dim # Number of features
-        device = next(self.model.parameters()).device
-        
-        # Store our generated continuous values
-        samples = torch.zeros((batch_size, dim), device=device)
-        bayesian_network=self.bayesian_network
-        
-        if bayesian_network is None:
-            all=list(range(self.dim))
-            bayesian_network=[all[-p-1:] for p in range(self.dim)]
-        # --- Robust Topological Sort ---
-        # Ensures we only sample a variable if all its conditions have already been sampled
-        sorted_bn = []
-        sampled_vars = set()
-        remaining_bn = list(bayesian_network)
-        
-        while remaining_bn:
-            for dependency in list(remaining_bn):
-                target_var = dependency[0]
-                cond_vars = set(dependency[1:])
-                if cond_vars.issubset(sampled_vars):
-                    sorted_bn.append(dependency)
-                    sampled_vars.add(target_var)
-                    remaining_bn.remove(dependency)
-                    
-        # --- Autoregressive Sampling Loop ---
-        for dependency in sorted_bn:
-            target_var = dependency[0]
-            cond_vars = dependency[1:]
-            
-            # 1. Build the mask
-            mask = torch.zeros((batch_size, dim), device=device)
-            mask[:, target_var] = 1           # 1 for the variable we are predicting
-            for c_var in cond_vars:
-                mask[:, c_var] = -1           # -1 for known conditions
-                
-            # 2. Build the input tensor (plugging in previously sampled conditions)
-            x_in = torch.zeros((batch_size, dim), device=device)
-            for c_var in cond_vars:
-                x_in[:, c_var] = samples[:, c_var]
-                
-            # 3. Predict probabilities
-            # (Assuming model returns raw logits. Use .exp() if it returns log_softmax)
-            logits = self.model(x_in, mask)
-            probs = torch.softmax(logits, dim=-1)
-            
-            # 4. Sample bin indices from the categorical distribution
-            sampled_bins = torch.multinomial(probs, num_samples=1).squeeze(-1) # Shape: [batch_size]
-            
-            # 5. Dequantize bins to continuous values and store them
-            # unsqueeze to [batch_size, 1] to match your dequantize expectations
-            sampled_vals = self.quantize.dequantize(sampled_bins.unsqueeze(-1), dimensions=[target_var]).squeeze(-1)
-            samples[:, target_var] = sampled_vals
-            
-        return samples
 
     def conditional_dist(self,condition : torch.Tensor,variables: List[int],log_softmax=True):
         """
@@ -432,175 +299,25 @@ class Structure:
             relative to input dataset
         """
         
-        if not isinstance(condition,torch.Tensor): condition=torch.tensor(condition)
+        if not isinstance(condition,torch.Tensor): condition=torch.tensor(condition,dtype=torch.float32)
+        condition = condition.to(device=self.device,dtype=torch.float32)
         if condition.ndim==1:condition=condition.unsqueeze(0)
         
-        inp = torch.zeros((condition.shape[0],self.dim))
+        inp = torch.zeros((condition.shape[0],self.dim),device=self.device,dtype=torch.float32)
         inp[:,variables[1:]]=condition
         infer_ind = variables[0]
         mask=torch.zeros_like(inp)
         mask[:,infer_ind]=1
         mask[:,variables[1:]]=-1
-        grid = self.quantize.dequantize(torch.arange(self.bins)[None,:],[infer_ind])
-        points = self.model.forward(inp,mask)
-        grid = grid.expand_as(points)
+        B = condition.shape[0]
+        fwd = self._get_fwd_graph(B)
+        if fwd is not None:
+            points, _ = fwd.replay(inp, mask)
+        else:
+            with self._amp():
+                points = self.model.forward(inp,mask)
+            points = points.float()
+        grid = self.grids[infer_ind]
+        grid = grid.float().expand_as(points)
         if log_softmax: points=points.log_softmax(-1)
         return Interpolation(grid,points)
-
-    def full_joint_log(self, data: torch.Tensor):
-        """
-        Computes log of the full joint probability of the provided data points
-        using the chain rule defined by the bayesian_network.
-        
-        P(X) = prod P(X_i | Parents(X_i))
-        
-        data: tensor of shape [B, dim]
-        """
-        if not isinstance(data, torch.Tensor):
-            data = torch.tensor(data, dtype=torch.float32)
-        if data.ndim == 1:
-            data = data.unsqueeze(0)
-            
-        device = data.device
-        log_joint = torch.zeros(data.shape[0], device=device)
-        
-        bayesian_network = self.bayesian_network
-        if bayesian_network is None:
-            all_vars = list(range(self.dim))
-            bayesian_network = [all_vars[-p-1:] for p in range(self.dim)]
-            
-        # --- Robust Topological Sort (Ensures valid chain rule order) ---
-        sorted_bn = []
-        sampled_vars = set()
-        remaining_bn = list(bayesian_network)
-        
-        while remaining_bn:
-            for dependency in list(remaining_bn):
-                target_var = dependency[0]
-                cond_vars = set(dependency[1:])
-                if cond_vars.issubset(sampled_vars):
-                    sorted_bn.append(dependency)
-                    sampled_vars.add(target_var)
-                    remaining_bn.remove(dependency)
-                    
-        # --- Accumulate Conditional Log-Probabilities ---
-        for dependency in sorted_bn:
-            target_var = dependency[0]
-            cond_vars = dependency[1:]
-            
-            # 1. Extract condition values from the data
-            if len(cond_vars) > 0:
-                cond_values = data[:, cond_vars]
-            else:
-                # Handle unconditional probabilities (e.g., P(Z))
-                cond_values = torch.empty((data.shape[0], 0), device=device)
-                
-            # 2. Get the continuous conditional distribution 
-            # We use log_softmax=True to match the geometric interpolation of your MLE loss!
-            interp = self.conditional_dist(cond_values, dependency, log_softmax=True)
-            
-            # 3. Evaluate at the target variable's actual continuous values
-            target_values = data[:, target_var]
-            
-            # interp expects [K, B]. target_values is [B]. Unsqueeze to [1, B]
-            log_p_y = interp(target_values.unsqueeze(0)).squeeze(0) # Shape: [B]
-            
-            # 4. Accumulate log-probabilities
-            log_joint += log_p_y
-            
-        return log_joint
-    def partial_joint_log(self, data: torch.Tensor, variables: List[int]):
-        """
-        Computes the joint probability over a specific subset of variables.
-        
-        data: tensor of shape [Batch, d] where d is the number of variables in the subset
-        variables: List[int] containing the original indices of the variables in the subset
-        return_log: if True, returns log-probabilities (prevents underflow)
-        """
-        if not isinstance(data, torch.Tensor):
-            data = torch.tensor(data, dtype=torch.float32)
-        if data.ndim == 1:
-            data = data.unsqueeze(0)
-            
-        if data.shape[1] != len(variables):
-            raise ValueError(f"data shape {data.shape} does not match number of variables {len(variables)}")
-            
-        device = data.device
-        log_joint = torch.zeros(data.shape[0], device=device)
-        
-        is_bn_specified = self.bayesian_network is not None and len(self.bayesian_network) > 0
-        
-        if is_bn_specified:
-            # 1. Build mapping from variable to its parents in the original BN
-            parents_map = {}
-            for dep in self.bayesian_network:
-                parents_map[dep[0]] = set(dep[1:])
-                
-            sub_bn = []
-            target_vars_set = set(variables)
-            
-            # 2. Check if the subset is computable from the provided BN (The Closure Check)
-            for v in variables:
-                if v not in parents_map:
-                    raise ValueError(f"Variable {v} is not defined in the provided bayesian_network.")
-                
-                parents = parents_map[v]
-                if not parents.issubset(target_vars_set):
-                    missing = parents - target_vars_set
-                    raise ValueError(
-                        f"Cannot compute partial joint for subset {variables}. "
-                        f"Variable {v} depends on parents {list(parents)} in the bayesian_network, "
-                        f"but the following parents are missing from the subset: {list(missing)}. "
-                        f"(Marginalizing them out requires numerical integration, which is not supported)."
-                    )
-                sub_bn.append([v] + list(parents))
-                
-            # 3. Topologically sort the sub-BN to ensure valid chain rule order
-            sorted_bn = []
-            sampled_vars = set()
-            remaining_bn = list(sub_bn)
-            
-            while remaining_bn:
-                for dependency in list(remaining_bn):
-                    target_var = dependency[0]
-                    cond_vars = set(dependency[1:])
-                    if cond_vars.issubset(sampled_vars):
-                        sorted_bn.append(dependency)
-                        sampled_vars.add(target_var)
-                        remaining_bn.remove(dependency)
-                        
-        else:
-            # If no BN is specified, build an arbitrary autoregressive chain for the subset
-            # e.g., variables = [0, 1, 2] -> [[2, 1, 0], [1, 0], [0]]
-            sorted_bn = [variables[-p-1:] for p in range(len(variables))]
-            
-        # --- Accumulate Conditional Log-Probabilities ---
-        # Map original variable indices to their column index in the `data` tensor
-        var_to_col = {v: i for i, v in enumerate(variables)}
-        
-        for dependency in sorted_bn:
-            target_var = dependency[0]
-            cond_vars = dependency[1:]
-            
-            # 1. Extract condition values from the subset data
-            if len(cond_vars) > 0:
-                cond_cols = [var_to_col[c] for c in cond_vars]
-                cond_values = data[:, cond_cols]
-            else:
-                cond_values = torch.empty((data.shape[0], 0), device=device)
-                
-            # 2. Get the continuous conditional distribution 
-            # `dependency` contains the original indices, which `conditional_dist` expects
-            interp = self.conditional_dist(cond_values, dependency, log_softmax=True)
-            
-            # 3. Evaluate at the target variable's actual continuous values
-            target_col = var_to_col[target_var]
-            target_values = data[:, target_col]
-            
-            # interp expects [K, B]. target_values is [B]. Unsqueeze to [1, B]
-            log_p_y = interp(target_values.unsqueeze(0)).squeeze(0)
-            
-            # 4. Accumulate log-probabilities
-            log_joint += log_p_y
-            
-        return log_joint
