@@ -145,7 +145,7 @@ class FlowModel1dTrainingMixin:
             torch.linspace(0,1,shift+4),
             torch.linspace(0,1,shift+8),
             torch.linspace(0,1,shift+16),
-            torch.linspace(0,1,shift+32)]
+            torch.linspace(0,1,shift+24)]
         ).unique().to(device)
         
         perm = torch.zeros(n, device=device,dtype=torch.int32)
@@ -496,7 +496,7 @@ class FlowModel1dTrainingMixin:
         condition = condition.to(self.device)
         
         with torch.no_grad():
-            x = base_model.to_prior(data,condition,steps=32)
+            x = base_model.to_prior(data,condition,steps=24)
             y = data
             
             # balance generated and original dataset 50/50
@@ -510,7 +510,7 @@ class FlowModel1dTrainingMixin:
             # x_gen = sample_base(self.sobol,len(x),self.device)
             x_gen = torch.randn_like(x)
             cond_gen = torch.zeros_like(condition)
-            y_gen = base_model.to_target(x_gen,cond_gen,steps=32)
+            y_gen = base_model.to_target(x_gen,cond_gen,steps=24)
             
             x = torch.concat([x,x_gen],0)
             y = torch.concat([y,y_gen],0)
