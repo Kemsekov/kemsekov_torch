@@ -138,6 +138,15 @@ class FlowModel1dTrainingMixin:
         
         prior_batch=torch.randn((batch_size,self.in_dim),device=device)
         time = torch.rand(batch_size,device=device)
+        # we train on time parts where momentum_heun does integration
+        shift=0
+        allowed_time = torch.concat([
+            torch.linspace(0,1,shift+2),
+            torch.linspace(0,1,shift+4),
+            torch.linspace(0,1,shift+8),
+            torch.linspace(0,1,shift+16),
+            torch.linspace(0,1,shift+32)]
+        ).unique().to(device)
         
         perm = torch.zeros(n, device=device,dtype=torch.int32)
         rot_idx = torch.arange(batch_size, device=device)
@@ -163,6 +172,8 @@ class FlowModel1dTrainingMixin:
                 losses = 0
                 r2s = 0
                 for start in slices:
+                    # time.uniform_()
+                    time=allowed_time[torch.randint(0,len(allowed_time),size=time.shape)]
                     if use_train_graphs:
                         # CUDA-graph training step: draw all randomness eagerly
                         # (in the same order as the eager path), copy inputs
@@ -171,7 +182,6 @@ class FlowModel1dTrainingMixin:
                         B = min(batch_size, n - start)
                         zero_mask = (torch.rand(batch_size,device=device)<condition_dropout)[:B].unsqueeze(-1)
                         prior_batch = sample_base(self.sobol,batch_size,device)
-                        time.uniform_()
                         rot_idx.add_(1).remainder_(B)
                         idx = rot_idx[:B]
                         tg = self._get_fit_graph(B, model, grad_clip_max_norm, device, contrastive_loss_weight)
@@ -209,7 +219,6 @@ class FlowModel1dTrainingMixin:
                     
                     # prior_batch.normal_()
                     prior_batch = sample_base(self.sobol,batch_size,device)
-                    time.uniform_()
                     
                     # if epoch/epochs<0.5:
                     # prior_batch=match_approximate_sliced(prior_batch,batch)

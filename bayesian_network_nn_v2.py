@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from contextlib import nullcontext
-from typing import List, Literal, Optional, Union
+from typing import List, Optional, Union
 from kemsekov_torch.common_modules import get_optim_groups
 
 
@@ -315,12 +315,17 @@ class Interpolation:
 
 
 class Structure:
-    def __init__(self, dataset, bayesian_network, bins=32, hid_dim=64, dist_hid=64,
+    def __init__(self, dataset, bayesian_network="all", bins=32, hid_dim=64, dist_hid=64,
                  hid_residuals=2, dist_residuals=2,
                  device: Optional[Union[str, torch.device]] = None,
                  dtype: Union[str, torch.dtype] = "fp32",
                  verbose=False):
         """
+        bayesian_network:
+            - 'all' (default): train on all possible condition combinations,
+            - list[list[int]]: explicit structure [[target, parents...], ...],
+            - None: use a sequential chain-rule structure (each variable
+              depends on all variables with a higher index).
         device: 'cuda', 'cpu', 'mps' or torch.device. Defaults to the best available.
         dtype:  compute dtype for training and inference:
                 - 'fp32' : full float32 (default)
@@ -329,12 +334,15 @@ class Structure:
         """
         self.device = resolve_device(device)
         self.dtype = resolve_dtype(dtype)
-        self.bayesian_network = bayesian_network
         self.verbose = verbose
         if not isinstance(dataset, torch.Tensor):
             dataset = torch.tensor(dataset, dtype=torch.float32)
         dataset = dataset.to(device=self.device, dtype=torch.float32)
         self.dim = dataset.shape[-1]
+        if bayesian_network is None:
+            all_vars = list(range(self.dim))
+            bayesian_network = [all_vars[-p - 1:] for p in range(self.dim)]
+        self.bayesian_network = bayesian_network
         self.model = Generative(self.dim, hid_dim, bins=bins, dist_hid=dist_hid,
                                 hid_residuals=hid_residuals, dist_residuals=dist_residuals)
         self.model = self.model.to(device=self.device)
@@ -396,7 +404,6 @@ class Structure:
 
     # ------------------------------------------------------------- training --
     def fit(self, epochs=2048, batch_size=256, lr=0.01,
-            loss_function: Literal['cross_entropy', 'mle'] = 'cross_entropy',
             random_conditional_prob=0.4, verbose=None):
         if verbose is None:
             verbose = self.verbose
@@ -407,7 +414,7 @@ class Structure:
         dataset = self.dataset
         bayesian_network = self.bayesian_network
 
-        is_bayesian_specified = bayesian_network is not None and len(bayesian_network) > 0
+        is_bayesian_specified = bayesian_network != "all" and len(bayesian_network) > 0
 
         running = torch.arange(batch_size, device=self.device)
         for i in range(epochs):
@@ -434,17 +441,9 @@ class Structure:
             modelled_variable = (mask == 1).long().argmax(dim=-1)
 
             with self._amp():
-                # ============================
-                if loss_function == 'mle':
-                    y = batch[running, modelled_variable]
-                    prob = self.forward(batch, mask, log_softmax=True)
-                    loss = (-prob(y.unsqueeze(0))).mean()
-                # ============================
-                else:
-                    pred = self.model(batch, mask)
-                    expected_ind = self.quantize.quantize(batch, list(range(self.dim)))[running, modelled_variable]
-                    loss = F.cross_entropy(pred, expected_ind)
-            # ============================
+                pred = self.model(batch, mask)
+                expected_ind = self.quantize.quantize(batch, list(range(self.dim)))[running, modelled_variable]
+                loss = F.cross_entropy(pred, expected_ind)
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
@@ -477,7 +476,7 @@ class Structure:
         samples = torch.zeros((batch_size, dim), device=device)
         bayesian_network = self.bayesian_network
 
-        if bayesian_network is None:
+        if bayesian_network == "all":
             all = list(range(self.dim))
             bayesian_network = [all[-p - 1:] for p in range(self.dim)]
         # --- Robust Topological Sort ---
@@ -583,7 +582,7 @@ class Structure:
         log_joint = torch.zeros(data.shape[0], device=device)
 
         bayesian_network = self.bayesian_network
-        if bayesian_network is None:
+        if bayesian_network == "all":
             all_vars = list(range(self.dim))
             bayesian_network = [all_vars[-p - 1:] for p in range(self.dim)]
 
@@ -649,7 +648,7 @@ class Structure:
         device = self.device
         log_joint = torch.zeros(data.shape[0], device=device)
 
-        is_bn_specified = self.bayesian_network is not None and len(self.bayesian_network) > 0
+        is_bn_specified = self.bayesian_network != "all" and len(self.bayesian_network) > 0
 
         if is_bn_specified:
             # 1. Build mapping from variable to its parents in the original BN
