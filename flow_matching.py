@@ -18,7 +18,6 @@ from kemsekov_torch.fm import (  # noqa: F401
     LossNormalizer1d,
     _CudaGraph,
     euler,
-    get_fm_optim_groups,
     heun,
     match_approximate_fast,
     match_approximate_random_proj,
@@ -33,7 +32,7 @@ from kemsekov_torch.fm import (  # noqa: F401
 
 __all__ = [
     "FlowModel1d", "FlowMatching", "FusedFlowResidual", "LossNormalizer1d",
-    "_CudaGraph", "euler", "get_fm_optim_groups", "heun",
+    "_CudaGraph", "euler", "heun",
     "match_approximate_fast", "match_approximate_random_proj",
     "match_approximate_sliced", "momentum_heun", "one_step", "rk2", "rk3",
     "sample_base", "zero_module",

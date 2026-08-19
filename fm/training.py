@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.metrics import r2_score
-from kemsekov_torch.fm.core import get_fm_optim_groups
+from kemsekov_torch.common_modules import get_optim_groups
 from kemsekov_torch.fm.samplers import sample_base
 from kemsekov_torch.fm.cuda_graph import _CudaGraph
 
@@ -123,7 +123,7 @@ class FlowModel1dTrainingMixin:
         model.train()
         
         # fused AdamW requires float32 parameters
-        optim = torch.optim.AdamW(get_fm_optim_groups(model), lr=lr,fused=self._param_dtype()==torch.float32)
+        optim = torch.optim.AdamW(get_optim_groups(model), lr=lr,fused=self._param_dtype()==torch.float32)
         
         best_loss = float("inf")
         best_r2 = -1e8
@@ -530,7 +530,7 @@ class FlowModel1dTrainingMixin:
         
         device=self.device
         # fused AdamW requires float32 parameters
-        opt = torch.optim.AdamW(list(self.parameters()),weight_decay=weight_decay,lr=lr,fused=self._param_dtype()==torch.float32)
+        opt = torch.optim.AdamW(get_optim_groups(self,weight_decay=weight_decay),lr=lr,fused=self._param_dtype()==torch.float32)
         sch = torch.optim.lr_scheduler.CosineAnnealingLR(opt,epochs)
         mse = torch.nn.functional.mse_loss
         

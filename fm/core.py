@@ -1,7 +1,7 @@
 """
 Core flow-matching machinery: FlowMatching (training-pair generation,
 integration dispatch), LossNormalizer1d, ReZero (zero_module),
-FusedFlowResidual block and get_fm_optim_groups (decay grouping).
+FusedFlowResidual block
 """
 import torch
 import torch.nn as nn
@@ -287,35 +287,3 @@ class FusedFlowResidual(nn.Module):
         prod = self.prod(x)+1
         return self.out(x*prod)+x
 
-
-def get_fm_optim_groups(model, extra_model=None, weight_decay=1e-2):
-    decay_params = []
-    no_decay_params = []
-    
-    def process_model(m):
-        for mn, module in m.named_modules():
-            # recurse=False ensures we only process parameters directly belonging to this module
-            for pn, p in module.named_parameters(recurse=False):
-                if not p.requires_grad:
-                    continue
-                
-                # Rule 1: Biases should NEVER be decayed
-                if pn.endswith('bias'):
-                    no_decay_params.append(p)
-                # Rule 2: Normalization layer weights should NEVER be decayed
-                elif isinstance(module, (nn.LayerNorm, nn.RMSNorm, nn.BatchNorm1d, nn.GroupNorm)):
-                    no_decay_params.append(p)
-                # Rule 3: Protect your custom time_scaler from being shrunk to 0
-                elif 'scaler' in pn.lower():
-                    no_decay_params.append(p)
-                # Rule 4: Everything else (Linear weights, etc.) gets weight decay
-                else:
-                    decay_params.append(p)
-
-    process_model(model)
-    if extra_model is not None:
-        process_model(extra_model)
-    return [
-        {"params": decay_params, "weight_decay": weight_decay},
-        {"params": no_decay_params, "weight_decay": 0.0}
-    ]
