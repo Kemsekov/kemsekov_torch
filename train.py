@@ -2,7 +2,6 @@ from copy import deepcopy
 import gc
 import os
 from typing import List, Dict,Callable, Literal, Optional, Tuple
-import accelerate
 from matplotlib import pyplot as plt
 import numpy as np
 import torch
@@ -384,6 +383,7 @@ def train(
     """
     from accelerate import Accelerator
     from tqdm import tqdm
+    import accelerate
     
     _print_green(f"Using dir {save_results_dir}")
     if checkpoints_count==0:
@@ -396,6 +396,9 @@ def train(
     if optimizer is None:
         _print_blue("Using default fused AdamW optimizer")
         optimizer = torch.optim.AdamW(get_optim_groups(model),fused=True)
+        if scheduler is None:
+            _print_blue("Using default CosineAnelingScheduler")
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,num_epochs*len(train_loader))
     total_parameters = sum([v.numel() for v in model.parameters()])/1000/1000
     _print_blue(f"Total model parameters {total_parameters:0.2f} M")
     save_last_dir = os.path.join(save_results_dir,"last")
