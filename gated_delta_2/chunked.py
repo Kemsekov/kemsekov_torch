@@ -38,11 +38,11 @@ class GatedDelta2Scan(GatedDelta2Base):
     """
 
     def __init__(
-        self, dim, QK_dim, V_dim, heads=1, erase_gate_scale=1.0, chunk=64,
+        self, dim, QK_dim, V_dim, heads=1, erase_gate_scale=1.0,bidirectional=False, chunk=64,
         scan_mode="auto", prec="fp32",
     ):
         super().__init__(dim, QK_dim, V_dim, heads=heads,
-                         erase_gate_scale=erase_gate_scale)
+                         erase_gate_scale=erase_gate_scale,bidirectional=bidirectional)
         self.chunk = chunk
         self.scan_mode = scan_mode
         self.prec = prec
@@ -52,4 +52,14 @@ class GatedDelta2Scan(GatedDelta2Base):
         out = Delta2ScanFn.apply(
             alpha, K, et, Q, zt, self.chunk, self.scan_mode, self.prec
         )
+        if self.bidirectional:
+            out_flip = Delta2ScanFn.apply(
+                alpha.flip(1),
+                K.flip(1),
+                et.flip(1),
+                Q.flip(1),
+                zt.flip(1),
+                self.chunk, self.scan_mode, self.prec
+            ).flip(1)
+            out = (out+out_flip)*0.707106 # keep variance
         return self._finalize(out, batch,xt)

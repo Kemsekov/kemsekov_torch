@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 
 class GatedDelta2Base(nn.Module):
-    def __init__(self, dim, QK_dim, V_dim, heads=1, erase_gate_scale=1.0):
+    def __init__(self, dim, QK_dim, V_dim, heads=1, erase_gate_scale=1.0,bidirectional : bool = False):
         super().__init__()
         self.heads = heads
         self.QK_dim = QK_dim
@@ -25,6 +25,7 @@ class GatedDelta2Base(nn.Module):
             nn.Linear(V_dim * heads, V_dim),
         )
         self.residual = nn.Identity() if V_dim==dim else nn.Linear(dim,V_dim)
+        self.bidirectional=bidirectional
 
     def _move_heads_to_batch(self, x):
         ndim = x.ndim

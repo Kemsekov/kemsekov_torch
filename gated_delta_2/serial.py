@@ -40,4 +40,14 @@ class GatedDelta2(GatedDelta2Base):
     def forward(self, xt):
         batch, seqlen, Q, K, alpha, et, zt = self._project(xt)
         out = _serial_mix(alpha, et, zt, K, Q)
+        if self.bidirectional:
+            out_flip = _serial_mix(
+                alpha.flip(1),
+                et.flip(1),
+                zt.flip(1),
+                K.flip(1),
+                Q.flip(1),
+            ).flip(1)
+            out = (out+out_flip)*0.707106 # keep variance
+
         return self._finalize(out, batch,xt)
