@@ -3,6 +3,83 @@ import torch.nn.functional as F
 
 LOG_MIN = {torch.float32: -85.0, torch.float64: -700.0}
 CACHE_BYTES_LIMIT = 1 << 31
+SEQ_FALLBACK_THRESHOLD = -700.0
+
+
+def _needs_seq_fallback(a, C):
+    """GPU-side exact test for the sequential fp64 fallback: the cumulative
+    log-decay of any chunk/channel leaves the fp64 range. The chunk log-sum
+    equals the last-position cumsum (cumsum is monotonically decreasing)."""
+    B, L, dk = a.shape
+    nch = (L + C - 1) // C
+    Lp = nch * C
+    if Lp > L:
+        a = torch.cat([a, a.new_ones(B, Lp - L, dk)], dim=1)
+    lsum = a.log().view(B, nch, C, dk).sum(dim=2)
+    return bool((lsum.min() < SEQ_FALLBACK_THRESHOLD).item())
+
+
+def _scan_fwd(a, k, e, q, z, C, scan_mode, prec):
+    """Plain differentiable chunked-scan forward. Autograd derives the
+    backward, which lets torch.compile/inductor fuse it (the manual
+    Function only remains for the extreme-decay sequential fallback).
+    Decay normalization runs in float64 (exact for log-cumsums >= -700)."""
+    with torch.amp.autocast(a.device.type, enabled=False):
+        dt = (
+            torch.float64
+            if (a.dtype == torch.float64 or prec == "fp64")
+            else torch.float32
+        )
+        a = a.to(dt).squeeze(-1)
+        k = k.to(dt).squeeze(-1)
+        e = e.to(dt).squeeze(-1)
+        q = q.to(dt).squeeze(-1)
+        z = z.to(dt).squeeze(-1)
+        B, L, dk = k.shape
+        dv = z.shape[-1]
+        nch = (L + C - 1) // C
+        Lp = nch * C
+        if Lp > L:
+            pad = Lp - L
+            a = torch.cat([a, a.new_ones(B, pad, dk)], dim=1)
+            k = torch.cat([k, k.new_zeros(B, pad, dk)], dim=1)
+            e = torch.cat([e, e.new_zeros(B, pad, dk)], dim=1)
+            q = torch.cat([q, q.new_zeros(B, pad, dk)], dim=1)
+            z = torch.cat([z, z.new_zeros(B, pad, dv)], dim=1)
+        a = a.clamp_min(torch.finfo(a.dtype).tiny)
+        a4 = a.view(B, nch, C, dk)
+        k4 = k.view(B, nch, C, dk)
+        e4 = e.view(B, nch, C, dk)
+        q4 = q.view(B, nch, C, dk)
+        z4 = z.view(B, nch, C, dv)
+        Lc = a4.log().double().cumsum(dim=2).clamp_min(SEQ_FALLBACK_THRESHOLD)
+        if dt == torch.float32:
+            g = torch.exp(Lc.float())
+            gi = torch.exp((-Lc).float())
+        else:
+            g = torch.exp(Lc)
+            gi = torch.exp(-Lc)
+        Kb = k4 * gi
+        Eb = e4 * g
+        Qb = q4 * g
+        eyeC = torch.eye(C, dtype=dt, device=a.device)
+        EK = torch.matmul(torch.cat([Eb, Qb], dim=-2), Kb.transpose(-1, -2))
+        Tmat = torch.tril(EK[..., :C, :], -1) + eyeC
+        Aqk = torch.tril(EK[..., C:, :])
+        YU = _tri_solve(Tmat, torch.cat([Eb, z4], dim=-1))
+        Y, U = YU.split([dk, dv], dim=-1)
+        gC = g[..., -1, :]
+        Kt = Kb * gC.unsqueeze(2)
+        MU = torch.matmul(Kt.transpose(-1, -2), torch.cat([Y, U], dim=-1))
+        M = torch.diag_embed(gC) - MU[..., :dk]
+        cb = MU[..., dk:]
+        S_after = _states_fwd(M, cb, scan_mode)
+        S_in = torch.cat(
+            [S_after.new_zeros(B, 1, dk, dv), S_after[:, :-1]], dim=1
+        )
+        YS = torch.matmul(Y, S_in)
+        O = torch.matmul(Qb, S_in) + torch.matmul(Aqk, U - YS)
+        return O.reshape(B, Lp, dv)[:, :L]
 
 
 def _tri_solve(A, RHS, upper=False):
@@ -79,7 +156,10 @@ def _gamma_prep(a, dt, prec):
         return g, gi, None
     la = a.log()
     Lc = la.double().cumsum(dim=2)
-    if dt == torch.float32 and (Lc < log_min).any():
+    if dt == torch.float32:
+        if (Lc < log_min).any():
+            return None
+    elif (Lc < LOG_MIN[torch.float64]).any():
         return None
     amask = Lc >= log_min
     Lc = Lc.clamp_min(log_min)
@@ -112,6 +192,8 @@ def _chunk_prep(a, k, e, q, z, C, dt, prec):
     z = z.view(B, nch, C, dv)
     gp = _gamma_prep(a, dt, prec)
     if gp is None:
+        if dt == torch.float64:
+            return None
         return _chunk_prep(
             a.double().view(B, nch * C, dk),
             k.double().view(B, nch * C, dk),
@@ -125,14 +207,20 @@ def _chunk_prep(a, k, e, q, z, C, dt, prec):
     Eb = e * g
     Qb = q * g
     eyeC = torch.eye(C, dtype=dt, device=a.device)
-    Tmat = torch.tril(torch.matmul(Eb, Kb.transpose(-1, -2)), -1) + eyeC
+    EK = torch.matmul(
+        torch.cat([Eb, Qb], dim=-2), Kb.transpose(-1, -2)
+    )
+    Tmat = torch.tril(EK[..., :C, :], -1) + eyeC
+    Aqk = torch.tril(EK[..., C:, :])
     YU = _tri_solve(Tmat, torch.cat([Eb, z], dim=-1))
     Y, U = YU.split([dk, dv], dim=-1)
-    Aqk = torch.tril(torch.matmul(Qb, Kb.transpose(-1, -2)))
     gC = g[:, :, -1, :]
     Kt = Kb * gC.unsqueeze(2)
-    M = torch.diag_embed(gC) - torch.matmul(Kt.transpose(-1, -2), Y)
-    cb = torch.matmul(Kt.transpose(-1, -2), U)
+    MU = torch.matmul(
+        Kt.transpose(-1, -2), torch.cat([Y, U], dim=-1)
+    )
+    M = torch.diag_embed(gC) - MU[..., :dk]
+    cb = MU[..., dk:]
     ia = 1.0 / a
     return dict(
         a=a, k=k, e=e, q=q, z=z, g=g, gi=gi, ia=ia, Kb=Kb, Eb=Eb, Qb=Qb,
@@ -141,16 +229,110 @@ def _chunk_prep(a, k, e, q, z, C, dt, prec):
     )
 
 
+def _states_hillis(M, b):
+    """Hillis-Steele inclusive affine scan: log2(n) levels of fully batched
+    matmuls (fast for small n where sequential launches dominate)."""
+    B, n, d, _ = M.shape
+    Mm = M.clone()
+    bb = b.clone()
+    s = 1
+    while s < n:
+        bb[:, s:] = torch.matmul(Mm[:, s:], bb[:, :-s]) + bb[:, s:]
+        Mm[:, s:] = torch.matmul(Mm[:, s:], Mm[:, :-s])
+        s <<= 1
+    return bb
+
+
+def _states_hillis(M, b):
+    """Hillis-Steele inclusive affine scan: log2(n) levels of fully batched
+    matmuls (faster than a sequential launch chain for small n)."""
+    B, n, d, _ = M.shape
+    Mm = M
+    bb = b
+    s = 1
+    while s < n:
+        bb = torch.cat(
+            [bb[:, :s], torch.matmul(Mm[:, s:], bb[:, :-s]) + bb[:, s:]], dim=1
+        )
+        Mm = torch.cat([Mm[:, :s], torch.matmul(Mm[:, s:], Mm[:, :-s])], dim=1)
+        s <<= 1
+    return bb
+
+
 def _states_fwd(M, cb, mode):
     if mode == "seq":
         return _states_seq(M, cb)
     return _affine_prefix_scan(M, cb)
 
 
-def _chunk_forward(a, k, e, q, z, C, dt, scan_mode, prec):
+def _seq_forward(a, k, e, q, z):
+    """Exact per-token recurrence (float64), used when the chunked WY form
+    cannot represent the decay-normalized factors (extreme decay / hard
+    resets). Mirrors the serial reference loop, vectorized over batches."""
     B, L, dk = k.shape
     dv = z.shape[-1]
-    P = _chunk_prep(a, k, e, q, z, C, dt, prec)
+    S = a.new_zeros(B, dk, dv)
+    outs = []
+    for t in range(L):
+        S = a[:, t, :, None] * S
+        rt = torch.matmul(S.transpose(-1, -2), e[:, t, :, None])
+        diff = z[:, t, None, :] - rt.transpose(-1, -2)
+        S = S + k[:, t, :, None] * diff
+        outs.append(torch.matmul(S.transpose(-1, -2), q[:, t, :, None])[..., 0])
+    return torch.stack(outs, 1)
+
+
+def _seq_backward(go, a, k, e, q, z):
+    """Manual adjoint of the per-token recurrence, vectorized over batches.
+    Matches the autograd backward of the serial reference."""
+    B, L, dk = k.shape
+    dv = z.shape[-1]
+    bytes_per_step = B * dk * dv * a.element_size()
+    blk = max(1, min(L, CACHE_BYTES_LIMIT // max(bytes_per_step, 1)))
+    da = torch.zeros_like(a)
+    dK = torch.zeros_like(k)
+    dE = torch.zeros_like(e)
+    dQ = torch.zeros_like(q)
+    dZ = torch.zeros_like(z)
+    dS = a.new_zeros(B, dk, dv)
+    for start in range(((L - 1) // blk) * blk, -1, -blk):
+        end = min(start + blk, L)
+        S = a.new_zeros(B, dk, dv)
+        Ss = []
+        for t in range(end):
+            S = a[:, t, :, None] * S
+            diff = z[:, t, None, :] - torch.matmul(
+                S.transpose(-1, -2), e[:, t, :, None]
+            ).transpose(-1, -2)
+            S = S + k[:, t, :, None] * diff
+            if t == start - 1 or t >= start:
+                Ss.append(S)
+        if start == 0:
+            Ss.insert(0, a.new_zeros(B, dk, dv))
+        for t in reversed(range(start, end)):
+            St = Ss[t - start + 1]
+            S_prev = Ss[t - start]
+            dS = dS + q[:, t, :, None] * go[:, t, None, :]
+            decayed = a[:, t, :, None] * S_prev
+            diff = z[:, t, None, :] - torch.matmul(
+                decayed.transpose(-1, -2), e[:, t, :, None]
+            ).transpose(-1, -2)
+            dK[:, t] = torch.matmul(dS, diff.transpose(-1, -2))[..., 0]
+            dd = torch.matmul(dS.transpose(-1, -2), k[:, t, :, None])[..., 0]
+            dZ[:, t] = dd
+            dS = dS - e[:, t, :, None] * dd[:, None, :]
+            dE[:, t] = -torch.matmul(decayed, dd.unsqueeze(-1))[..., 0]
+            dQ[:, t] = torch.matmul(St, go[:, t].unsqueeze(-1))[..., 0]
+            da[:, t] = (dS * S_prev).sum(dim=-1)
+            dS = a[:, t, :, None] * dS
+    return da, dK, dE, dQ, dZ
+
+
+def _chunk_forward(a, k, e, q, z, C, dt, scan_mode, prec, P=None):
+    B, L, dk = k.shape
+    dv = z.shape[-1]
+    if P is None:
+        P = _chunk_prep(a, k, e, q, z, C, dt, prec)
     S_after = _states_fwd(P["M"], P["cb"], scan_mode)
     S_in = torch.cat(
         [S_after.new_zeros(B, 1, dk, dv), S_after[:, :-1]], dim=1
@@ -184,10 +366,7 @@ def _chunk_backward(go, S_in, P, a, k, e, q, z, C, dt, scan_mode):
     )
     Mf = M.flip(1).transpose(-1, -2)
     locf = loc.flip(1)
-    if scan_mode == "seq":
-        R = _states_seq(Mf, locf).flip(1)
-    else:
-        R = _affine_prefix_scan(Mf, locf).flip(1)
+    R = _states_fwd(Mf, locf, scan_mode).flip(1)
     RA = torch.cat([R[:, 1:], R.new_zeros(B, 1, dkd, dvd)], dim=1)
     S = S_in
     YS = torch.matmul(Y, S)
@@ -204,12 +383,16 @@ def _chunk_backward(go, S_in, P, a, k, e, q, z, C, dt, scan_mode):
     dA = torch.matmul(dY, Eb.transpose(-1, -2)) + torch.matmul(
         dU, P["z"].transpose(-1, -2)
     )
-    v = _tri_solve(Tmat.transpose(-1, -2), dA, upper=True)
+    TT = Tmat.transpose(-1, -2)
+    vEbZ = _tri_solve(
+        TT, torch.cat([dA, dY, dU], dim=-1), upper=True
+    )
+    Cd = Tmat.shape[-1]
+    v = vEbZ[..., :Cd]
+    dEb = vEbZ[..., Cd : Cd + dkd]
+    dZ = vEbZ[..., Cd + dkd :]
     w = _tri_solve(Tmat, v.transpose(-1, -2)).transpose(-1, -2)
     dT = -torch.tril(w, -1)
-    dEb, dZ = _tri_solve(
-        Tmat.transpose(-1, -2), torch.cat([dY, dU], dim=-1), upper=True
-    ).split([dkd, dvd], dim=-1)
     dEb = torch.matmul(dT, Kb) + dEb
     dKb = dKb + torch.matmul(dT.transpose(-1, -2), Eb)
     dlogg = dQb * Qb + dEb * Eb - dKb * Kb
@@ -239,6 +422,11 @@ class Delta2ScanFn(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, a, k, e, q, z, C, scan_mode, prec):
+        with torch.amp.autocast(a.device.type, enabled=False):
+            return Delta2ScanFn._forward(ctx, a, k, e, q, z, C, scan_mode, prec)
+
+    @staticmethod
+    def _forward(ctx, a, k, e, q, z, C, scan_mode, prec):
         ctx.shapes = [a.shape, k.shape, e.shape, q.shape, z.shape]
         if scan_mode == "auto":
             nch = (z.shape[-2] + C - 1) // C
@@ -255,7 +443,14 @@ class Delta2ScanFn(torch.autograd.Function):
         e = e.to(dt).squeeze(-1)
         q = q.to(dt).squeeze(-1)
         z = z.to(dt).squeeze(-1)
-        out, S_in, P = _chunk_forward(a, k, e, q, z, C, dt, scan_mode, prec)
+        P = _chunk_prep(a, k, e, q, z, C, dt, prec)
+        if P is None:
+            ctx.seq = True
+            ctx.save_for_backward(a, k, e, q, z)
+            out = _seq_forward(a.double(), k.double(), e.double(), q.double(), z.double())
+            return out.to(ctx.dtype)
+        ctx.seq = False
+        out, S_in, P = _chunk_forward(a, k, e, q, z, C, dt, scan_mode, prec, P=P)
         ctx.C = C
         ctx.nch = P["nch"]
         ctx.Lp = P["Lp"]
@@ -284,7 +479,29 @@ class Delta2ScanFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, go):
+        with torch.amp.autocast(go.device.type, enabled=False):
+            return Delta2ScanFn._backward(ctx, go)
+
+    @staticmethod
+    def _backward(ctx, go):
         saved = ctx.saved_tensors
+        if ctx.seq:
+            a, k, e, q, z = saved
+            da, dk, de, dq, dz = _seq_backward(
+                go.double(), a.double(), k.double(), e.double(), q.double(),
+                z.double(),
+            )
+            sa, sk, se, sq, sz = ctx.shapes
+            return (
+                da.reshape(sa).to(ctx.dtype),
+                dk.reshape(sk).to(ctx.dtype),
+                de.reshape(se).to(ctx.dtype),
+                dq.reshape(sq).to(ctx.dtype),
+                dz.reshape(sz).to(ctx.dtype),
+                None,
+                None,
+                None,
+            )
         a, k, e, q, z, S_in = saved[:6]
         if ctx.cached:
             P = dict(zip(ctx.P_keys, saved[6:]))

@@ -1,7 +1,8 @@
 import torch
 
 from .base import GatedDelta2Base
-from .scan import Delta2ScanFn
+from .recurrent import RecurrentDelta2Fn, _can_use_recurrent
+from .scan import Delta2ScanFn, _needs_seq_fallback, _scan_fwd
 
 
 class GatedDelta2Scan(GatedDelta2Base):
@@ -32,9 +33,8 @@ class GatedDelta2Scan(GatedDelta2Base):
         ``"seq"`` for few chunks and ``"scan"`` otherwise.
     prec : str
         Internal precision of the scan kernel: ``"fp32"`` (default, pure
-        float32 with automatic float64 fallback when cumulative decay is
-        extreme), ``"mixed"`` (float64 only for the decay normalization),
-        ``"fp64"`` (everything in float64).
+        float32 pipeline with float64 decay normalization), ``"mixed"``
+        (same as ``"fp32"``), ``"fp64"`` (everything in float64).
     """
 
     def __init__(
@@ -47,19 +47,26 @@ class GatedDelta2Scan(GatedDelta2Base):
         self.scan_mode = scan_mode
         self.prec = prec
 
+    def _mix(self, alpha, K, et, Q, zt):
+        if _can_use_recurrent(alpha, K, Q, zt):
+            return RecurrentDelta2Fn.apply(alpha, K, et, Q, zt)
+        if self.scan_mode == "auto":
+            nch = (zt.shape[-2] + self.chunk - 1) // self.chunk
+            mode = "seq" if nch <= 256 else "scan"
+        else:
+            mode = self.scan_mode
+        if _needs_seq_fallback(alpha.squeeze(-1), self.chunk):
+            return Delta2ScanFn.apply(
+                alpha, K, et, Q, zt, self.chunk, mode, self.prec
+            )
+        return _scan_fwd(alpha, K, et, Q, zt, self.chunk, mode, self.prec)
+
     def forward(self, xt):
         batch, seqlen, Q, K, alpha, et, zt = self._project(xt)
-        out = Delta2ScanFn.apply(
-            alpha, K, et, Q, zt, self.chunk, self.scan_mode, self.prec
-        )
+        out = self._mix(alpha, K, et, Q, zt)
         if self.bidirectional:
-            out_flip = Delta2ScanFn.apply(
-                alpha.flip(1),
-                K.flip(1),
-                et.flip(1),
-                Q.flip(1),
-                zt.flip(1),
-                self.chunk, self.scan_mode, self.prec
+            out_flip = self._mix(
+                alpha.flip(1), K.flip(1), et.flip(1), Q.flip(1), zt.flip(1)
             ).flip(1)
             out = (out+out_flip)*0.707106 # keep variance
         return self._finalize(out, batch,xt)

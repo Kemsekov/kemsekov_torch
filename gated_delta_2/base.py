@@ -40,22 +40,50 @@ class GatedDelta2Base(nn.Module):
         x = x.transpose(1, 2)
         return x.reshape(batch, -1, self.heads * x.size(-1))
 
+    @staticmethod
+    def _mixing_dtype(xt):
+        dt = xt.dtype
+        return torch.float32 if dt in (torch.float16, torch.bfloat16) else dt
+
     def _project(self, xt):
         batch, seqlen, dim = xt.shape
-        Q, K = self.QK(xt).unsqueeze(-1).chunk(2, -2)
-        V = self.V(xt)
+        cdt = self._mixing_dtype(xt)
+        W = torch.cat(
+            [
+                self.erase_gate.weight,
+                self.write_gate.weight,
+                self.decay_gate.weight,
+                self.QK.weight,
+                self.V.weight,
+            ],
+            dim=0,
+        )
+        erase_h, write_h, decay_h, qk_h, v_h = F.linear(xt, W).split(
+            [
+                self.QK_dim * self.heads,
+                self.V_dim * self.heads,
+                self.QK_dim * self.heads,
+                self.QK_dim * 2 * self.heads,
+                self.V_dim * self.heads,
+            ],
+            dim=-1,
+        )
+        decay_h = decay_h + self.decay_gate.bias
+        Q, K = qk_h.unsqueeze(-1).chunk(2, -2)
+        V = v_h
         Q, K, V = map(self._move_heads_to_batch, [Q, K, V])
-        Q = F.normalize(Q, dim=-2)
-        K = F.normalize(K, dim=-2)
-        bt = self.erase_gate(xt).sigmoid() * self.erase_gate_scale
-        wt = self.write_gate(xt).sigmoid()
-        gt = -self.decay.exp() * F.softplus(self.decay_gate(xt))
+        Q = F.normalize(Q.to(cdt), dim=-2)
+        K = F.normalize(K.to(cdt), dim=-2)
+        V = V.to(cdt)
+        bt = erase_h.sigmoid() * self.erase_gate_scale
+        wt = write_h.sigmoid()
+        gt = -self.decay.to(cdt).exp() * F.softplus(decay_h)
         bt, wt, gt = map(self._move_heads_to_batch, [bt, wt, gt])
-        alpha = gt.exp().unsqueeze(-1)
-        et = bt.unsqueeze(-1) * K
-        zt = wt * V
+        alpha = gt.to(cdt).exp().unsqueeze(-1)
+        et = bt.to(cdt).unsqueeze(-1) * K
+        zt = wt.to(cdt) * V
         return batch, seqlen, Q, K, alpha, et, zt
 
     def _finalize(self, out, batch,xt):
         out = self._move_batch_to_heads(out, batch)
-        return self.out(out)+xt
+        return self.out(out.to(xt.dtype))+xt

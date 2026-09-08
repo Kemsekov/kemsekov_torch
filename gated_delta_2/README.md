@@ -25,7 +25,6 @@ strategies and identical parameters/buffers (state dicts are interchangeable):
 |---|---|---|---|
 | `GatedDelta2` | `serial.py` | python loop over tokens | numerical reference, short sequences |
 | `GatedDelta2Scan` | `chunked.py` + `scan.py` | chunked WY parallel scan | training / long sequences (**recommended**) |
-| `GatedDelta2ScanDense` | `dense.py` | per-token dense-map scan | comparison only (O(L·dk³·log L)) |
 
 ## Package layout
 
@@ -36,7 +35,6 @@ gated_delta_2/
 ├── scan.py        # scan kernel: chunk prep (WY), unit-lower solves,
 │                  #   affine prefix scan (Blelloch / sequential), manual backward
 ├── chunked.py     # GatedDelta2Scan    -- chunked parallel-scan module
-├── dense.py       # GatedDelta2ScanDense -- dense per-token scan module
 └── __init__.py    # public exports
 ```
 
@@ -55,6 +53,48 @@ gd = GatedDelta2Scan(32, 64, 20, heads=2)
 x = torch.randn((7, 100, 32))
 print(gd(x).shape)  # torch.Size([7, 100, 20])
 ```
+
+## Mixed precision (fp16 / bf16)
+
+The module is safe to run in float16 or bfloat16
+(`model.half()` / `model.bfloat16()` — parameters and buffers stay in the
+model precision, and forward+backward work for both `GatedDelta2` and
+`GatedDelta2Scan`):
+
+* The linear projections and gates run in the model precision.
+* The mixing-critical tensors (L2-normalized `q`/`k`, the decay factors
+  `α_t = exp(g_t)`, and the gated `e_t`, `z_t`) are computed in float32 to
+  keep the recurrence well conditioned and to avoid fp16 underflow of the
+  decay exponentials.
+* The serial loop and the scan kernel both consume these float32 tensors, so
+  the two implementations keep their ~1e-6 agreement; only the final outputs
+  are cast back to the model precision.
+* The mixing kernels run with autocast disabled internally, so they are safe
+  inside `torch.autocast` / `accelerate` mixed-precision (e.g.
+  `mixed_precision='bf16'`) and `torch.compile` — only the linear projections
+  and gates are autocast to the model precision.
+
+## Implementation paths (`GatedDelta2Scan`)
+
+The module picks the mixing implementation automatically:
+
+* **Fused recurrent Triton kernels** (`recurrent.py`, used on CUDA when the
+  mixing tensors are float32 and `QK_dim`, `V_dim <= 256`): the exact
+  per-token recurrence with the state held in registers (FLA
+  `fused_recurrent` style), one block per (batch, head) tiled over the value
+  dim. This is numerically the same recurrence as the serial reference, needs
+  no WY solve / chunk scan and handles any decay strength exactly (hard
+  resets included). Forward + checkpointed manual backward.
+* **Chunked differentiable scan** (`scan.py::_scan_fwd`): the WY-parallel
+  formulation with float64 decay normalization and autograd backward —
+  used on CPU, for float64 models (gradcheck), or when the dims exceed the
+  Triton path.
+* **Sequential float64 fallback** (`Delta2ScanFn`): only when the cumulative
+  decay of a chunk leaves the float64 range (extreme decay); exact and
+  rarely used.
+
+`validate.py` exercises all precisions (float32/float16/bfloat16); the
+serial-vs-scan agreement holds across every path.
 
 ## How the parallel scan works (`scan.py`)
 
@@ -91,12 +131,18 @@ print(gd(x).shape)  # torch.Size([7, 100, 20])
 * `"fp32"` (default): pure float32 pipeline. With L2-normalized keys this
   matches the fp32 serial reference to ~1e-6 relative. If cumulative decay in
   a chunk would leave the float32-representable range, that call automatically
-  re-runs in float64 (gradients stay correct), so strong-decay settings remain
-  accurate.
+  re-runs in float64.
 * `"mixed"`: float64 only for the decay cumsum/exp, everything else float32
   (previous default).
 * `"fp64"`: full float64 internals (also used automatically when the module
   or inputs are float64, e.g. for `torch.autograd.gradcheck`).
+
+If the decay is so strong that even float64 cannot represent the
+decay-normalized factors of a chunk (cumulative log-decay below ~-700, e.g.
+hard resets from underflowed `α_t`), the scan falls back to an exact
+per-token float64 recurrence with a matching manual adjoint, so `GatedDelta2`
+and `GatedDelta2Scan` stay in agreement (outputs and gradients) at any decay
+strength.
 
 ## Validation
 
