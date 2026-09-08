@@ -22,9 +22,8 @@ class GatedDelta2Base(nn.Module):
         self.out = nn.Sequential(
             nn.RMSNorm(V_dim * heads),
             nn.SiLU(),
-            nn.Linear(V_dim * heads, V_dim),
+            nn.Linear(V_dim * heads, dim),
         )
-        self.residual = nn.Identity() if V_dim==dim else nn.Linear(dim,V_dim)
         self.bidirectional=bidirectional
 
     def _move_heads_to_batch(self, x):
@@ -59,4 +58,4 @@ class GatedDelta2Base(nn.Module):
 
     def _finalize(self, out, batch,xt):
         out = self._move_batch_to_heads(out, batch)
-        return self.out(out)+self.residual(xt)
+        return self.out(out)+xt
