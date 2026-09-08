@@ -40,4 +40,4 @@ class GatedDelta2(GatedDelta2Base):
     def forward(self, xt):
         batch, seqlen, Q, K, alpha, et, zt = self._project(xt)
         out = _serial_mix(alpha, et, zt, K, Q)
-        return self._finalize(out, batch)
+        return self._finalize(out, batch,xt)

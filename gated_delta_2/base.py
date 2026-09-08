@@ -24,6 +24,7 @@ class GatedDelta2Base(nn.Module):
             nn.SiLU(),
             nn.Linear(V_dim * heads, V_dim),
         )
+        self.residual = nn.Identity() if V_dim==dim else nn.Linear(dim,V_dim)
 
     def _move_heads_to_batch(self, x):
         ndim = x.ndim
@@ -55,6 +56,6 @@ class GatedDelta2Base(nn.Module):
         zt = wt * V
         return batch, seqlen, Q, K, alpha, et, zt
 
-    def _finalize(self, out, batch):
+    def _finalize(self, out, batch,xt):
         out = self._move_batch_to_heads(out, batch)
-        return self.out(out)+out
+        return self.out(out)+self.residual(xt)

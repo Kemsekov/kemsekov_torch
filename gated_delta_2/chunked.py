@@ -52,4 +52,4 @@ class GatedDelta2Scan(GatedDelta2Base):
         out = Delta2ScanFn.apply(
             alpha, K, et, Q, zt, self.chunk, self.scan_mode, self.prec
         )
-        return self._finalize(out, batch)
+        return self._finalize(out, batch,xt)
