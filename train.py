@@ -175,7 +175,8 @@ def train(
         on_epoch_end = None,
         on_train_batch_end = None,
         on_test_batch_end = None,
-        compile_torchscript=False
+        compile_torchscript=False,
+        default_lr=0.001
     ):
     """
     Train and evaluate a model, saving checkpoints, plots, and metric history during the training process.
@@ -334,6 +335,8 @@ def train(
         Method that is called at the end of each test batch. The model, batch, loss, and metric are passed to
         this method. Default is None.
 
+    default_lr: float
+        When no optimizer and scheduler is passed, this param will change learning rate of default optimizer
     
     compile_torchscript: try to compile and save torchscript model
     
@@ -395,7 +398,7 @@ def train(
     
     if optimizer is None:
         _print_blue("Using default fused AdamW optimizer")
-        optimizer = torch.optim.AdamW(get_optim_groups(model),fused=True)
+        optimizer = torch.optim.AdamW(get_optim_groups(model),fused=True,lr=default_lr)
         if scheduler is None:
             _print_blue("Using default CosineAnelingScheduler")
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,num_epochs*len(train_loader))
