@@ -57,4 +57,4 @@ class GatedDelta2Base(nn.Module):
 
     def _finalize(self, out, batch):
         out = self._move_batch_to_heads(out, batch)
-        return self.out(out)
+        return self.out(out)+out
