@@ -290,6 +290,21 @@ class Resize(nn.Module):
     def forward(self, x):
         return resize_tensor(x,self.output_size)
 
+class Flip(nn.Module):
+    """
+    A PyTorch module that flips given spatial dimensions.
+    """
+    def __init__(self, dimensions : List[int]|int):
+        super().__init__()
+        if isinstance(dimensions,int): dimensions=[dimensions]
+        self.dimension=dimensions
+
+    def forward(self, x):
+        for d in self.dimension:
+            x=x.flip(d)
+        return x
+
+
 # Channel-wise Layer Normalization for N'd inputs
 class ChanLayerNorm(nn.Module):
     def __init__(self, dim):
