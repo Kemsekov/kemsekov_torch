@@ -152,7 +152,7 @@ def _gamma_prep(a, dt, prec):
         if (Lc < log_min).any():
             return None
         g = torch.exp(Lc)
-        gi = torch.exp(-Lc)
+        gi = 1.0 / g
         return g, gi, None
     la = a.log()
     Lc = la.double().cumsum(dim=2)
