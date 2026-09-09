@@ -55,6 +55,14 @@ class GatedDelta2Scan(GatedDelta2Base):
             mode = "seq" if nch <= 256 else "scan"
         else:
             mode = self.scan_mode
+        if alpha.device.type != "cuda":
+            # CPU: the manual-backward chunked Function is ~2x faster than the
+            # differentiable _scan_fwd (autograd re-walks a large chunked graph
+            # and keeps every intermediate alive), and builds one tiny autograd
+            # node, so runtimes are steadier under memory pressure.
+            return Delta2ScanFn.apply(
+                alpha, K, et, Q, zt, self.chunk, mode, self.prec
+            )
         if _needs_seq_fallback(alpha.squeeze(-1), self.chunk):
             return Delta2ScanFn.apply(
                 alpha, K, et, Q, zt, self.chunk, mode, self.prec
