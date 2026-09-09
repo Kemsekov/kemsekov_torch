@@ -180,3 +180,22 @@ errors ~1e-6 to ~1e-5 across L = 100 … 8192.
   Write in Linear Attention*, arXiv:2605.22791.
 * Delta-rule parallelization background: Yang et al., *Parallelizing Linear
   Transformers with the Delta Rule over Sequence Length* (DeltaNet).
+
+## Auto-selected backend (this package)
+
+`GatedDelta2Scan` here measures nothing at runtime: it *routes* each call to
+the fastest of the two CUDA kernels by a rule tuned offline (optuna over a
+432-config benchmark grid, objective = mean over the grid of
+`t_chosen / t_gd21`, so every shape contributes equally):
+
+* plain per-row fused kernels (the `gated_delta_2` implementation) when
+  `L < 1024`, or `DK/DV < 16`, or the state tiles are wide
+  (`DK >= 64 and DV >= 64`, or `rows = batch*heads >= 32` together with
+  `DK >= 64` or `DV >= 64`);
+* the two-level split-recurrent kernels (the `gated_delta_21`
+  implementation) for long sequences (`L >= 1024`) with narrow tiles.
+
+On CPU and for shapes that cannot use Triton the module falls back to the
+same chunked scan as the other two packages (identical numerics), so all
+three are equal there; the CPU default `chunk=64` was verified optimal
+against 16..512 on the CPU grid.
