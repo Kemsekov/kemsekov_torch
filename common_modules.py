@@ -110,6 +110,26 @@ class Prod(nn.Module):
         self.module=module
     def forward(self,x):
         return x*self.module(x)
+
+class Prod2Independent(nn.Module):
+    """
+    Returns product of two independent modules evaluated on same input.
+    
+    `Prod(nn.Linear(32,32),nn.SiLU())(x)` is same as `nn.Linear(32,32)(x)*nn.SiLU()(x)`
+    """
+    def __init__(self, module1 : nn.Module|List[nn.Module],module2 : nn.Module|List[nn.Module]) -> None:
+        super().__init__()
+        if isinstance(module1,list):
+            module1 = nn.Sequential(*module1)
+        self.module1=module1
+        
+        if isinstance(module2,list):
+            module2 = nn.Sequential(*module2)
+        self.module2=module2
+        
+    def forward(self,x):
+        return self.module1(x)*self.module2(x)
+
 class FlattenSpatialDimensions(nn.Module):
     """
     Prepares vison-like 1d,2d,3d sequential data into format suitable for transformer
