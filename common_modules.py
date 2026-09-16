@@ -111,7 +111,7 @@ class Prod(nn.Module):
     def forward(self,x):
         return x*self.module(x)
 
-class Prod2Independent(nn.Module):
+class Prod2(nn.Module):
     """
     Returns product of two independent modules evaluated on same input.
     
