@@ -1,6 +1,19 @@
 from typing import List, Literal, Tuple
 import torch
 import torch.nn as nn
+
+class SwiGLU(nn.Module):
+    def __init__(self, dim,out_dim=None):
+        super().__init__()
+        out_dim=out_dim or dim
+        self.gate_proj = nn.Linear(dim, out_dim, bias=False)
+        self.up_proj = nn.Linear(dim, out_dim, bias=False)
+    
+    def forward(self, x):
+        gate = self.gate_proj(x)
+        up = self.up_proj(x)
+        return nn.functional.silu(gate) * up
+
 class ConcatTensors(torch.nn.Module):
     """
         This module accepts list of tensors and concatenates them along axis `dim`
