@@ -127,7 +127,8 @@ class SelfAttention(nn.Module):
     def __init__(
         self, 
         dim: int, 
-        heads: int = 8, 
+        heads: int = 8,
+        kv_heads=8,
         head_dim: int = 64,
         dropout=0.0,
         dimensions : Literal[1,2,3] = 2,
@@ -138,12 +139,12 @@ class SelfAttention(nn.Module):
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False,
         xsa=False,
-        groups: int = 1,
         conv_kernel=1
     ):
         """
         dim: input dimensions
         heads: heads count. For ViT 8-12 heads is optimal.
+        kv_heads: kv heads, `heads` must be divisible by `kv_heads`
         head_dim: dims per head. For ViT 64 is gold standard.
         dropout: attention dropout. Optimal value depends, but for visual tasks 0.1 is good.
         dimensions: expected input dimensions
@@ -153,7 +154,6 @@ class SelfAttention(nn.Module):
         add_absolute_pos: add absolute position embedding
         prenorm: add group or layer pre-normalization for input
         xsa: apply exclusive self-attention fix. It will slow down module performance on about 13% but will improve model quality
-        groups: number of query groups for Grouped Query Attention (GQA). 
         """
         super().__init__()
         self.is_causal=is_causal
@@ -163,10 +163,8 @@ class SelfAttention(nn.Module):
         inner_dim = heads * head_dim
         self.dimensions=dimensions
         self.xsa = xsa
-        self.groups = groups
-        
-        assert self.heads % self.groups == 0, f"heads ({self.heads}) must be divisible by groups ({self.groups})"
-        self.kv_heads = self.heads // self.groups
+        self.groups = heads/kv_heads
+        self.kv_heads = kv_heads
         
         # Total inner dimension for QKV projection (Q gets full heads, K and V get kv_heads)
         self.qkv_inner_dim = (self.heads + 2 * self.kv_heads) * self.head_dim
@@ -240,13 +238,13 @@ class SelfAttention(nn.Module):
             q, k, v,
             dropout_p=self.dropout if self.training else 0.0,
             is_causal=self.is_causal,
-            enable_gqa=self.groups>1
+            enable_gqa=self.heads!=self.kv_heads
         )  # [B, heads, L, head_dim]
         
         # apply exclusive self-attention
         if self.xsa:
             Vn = F.normalize(v,dim=-1)
-            if self.groups>1:
+            if self.heads!=self.kv_heads:
                 attn_out=attn_out.view(
                     B,
                     self.groups,
@@ -282,6 +280,7 @@ class CrossAttention(nn.Module):
         dim: int, 
         context_dim: Optional[int] = None, # If memory has different channels
         heads: int = 8, 
+        kv_heads=8,
         head_dim: int = 64,
         dropout=0.0,
         dimensions: Literal[1,2,3] = 2,
@@ -292,7 +291,6 @@ class CrossAttention(nn.Module):
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False,
         conv_kernel=1,
-        groups=1
     ):
         """
         abs_pos_jit_prob: setting this value to 0.5 or 1.0, will make absolute positions embedding work as scale-translate independent feature, which will allow model to extrapolate to much larger sequence lengths
@@ -303,11 +301,9 @@ class CrossAttention(nn.Module):
         self.head_dim = head_dim
         self.dropout = dropout
         inner_dim = heads * head_dim
-        self.groups=groups
-        self.kv_heads = self.heads // self.groups
+        self.groups=heads/kv_heads
+        self.kv_heads = kv_heads
         self.kv_inner_dim = self.kv_heads * self.head_dim
-        
-        assert self.heads % self.groups == 0, f"heads ({self.heads}) must be divisible by groups ({self.groups})"
         
         context_dim = context_dim if context_dim is not None else dim
         if add_absolute_pos:
