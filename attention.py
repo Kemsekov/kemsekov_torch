@@ -137,7 +137,9 @@ class SelfAttention(nn.Module):
         add_absolute_pos = False,
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False,
-        xsa=False
+        xsa=False,
+        groups: int = 1,
+        conv_kernel=1
     ):
         """
         dim: input dimensions
@@ -151,6 +153,7 @@ class SelfAttention(nn.Module):
         add_absolute_pos: add absolute position embedding
         prenorm: add group or layer pre-normalization for input
         xsa: apply exclusive self-attention fix. It will slow down module performance on about 13% but will improve model quality
+        groups: number of query groups for Grouped Query Attention (GQA). 
         """
         super().__init__()
         self.is_causal=is_causal
@@ -160,6 +163,14 @@ class SelfAttention(nn.Module):
         inner_dim = heads * head_dim
         self.dimensions=dimensions
         self.xsa = xsa
+        self.groups = groups
+        
+        assert self.heads % self.groups == 0, f"heads ({self.heads}) must be divisible by groups ({self.groups})"
+        self.kv_heads = self.heads // self.groups
+        
+        # Total inner dimension for QKV projection (Q gets full heads, K and V get kv_heads)
+        self.qkv_inner_dim = (self.heads + 2 * self.kv_heads) * self.head_dim
+        
         if add_absolute_pos:
             self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
         else:
@@ -167,7 +178,6 @@ class SelfAttention(nn.Module):
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = FastRotEmb()
-        
         
         # small heuristic for groups number estimation
         groups = max(1,dim//32)
@@ -183,10 +193,10 @@ class SelfAttention(nn.Module):
         
         conv = [nn.Conv1d,nn.Conv2d,nn.Conv3d][dimensions-1]
         
-        self.to_qkv = conv(dim, inner_dim * 3, 1, bias=False)
+        self.to_qkv = conv(dim, self.qkv_inner_dim, 1, bias=False)
         
         # Zero-initialized output projection
-        self.to_out =  conv(inner_dim, dim, 1, bias=output_bias)
+        self.to_out =  conv(inner_dim, dim, conv_kernel, bias=output_bias,padding=conv_kernel//2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -202,37 +212,55 @@ class SelfAttention(nn.Module):
         # 2. QKV projection via 1x1 conv
         qkv = self.to_qkv(x)
 
-        # 3. Reshape to [B, 3, heads, head_dim, L].
-        qkv = qkv.view(B, 3, self.heads, self.head_dim, -1)
+        q, k,v = qkv.split([
+            self.heads * self.head_dim,
+            self.kv_heads * self.head_dim,
+            self.kv_heads * self.head_dim,
+        ], dim=1)
+        q = q.view(B,self.heads,self.head_dim,-1)
+        k = k.view(B,self.kv_heads,self.head_dim,-1)
+        v = v.view(B,self.kv_heads,self.head_dim,-1)
         
         if self.add_rotary_embedding:
-            
-            # 3. Reshape to [B, 3,L, heads, head_dim].
-            qkv_perm = qkv.permute(0, 1, 4, 2, 3)
-            
-            qkv_perm = qkv_perm.view([B,3]+list(x.shape[2:])+[self.heads,self.head_dim])
-            
+            # 3. Reshape to [B, L, heads, head_dim].
+            qp=q.permute(0,3,1,2)
+            kp=k.permute(0,3,1,2)
             # apply rotary embedding to query and keys
-            qkv_perm[:,0]=self.rotary_emb(qkv_perm[:,0])
-            qkv_perm[:,1]=self.rotary_emb(qkv_perm[:,1])
+            q = self.rotary_emb(qp).permute(0,2,3,1)
+            k = self.rotary_emb(kp).permute(0,2,3,1)
         
         # make qkv contiguous to use faster attention path
-        qkv = qkv.transpose(-1,-2).contiguous()
-
-        q, k, v = qkv[:, 0], qkv[:, 1], qkv[:, 2]  # [B, heads, head_dim, L]
-        
+        q = q.transpose(-1,-2).contiguous()
+        k = k.transpose(-1,-2).contiguous()
+        v = v.transpose(-1,-2).contiguous()
         # (BATCH_SIZE, ... , HEADS_NUM, LENGTH, HEAD_DIM)
    
         # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
         attn_out = F.scaled_dot_product_attention(
             q, k, v,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=self.is_causal
+            is_causal=self.is_causal,
+            enable_gqa=self.groups>1
         )  # [B, heads, L, head_dim]
         
         # apply exclusive self-attention
         if self.xsa:
             Vn = F.normalize(v,dim=-1)
+            if self.groups>1:
+                attn_out=attn_out.view(
+                    B,
+                    self.groups,
+                    attn_out.shape[-3]//self.groups,
+                    attn_out.shape[-2],
+                    attn_out.shape[-1]
+                )
+                Vn=Vn.view(
+                    B,
+                    1,
+                    Vn.shape[-3],
+                    Vn.shape[-2],
+                    Vn.shape[-1]
+                )
             attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
@@ -263,16 +291,24 @@ class CrossAttention(nn.Module):
         output_bias = True,
         prenorm : Literal[None,'group','layer']='group',
         is_causal=False,
-        xsa = False
+        conv_kernel=1,
+        groups=1
     ):
         """
         abs_pos_jit_prob: setting this value to 0.5 or 1.0, will make absolute positions embedding work as scale-translate independent feature, which will allow model to extrapolate to much larger sequence lengths
         """
         super().__init__()
+        
         self.heads = heads
         self.head_dim = head_dim
         self.dropout = dropout
         inner_dim = heads * head_dim
+        self.groups=groups
+        self.kv_heads = self.heads // self.groups
+        self.kv_inner_dim = self.kv_heads * self.head_dim
+        
+        assert self.heads % self.groups == 0, f"heads ({self.heads}) must be divisible by groups ({self.groups})"
+        
         context_dim = context_dim if context_dim is not None else dim
         if add_absolute_pos:
             self.x_abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
@@ -300,11 +336,10 @@ class CrossAttention(nn.Module):
         conv = [nn.Conv1d, nn.Conv2d, nn.Conv3d][dimensions - 1]
         
         self.to_q = conv(dim, inner_dim, 1, bias=False)
-        self.to_kv = conv(context_dim, inner_dim * 2, 1, bias=False)
+        self.to_kv = conv(context_dim, self.kv_inner_dim*2, conv_kernel, bias=False,padding=conv_kernel//2)
         
-        self.to_out = conv(inner_dim, dim, 1, bias=output_bias)
+        self.to_out = conv(inner_dim, dim, conv_kernel, bias=output_bias,padding=conv_kernel//2)
         self.is_causal=is_causal
-        self.xsa = xsa
         
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
@@ -338,7 +373,7 @@ class CrossAttention(nn.Module):
 
         # 3. Reshape for attention
         q = q.view(B, 1, self.heads, self.head_dim, -1)
-        kv = kv.view(B, 2, self.heads, self.head_dim, -1)
+        kv = kv.view(B, 2, self.kv_heads, self.head_dim, -1)
         
         if self.add_rotary_embedding:
             # 3. Reshape to [B, 3,L, heads, head_dim].
@@ -367,12 +402,9 @@ class CrossAttention(nn.Module):
         attn_out = F.scaled_dot_product_attention(
             q, k, v,
             dropout_p=self.dropout if self.training else 0,
-            is_causal=self.is_causal
+            is_causal=self.is_causal,
+            enable_gqa=self.groups>1
         )  # [B, heads, L, head_dim]
-        # apply exclusive self attention
-        if self.xsa:
-            Vn = F.normalize(v,dim=-1)
-            attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
         
         # 6. Reshape back
         attn_out = attn_out.transpose(-1, -2).reshape(B, self.heads * self.head_dim, *x.shape[2:])
