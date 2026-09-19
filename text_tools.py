@@ -17,7 +17,9 @@ class SimpleTokenizer(nn.Module):
             unique_symbols.update(t)
         unique_symbols.add(unknown_symbols_placeholder)  # Ensure space is always included as fallback
         self.idx2sym : torch.StringType = "".join(sorted(unique_symbols))
-        
+        # TorchScript indexes strings by UTF-8 byte, which breaks on multibyte
+        # symbols, so keep an explicit list of characters for decoding
+        self.idx2sym_list: List[str] = [s for s in self.idx2sym]
         
         
         self.sym2idx: Dict[str, int] = {s: i for i, s in enumerate(self.idx2sym)}
@@ -56,7 +58,7 @@ class SimpleTokenizer(nn.Module):
         """
         Convert a tensor of indices back to a string.
         """
-        chars = [self.idx2sym[i] for i in indices]
+        chars = [self.idx2sym_list[i] for i in indices]
         return ''.join(chars)
 
 class TokenDataset(torch.utils.data.Dataset):
