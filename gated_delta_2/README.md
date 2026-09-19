@@ -74,6 +74,21 @@ model precision, and forward+backward work for both `GatedDelta2` and
   `mixed_precision='bf16'`) and `torch.compile` — only the linear projections
   and gates are autocast to the model precision.
 
+## Grouped-query heads (GQA)
+
+All classes take `kv_heads` (default `heads`; `heads` must be divisible by
+`kv_heads`). Each query head `h` reads the key/value head
+`h // (heads // kv_heads)`, the same grouping as
+`F.scaled_dot_product_attention(..., enable_gqa=True)`. The erase and decay
+gates ride with K, the write gate with V, so all query heads of a group share
+one state and one value path; only their queries differ. The projections
+shrink with the kv head count (`QK` holds `heads` Q heads + `kv_heads` K
+heads; `V`, `erase_gate`, `write_gate`, `decay_gate` scale with `kv_heads`),
+while the output projection still scales with `heads`. The sequence-mixing
+kernels are unchanged: `_project` expands the kv tensors to query heads before
+mixing (`base._expand_kv_heads`), so serial, scan and Triton paths all support
+GQA.
+
 ## Implementation paths (`GatedDelta2Scan`)
 
 The module picks the mixing implementation automatically:

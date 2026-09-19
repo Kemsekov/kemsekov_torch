@@ -22,7 +22,12 @@ class GatedDelta2Scan(GatedDelta2Base):
     V_dim : int
         Value dimension per head (also the module output dimension).
     heads : int
-        Number of parallel heads.
+        Number of parallel query heads.
+    kv_heads : int or None
+        Number of key/value heads for grouped-query attention (GQA);
+        ``heads`` must be divisible by ``kv_heads``. Defaults to ``heads``
+        (no grouping). Query head ``h`` reads the key/value head
+        ``h // (heads // kv_heads)``, matching SDPA's ``enable_gqa``.
     erase_gate_scale : float
         Multiplier applied to the sigmoid erase gate.
     chunk : int
@@ -38,10 +43,10 @@ class GatedDelta2Scan(GatedDelta2Base):
     """
 
     def __init__(
-        self, dim, QK_dim, V_dim, heads=1, erase_gate_scale=1.0,bidirectional=False, chunk=64,
+        self, dim, QK_dim, V_dim, heads=1, kv_heads=None, erase_gate_scale=1.0,bidirectional=False, chunk=64,
         scan_mode="auto", prec="fp32",
     ):
-        super().__init__(dim, QK_dim, V_dim, heads=heads,
+        super().__init__(dim, QK_dim, V_dim, heads=heads, kv_heads=kv_heads,
                          erase_gate_scale=erase_gate_scale,bidirectional=bidirectional)
         self.chunk = chunk
         self.scan_mode = scan_mode
