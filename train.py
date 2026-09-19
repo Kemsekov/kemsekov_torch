@@ -2,7 +2,6 @@ from copy import deepcopy
 import gc
 import os
 from typing import List, Dict,Callable, Literal, Optional, Tuple
-from matplotlib import pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
@@ -10,7 +9,6 @@ import json
 import math
 import shutil
 import time
-import tabulate
 from ema_pytorch.ema_pytorch import EMA
 from kemsekov_torch.common_modules import get_optim_groups
 
@@ -387,6 +385,8 @@ def train(
     from accelerate import Accelerator
     from tqdm import tqdm
     import accelerate
+    from matplotlib import pyplot as plt
+    import tabulate
     
     _print_green(f"Using dir {save_results_dir}")
     if checkpoints_count==0:
