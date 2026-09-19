@@ -17,6 +17,9 @@ class SimpleTokenizer(nn.Module):
             unique_symbols.update(t)
         unique_symbols.add(unknown_symbols_placeholder)  # Ensure space is always included as fallback
         self.idx2sym : torch.StringType = "".join(sorted(unique_symbols))
+        
+        
+        
         self.sym2idx: Dict[str, int] = {s: i for i, s in enumerate(self.idx2sym)}
         self.unknown_symbols_placeholder=unknown_symbols_placeholder
         self.space_idx = self.sym2idx[unknown_symbols_placeholder]  # Used for unknown characters
@@ -64,7 +67,7 @@ class TokenDataset(torch.utils.data.Dataset):
     
     def __init__(
         self, 
-        tokenizer, 
+        tokenizer : SimpleTokenizer, 
         text_lines,pad_token = ' ',
         batch_size = 64,
         max_length = 1024
@@ -77,18 +80,24 @@ class TokenDataset(torch.utils.data.Dataset):
         self.tokenizer = tokenizer
         self.max_length=max_length
         self.cache = {}
+        
+        # to save memory, store cache in lowest precision
+        if len(tokenizer.idx2sym)<256:
+            self.store_dtype=torch.uint8
+        else:
+            self.store_dtype=torch.uint16
     
     def __len__(self):
         return len(self.text)
 
     def __getitem__(self, index):
         if index in self.cache:
-            return self.cache[index]
+            return self.cache[index].long()
         text = self.text[index]
         ids_orig = self.tokenizer.encode(text)
         true_text = ids_orig[:self.max_length-1]
         
         output_tokens = int(math.ceil(len(true_text)/self.batch_size)*self.batch_size)
         ids=torch.tensor(list(true_text)+self.pad_token*(output_tokens))[:output_tokens]
-        self.cache[index]=ids
+        self.cache[index]=ids.to(self.store_dtype)
         return ids

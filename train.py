@@ -1,8 +1,7 @@
 from copy import deepcopy
 import gc
 import os
-from typing import List, Dict,Callable, Literal, Optional, Tuple
-import numpy as np
+from typing import List, Dict,Callable,Tuple
 import torch
 import torch.nn as nn
 import json
@@ -862,7 +861,7 @@ def load_checkpoint(model,base_path,checkpoint_index,log=True,device_map=None):
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Subset
 from kemsekov_torch.utils import BinBySizeDataset
-def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_factor=2,startify=None,bin_by_size = False,shuffle=True,random_state=123, pin_memory = True,drop_last=True):
+def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_factor=None,startify=None,bin_by_size = False,shuffle=True,random_state=123, pin_memory = True,drop_last=True,bin_n_jobs=-1):
     """
     Splits dataset into train and test parts
     
@@ -884,6 +883,8 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
     
     random_state: random state for dataset shuffle
     
+    bin_n_jobs: if using binning, this param defines how many jobs using for binning preprocess
+    
     Returns:
         train_dataset,test_dataset,train_loader, test_loader
     """
@@ -900,8 +901,8 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
         train_data = Subset(dataset, train_idx)
         test_data = Subset(dataset, test_idx)
         if bin_by_size:
-            train_data=BinBySizeDataset(train_data,batch_size,batch_size//8,max_workers=num_workers)
-            test_data=BinBySizeDataset(test_data,batch_size,batch_size//8,max_workers=num_workers)
+            train_data=BinBySizeDataset(train_data,batch_size,batch_size//8,max_workers=bin_n_jobs)
+            test_data=BinBySizeDataset(test_data,batch_size,batch_size//8,max_workers=bin_n_jobs)
 
         train_loader = DataLoader(train_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor,pin_memory=pin_memory,drop_last=drop_last)
         test_loader = DataLoader(test_data, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor,pin_memory=pin_memory,drop_last=drop_last)
@@ -915,7 +916,7 @@ def split_dataset(dataset,test_size=0.05,batch_size=8,num_workers = 16,prefetch_
             train_idx = torch.randperm(len(dataset),generator=g)
             dataset = Subset(dataset, train_idx)
         if bin_by_size:
-            dataset=BinBySizeDataset(dataset,batch_size,batch_size//8,max_workers=num_workers)
+            dataset=BinBySizeDataset(dataset,batch_size,batch_size//8,max_workers=bin_n_jobs)
         train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,num_workers=num_workers,prefetch_factor=prefetch_factor,pin_memory=pin_memory,drop_last=drop_last)
         print("Train items",len(dataset))
         return dataset,[],train_loader,[]

@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import joblib
 import math
 import os
 import numpy as np
@@ -131,12 +132,15 @@ class BinBySizeDataset(torch.utils.data.Dataset):
         
         bins = {}
         completed = 0
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(get_shape, i) for i in range(len(dataset))]
-            for future in tqdm.tqdm(as_completed(futures),desc="Bin by tensor size",total=len(dataset)):
-                shape_str, idx = future.result()
-                bins.setdefault(shape_str, []).append(idx)
-                completed+=1
+        tq=tqdm.tqdm(range(len(dataset)),desc="Bin by tensor size",total=len(dataset))
+        futures = joblib.Parallel(n_jobs=max_workers)(
+            joblib.delayed(get_shape)(i) 
+            for i in tq
+        )
+        
+        for shape_str, idx in futures:
+            bins.setdefault(shape_str, []).append(idx)
+            completed+=1
 
 
         for b in list(bins.keys()):
@@ -166,8 +170,9 @@ class BinBySizeDataset(torch.utils.data.Dataset):
             items_count+=len(bins[b])
             unique_items_count+=len(set(bins[b]))
             # print(b,len(bins[b]))
-        print("unique",unique_items_count)
-        print("total",items_count)
+        print("Unique",unique_items_count)
+        print("Total",items_count)
+        print("Bins",len(bins))
         
         bins_keys = list(bins.keys())
         bins_lengths = [len(bins[k]) for k in bins_keys]
