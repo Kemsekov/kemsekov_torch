@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from kemsekov_torch.common_modules import zero_module
 
 
 class GatedDelta2Base(nn.Module):
@@ -27,7 +28,7 @@ class GatedDelta2Base(nn.Module):
         self.out = nn.Sequential(
             nn.RMSNorm(V_dim * heads),
             nn.SiLU(),
-            nn.Linear(V_dim * heads, dim),
+            zero_module(nn.Linear(V_dim * heads, dim)),
         )
         self.bidirectional=bidirectional
 

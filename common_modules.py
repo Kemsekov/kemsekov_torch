@@ -3,16 +3,24 @@ import torch
 import torch.nn as nn
 
 class SwiGLU(nn.Module):
-    def __init__(self, dim,out_dim=None):
+    def __init__(self, dim,out_dim=None,transpose=False):
+        """
+        Applies SwiGLU to inputs of shape `[B,...,dim]`
+        
+        transpose: if True, then SwiGLU will be applied to `[B,dim,...]` (images-like)
+        """
+        
         super().__init__()
         out_dim=out_dim or dim
+        self.input_transpose = Transpose(1,-1) if transpose else nn.Identity()
         self.gate_proj = nn.Linear(dim, out_dim, bias=False)
         self.up_proj = nn.Linear(dim, out_dim, bias=False)
     
     def forward(self, x):
+        x=self.input_transpose(x)
         gate = self.gate_proj(x)
         up = self.up_proj(x)
-        return nn.functional.silu(gate) * up
+        return self.input_transpose(nn.functional.silu(gate) * up)
 
 class ConcatTensors(torch.nn.Module):
     """
@@ -29,6 +37,24 @@ class ConcatTensors(torch.nn.Module):
         tensors: a list of `torch.Tensor` objects that need to be concatenated
         """
         return torch.concat(tensors,self.dim)
+
+class SumTensors(torch.nn.Module):
+    """
+        This module accepts list of tensors and sums them
+    """
+    def __init__(self, dim = 1):
+        """
+        This module accepts list of tensors and sums them
+        """
+        super().__init__()
+        self.dim = dim
+    def forward(self,tensors : List[torch.Tensor]):
+        """
+        tensors: a list of `torch.Tensor` objects that need to be summed
+        """
+        return sum(tensors[1:],start=tensors[0])
+
+
 class Residual(torch.nn.Module):
     """
     Residual module that sums outputs of module with it's input. It supports any models that outputs any shape.

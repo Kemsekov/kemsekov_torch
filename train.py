@@ -575,7 +575,7 @@ def train(
                     with acc.autocast():
                         loss, batch_metric = compute_loss_and_metric(model,batch)
                     
-                    grad_norm()
+                    
                     
                     if not backward_loss(acc,loss):
                         NANS_COUNT+=1
@@ -588,6 +588,9 @@ def train(
                         #         nan_params = p[nan_mask]
                         #         p[nan_mask]=torch.randn_like(nan_params)
                         continue
+                    
+                    # apply gradient-clipping
+                    grad_norm()
                     
                     add_batch_metric(metric, batch_metric)
                     for opt in optimizer_acc:
