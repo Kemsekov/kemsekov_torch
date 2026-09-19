@@ -55,6 +55,56 @@ class SumTensors(torch.nn.Module):
         return sum(tensors[1:],start=tensors[0])
 
 
+class StepState:
+    """
+    Base class for the recurrent state objects exchanged by the
+    ``init_state``/``step`` protocol.
+
+    Modules that support incremental (autoregressive) evaluation implement::
+
+        def init_state(self, batch_size, device=None, dtype=None) -> StepState
+        def step(self, x, state) -> (output, new_state)
+
+    Containers such as :class:`StepSequential` thread the states of their
+    children through transparently, so callers (e.g. ``AutoregressiveChar``)
+    never need to know which concrete implementation (self-attention, gated
+    delta, ...) is used underneath.
+    """
+
+    def detach(self) -> "StepState":
+        """Detach the state from the autograd graph (no-op by default)."""
+        return self
+
+class StepSequential(nn.Sequential):
+    """
+    :class:`nn.Sequential` that additionally implements the ``step`` protocol.
+
+    The state of the sequence is a list aligned with its children, where
+    stateless children map to ``None``. Parameter names / ``state_dict``
+    layout are identical to :class:`nn.Sequential`, so checkpoints are fully
+    interchangeable.
+    """
+
+    def init_state(self, batch_size, device=None, dtype=None):
+        states = []
+        for m in self:
+            init = getattr(m, "init_state", None)
+            states.append(
+                None if init is None else init(batch_size, device=device, dtype=dtype)
+            )
+        return states
+
+    def step(self, x, states):
+        new_states = []
+        for m, state in zip(self, states):
+            step = getattr(m, "step", None)
+            if step is None:
+                x = m(x)
+            else:
+                x, state = step(x, state)
+            new_states.append(state)
+        return x, new_states
+
 class Residual(torch.nn.Module):
     """
     Residual module that sums outputs of module with it's input. It supports any models that outputs any shape.
@@ -73,7 +123,7 @@ class Residual(torch.nn.Module):
         """
         super().__init__()
         if isinstance(m,list) or isinstance(m,tuple):
-            m = torch.nn.Sequential(*m)
+            m = StepSequential(*m)
         
         self.m = m
         if init_at_zero:
@@ -86,6 +136,20 @@ class Residual(torch.nn.Module):
         if out.shape!=x.shape:
             x = resize_tensor(x,out.shape[1:])
         return self.alpha*out+x
+
+    def init_state(self, batch_size, device=None, dtype=None):
+        init = getattr(self.m, "init_state", None)
+        return None if init is None else init(batch_size, device=device, dtype=dtype)
+
+    def step(self, x, state):
+        step = getattr(self.m, "step", None)
+        if step is None:
+            out = self.m(x)
+        else:
+            out, state = step(x, state)
+        if out.shape!=x.shape:
+            x = resize_tensor(x,out.shape[1:])
+        return self.alpha*out+x, state
 
 class Repeat(torch.nn.Module):
     """

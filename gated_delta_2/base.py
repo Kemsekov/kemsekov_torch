@@ -1,7 +1,26 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from kemsekov_torch.common_modules import zero_module
+from dataclasses import dataclass
+from typing import Optional
+from kemsekov_torch.common_modules import zero_module, StepState
+
+
+@dataclass
+class Delta2State(StepState):
+    """
+    Recurrent state of a Gated Delta-2 layer.
+
+    ``state`` is the running memory matrix of shape
+    ``[batch*heads, QK_dim, V_dim]`` (``None`` until the first
+    :meth:`GatedDelta2Base.step` call).
+    """
+    state: Optional[torch.Tensor] = None
+
+    def detach(self) -> "Delta2State":
+        return Delta2State(
+            None if self.state is None else self.state.detach()
+        )
 
 
 class GatedDelta2Base(nn.Module):
@@ -111,3 +130,42 @@ class GatedDelta2Base(nn.Module):
     def _finalize(self, out, batch,xt):
         out = self._move_batch_to_heads(out, batch)
         return self.out(out.to(xt.dtype))+xt
+
+    def init_state(self, batch_size, device=None, dtype=None) -> Delta2State:
+        """Create an empty incremental state for :meth:`step`."""
+        return Delta2State()
+
+    def step(self, xt, state: Delta2State):
+        """
+        Incremental forward pass: applies the exact per-token recurrence to a
+        chunk of new tokens and updates the running memory state.
+
+        xt: `[B, L, dim]` with new tokens (L is usually 1).
+
+        state: :class:`Delta2State` returned by :meth:`init_state` (or by a
+               previous call to this method).
+
+        Returns `(output, state)` with output shaped like ``xt``.
+        """
+        if self.bidirectional:
+            raise NotImplementedError(
+                "GatedDelta2.step is undefined for bidirectional mixing"
+            )
+        with torch.amp.autocast(xt.device.type, enabled=False):
+            batch, seqlen, Q, K, alpha, et, zt = self._project(xt)
+            assert seqlen>0, "GatedDelta2.step requires at least one token"
+            S = state.state
+            if S is None:
+                S = torch.zeros(
+                    Q.shape[0], self.QK_dim, self.V_dim,
+                    dtype=alpha.dtype, device=alpha.device
+                )
+            result = []
+            for i in range(seqlen):
+                S = alpha[:,i]*S
+                rt = (S.transpose(1,2) @ et[:,i]).squeeze(-1)
+                S = S + K[:,i]*(zt[:,i]-rt)[:,None]
+                result.append((S.transpose(-1,-2) @ Q[:,i])[:,:,0])
+            out = torch.stack(result,1)
+            state.state = S
+        return self._finalize(out, batch, xt), state

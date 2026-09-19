@@ -3,12 +3,13 @@ from torch import nn
 from kemsekov_torch.common_modules import Prod
 from kemsekov_torch.residual import Residual
 import torch.nn.functional as F
-from typing import Literal, Optional
+from typing import Literal, Optional, Tuple
+from dataclasses import dataclass
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.rotary_emb_fast import FastRotEmb
-from kemsekov_torch.common_modules import ChanLayerNorm,ChanRMSNorm
+from kemsekov_torch.common_modules import ChanLayerNorm,ChanRMSNorm,StepState
 
 def zero_module(module):
     """
@@ -89,11 +90,54 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
         
         # pos ind always centered at zero, and be in range [-1,1]
         return POS_IND, self.max_dim_size
-        
-    def forward(self,x):
+
+    @torch.compiler.disable
+    def _positions_at(self, x, offset, grid_shape=None):
+        """Positions for ``n`` new (flattened) tokens starting at ``offset``.
+
+        Reproduces the coordinates that :meth:`_prepare_grid` builds for a
+        full sequence of length ``max_dim_size`` (the length seen during
+        training), so incremental ``step`` calls stay consistent with
+        training. ``n`` is the product of the spatial dims of ``x`` and the
+        coordinates are ordered exactly like the ``flatten(2)`` used by the
+        attention Q/K/V reshape. ``grid_shape`` is only needed for 2d/3d
+        inputs (it is the spatial shape the flattened sequence was built
+        from)."""
+        spatial = tuple(x.shape[2:])
+        n = 1
+        for s in spatial:
+            n *= s
+        if self.dimensions == 1 or grid_shape is None:
+            ref = self.max_dim_size.to(device=x.device, dtype=x.dtype)
+            t = torch.arange(offset, offset+n, device=x.device, dtype=x.dtype)
+            POS_IND = (t-ref/2)[:,None]
+        else:
+            # full centered grid, flattened in the same C-order the attention
+            # Q/K/V reshape uses, then selected for the new positions
+            axes = [
+                (torch.arange(size, device=x.device, dtype=x.dtype)-size/2)
+                for size in grid_shape[:self.dimensions]
+            ]
+            POS_IND = torch.stack(
+                torch.meshgrid(*axes,indexing='ij'),-1
+            ).reshape(-1,self.dimensions)[offset:offset+n]
+            POS_IND = POS_IND.reshape(*spatial,self.dimensions)
+            # _prepare_grid builds the grid axes in (last, first, ..., second)
+            # order; replicate that so the FiLM broadcast lines up with x
+            perm = (len(spatial)-1,)+tuple(range(len(spatial)-1))+(len(spatial),)
+            POS_IND = POS_IND.permute(perm)
+        # same *2 as _prepare_grid
+        POS_IND = POS_IND*2
+        # pos ind always centered at zero, and be in range [-1,1]
+        return POS_IND[None,:]/self.max_dim_size.to(device=x.device, dtype=x.dtype)
+
+    def forward(self,x,pos_offset=None,grid_shape=None):
         DIMS = x.shape[2:]
-        POS_IND, max_dim_size = self._prepare_grid(x, DIMS)
-        POS_IND=POS_IND[None,:]/max_dim_size
+        if pos_offset is None:
+            POS_IND, max_dim_size = self._prepare_grid(x, DIMS)
+            POS_IND=POS_IND[None,:]/max_dim_size
+        else:
+            POS_IND = self._positions_at(x, pos_offset, grid_shape)
         POS_IND=POS_IND.to(x.device,dtype=x.dtype)
         # apply CAPE Augmentation Transformations 
         if self.training and self.jit_prob>0:
@@ -113,10 +157,33 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
             # shift and scale positions to make attention work on relative positions rather than fixed
             POS_IND=POS_IND*pos_ind_scale+pos_ind_shift
         #apply gamma to make at the training start this transformation work as identity
-        pos_scale,pos_shift = self.absolute_pos(POS_IND).transpose(1,-1).squeeze(-1).chunk(2,1)
+        pos_scale,pos_shift = self.absolute_pos(POS_IND).transpose(1,-1).chunk(2,1)
         
         # apply proposed positions embedding in following way
         return x*(1+pos_scale)+pos_shift
+
+@dataclass
+class AttentionState(StepState):
+    """
+    Incremental state of :class:`SelfAttention`.
+
+    ``k``/``v`` are the cached keys/values of shape ``[B, kv_heads, T, head_dim]``
+    (``None`` until the first :meth:`SelfAttention.step` call), ``pos`` is the
+    number of flattened positions consumed so far and ``grid_shape`` optionally
+    holds the full spatial shape for 2d/3d inputs.
+    """
+    k: Optional[torch.Tensor] = None
+    v: Optional[torch.Tensor] = None
+    pos: int = 0
+    grid_shape: Optional[Tuple[int, ...]] = None
+
+    def detach(self) -> "AttentionState":
+        return AttentionState(
+            k=None if self.k is None else self.k.detach(),
+            v=None if self.v is None else self.v.detach(),
+            pos=self.pos,
+            grid_shape=self.grid_shape,
+        )
 
 class SelfAttention(nn.Module):
     """
@@ -160,6 +227,7 @@ class SelfAttention(nn.Module):
         self.heads = heads
         self.head_dim = head_dim
         self.dropout=dropout
+        self.conv_kernel=conv_kernel
         inner_dim = heads * head_dim
         self.dimensions=dimensions
         self.xsa = xsa
@@ -169,6 +237,7 @@ class SelfAttention(nn.Module):
         # Total inner dimension for QKV projection (Q gets full heads, K and V get kv_heads)
         self.qkv_inner_dim = (self.heads + 2 * self.kv_heads) * self.head_dim
         
+        self.add_absolute_pos = add_absolute_pos
         if add_absolute_pos:
             self.abs_emb = AbsoluteRelativePositionalEmbedding(dim,dimensions,jit_prob=abs_pos_jit_prob)
         else:
@@ -283,6 +352,105 @@ class SelfAttention(nn.Module):
         
         # 7. Output projection + residual connection
         return self.to_out(attn_out)+identity
+
+    def init_state(self, batch_size, device=None, dtype=None, grid_shape=None) -> AttentionState:
+        """
+        Create an empty incremental state for :meth:`step`.
+
+        grid_shape: optional full spatial shape (e.g. ``(H, W)``) for 2d/3d
+                    inputs, needed to place the absolute positions correctly.
+        """
+        return AttentionState(grid_shape=grid_shape)
+
+    def step(self, x, state: AttentionState):
+        """
+        Incremental forward pass: processes a chunk of new positions and
+        updates the KV cache.
+
+        x: `[B, C, ...spatial...]` with the same layout as :meth:`forward`
+           (before Q/K/V flattening). A single new token is usually
+           `[B, C, 1]`; larger chunks are processed in parallel.
+
+        state: :class:`AttentionState` returned by :meth:`init_state` (or by a
+               previous call to this method).
+
+        Returns `(output, state)` with the same output shape as `x`.
+        """
+        if self.add_rotary_embedding:
+            raise NotImplementedError(
+                "SelfAttention.step does not support add_rotary_embedding yet"
+            )
+        if self.conv_kernel!=1:
+            raise NotImplementedError(
+                "SelfAttention.step requires conv_kernel==1"
+            )
+        identity = x
+        B = x.shape[0]
+        spatial = list(x.shape[2:])
+        n = 1
+        for s in spatial:
+            n *= s
+
+        # 1. Pre-normalization (with absolute positions placed at the
+        #    running flattened offset)
+        if self.add_absolute_pos:
+            x = self.abs_emb(x,pos_offset=state.pos,grid_shape=state.grid_shape)
+        x = self.norm(x)
+
+        # 2. QKV projection via 1x1 conv
+        qkv = self.to_qkv(x)
+        q, k,v = qkv.split([
+            self.heads * self.head_dim,
+            self.kv_heads * self.head_dim,
+            self.kv_heads * self.head_dim,
+        ], dim=1)
+        q = q.view(B,self.heads,self.head_dim,n)
+        k = k.view(B,self.kv_heads,self.head_dim,n)
+        v = v.view(B,self.kv_heads,self.head_dim,n)
+
+        # 3. [B, heads, n, head_dim]
+        q = q.transpose(-1,-2).contiguous()
+        k = k.transpose(-1,-2).contiguous()
+        v = v.transpose(-1,-2).contiguous()
+
+        # 4. Append the new keys/values to the cache
+        state.k = k if state.k is None else torch.cat([state.k,k],dim=-2)
+        state.v = v if state.v is None else torch.cat([state.v,v],dim=-2)
+
+        # 5. New queries attend to the whole (causal) cache
+        attn_out = F.scaled_dot_product_attention(
+            q, state.k, state.v,
+            dropout_p=self.dropout if self.training else 0.0,
+            is_causal=False,
+            enable_gqa=self.heads!=self.kv_heads
+        )
+
+        # apply exclusive self-attention (uses the *new* values only)
+        if self.xsa:
+            Vn = F.normalize(v,dim=-1)
+            if self.heads!=self.kv_heads:
+                attn_out=attn_out.view(
+                    B,
+                    self.groups,
+                    attn_out.shape[-3]//self.groups,
+                    n,
+                    self.head_dim
+                )
+                Vn=Vn.view(
+                    B,
+                    1,
+                    Vn.shape[-3],
+                    n,
+                    Vn.shape[-1]
+                )
+            attn_out = attn_out-(attn_out*Vn).sum(-1,keepdim=True)*Vn
+
+        # 6. Reshape back
+        attn_out = attn_out.transpose(-1,-2).reshape([B,self.heads*self.head_dim]+spatial)
+
+        # 7. Output projection + residual connection
+        state.pos += n
+        return self.to_out(attn_out)+identity, state
 
 class CrossAttention(nn.Module):
     """
