@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.rotary_emb_fast import FastRotEmb
-from kemsekov_torch.common_modules import Transpose, ChanLayerNorm
+from kemsekov_torch.common_modules import ChanLayerNorm,ChanRMSNorm
 
 def zero_module(module):
     """
@@ -136,7 +136,7 @@ class SelfAttention(nn.Module):
         output_bias = True,
         abs_pos_jit_prob = 0.0,
         add_absolute_pos = False,
-        prenorm : Literal[None,'group','layer']='group',
+        prenorm : Literal[None,'group','layer','rms']='group',
         is_causal=False,
         xsa=False,
         conv_kernel=1
@@ -186,6 +186,8 @@ class SelfAttention(nn.Module):
             self.norm = ChanLayerNorm(dim)
         elif prenorm=='group':
             self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
+        elif prenorm=='rms':
+            self.norm = ChanRMSNorm(dim)
         else:
             self.norm = nn.Identity()
         
@@ -193,8 +195,23 @@ class SelfAttention(nn.Module):
         
         self.to_qkv = conv(dim, self.qkv_inner_dim, 1, bias=False)
         
+        
+        groups_out = max(1,inner_dim//32)
+        if groups_out==1 and inner_dim//16>=2: groups_out=2
+        if prenorm=='layer':
+            out_norm = ChanLayerNorm(inner_dim)
+        elif prenorm=='group':
+            out_norm = nn.GroupNorm(num_groups=groups_out, num_channels=inner_dim, eps=1e-6)
+        elif prenorm=='rms':
+            out_norm = ChanRMSNorm(inner_dim)
+        else:
+            out_norm = nn.Identity()
         # Zero-initialized output projection
-        self.to_out =  conv(inner_dim, dim, conv_kernel, bias=output_bias,padding=conv_kernel//2)
+        self.to_out = nn.Sequential(
+            out_norm,
+            nn.SiLU(),
+            zero_module(conv(inner_dim, dim, conv_kernel, bias=output_bias,padding=conv_kernel//2))
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -288,7 +305,7 @@ class CrossAttention(nn.Module):
         add_absolute_pos=False,
         abs_pos_jit_prob=0.0,
         output_bias = True,
-        prenorm : Literal[None,'group','layer']='group',
+        prenorm : Literal[None,'group','layer','rms']='group',
         is_causal=False,
         conv_kernel=1,
     ):
@@ -303,6 +320,7 @@ class CrossAttention(nn.Module):
         inner_dim = heads * head_dim
         self.groups=heads/kv_heads
         self.kv_heads = kv_heads
+        self.is_causal=is_causal
         self.kv_inner_dim = self.kv_heads * self.head_dim
         
         context_dim = context_dim if context_dim is not None else dim
@@ -322,6 +340,9 @@ class CrossAttention(nn.Module):
         if prenorm=='layer':
             self.norm = ChanLayerNorm(dim)
             self.norm_context = ChanLayerNorm(context_dim)
+        if prenorm=='rms':
+            self.norm = ChanRMSNorm(dim)
+            self.norm_context = ChanRMSNorm(context_dim)
         elif prenorm=='group':
             self.norm = nn.GroupNorm(num_groups=groups, num_channels=dim, eps=1e-6)
             self.norm_context = nn.GroupNorm(num_groups=max(1, context_dim // 32), num_channels=context_dim, eps=1e-6)
@@ -334,8 +355,22 @@ class CrossAttention(nn.Module):
         self.to_q = conv(dim, inner_dim, 1, bias=False)
         self.to_kv = conv(context_dim, self.kv_inner_dim*2, conv_kernel, bias=False,padding=conv_kernel//2)
         
-        self.to_out = conv(inner_dim, dim, conv_kernel, bias=output_bias,padding=conv_kernel//2)
-        self.is_causal=is_causal
+        groups_out = max(1,inner_dim//32)
+        if groups_out==1 and inner_dim//16>=2: groups_out=2
+        if prenorm=='layer':
+            out_norm = ChanLayerNorm(inner_dim)
+        elif prenorm=='group':
+            out_norm = nn.GroupNorm(num_groups=groups_out, num_channels=inner_dim, eps=1e-6)
+        elif prenorm=='rms':
+            out_norm = ChanRMSNorm(inner_dim)
+        else:
+            out_norm = nn.Identity()
+        # Zero-initialized output projection
+        self.to_out = nn.Sequential(
+            out_norm,
+            nn.SiLU(),
+            zero_module(conv(inner_dim, dim, conv_kernel, bias=output_bias,padding=conv_kernel//2))
+        )
         
 
     def forward(self, x: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:

@@ -16,6 +16,7 @@ class GatedDelta2Base(nn.Module):
         self.QK_dim = QK_dim
         self.V_dim = V_dim
         self.dim = dim
+        self.pernorm=nn.RMSNorm(dim)
         self.erase_gate = nn.Linear(dim, QK_dim * kv_heads, bias=False)
         self.register_buffer(
             "erase_gate_scale", torch.tensor([erase_gate_scale])
@@ -61,6 +62,7 @@ class GatedDelta2Base(nn.Module):
         return torch.float32 if dt in (torch.float16, torch.bfloat16) else dt
 
     def _project(self, xt):
+        xt=self.pernorm(xt)
         batch, seqlen, dim = xt.shape
         cdt = self._mixing_dtype(xt)
         W = torch.cat(

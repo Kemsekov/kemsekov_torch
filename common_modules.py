@@ -381,6 +381,26 @@ class ChanLayerNorm(nn.Module):
         # Transpose back to (batch_size, dim, seq_len)
         x = x.transpose(1, 2)
         return x.view(x_shape)
+
+
+# Channel-wise Layer Normalization for N'd inputs
+class ChanRMSNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+        self.ln = nn.RMSNorm(dim)
+
+    def forward(self, x):
+        x_shape = x.shape
+        x = x.flatten(2)
+        # Input x has shape (batch_size, dim, seq_len)
+        # Transpose to (batch_size, seq_len, dim) for nn.LayerNorm
+        x = x.transpose(1, 2)
+        # Apply layer normalization over the last dimension (dim)
+        x = self.ln(x)
+        # Transpose back to (batch_size, dim, seq_len)
+        x = x.transpose(1, 2)
+        return x.view(x_shape)
+
 class Mean0Std1Norm(torch.nn.Module):
     """
     Transforms input of shape [Batch,Channels,...] to have mean 0 std 1 along spatial dimensions (...)

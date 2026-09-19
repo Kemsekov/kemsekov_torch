@@ -70,7 +70,8 @@ class TokenDataset(torch.utils.data.Dataset):
         tokenizer : SimpleTokenizer, 
         text_lines,pad_token = ' ',
         batch_size = 64,
-        max_length = 1024
+        max_length = 1024,
+        fixed_length=None
     ):
         super().__init__()
         text_lines=[t.strip() for t in text_lines]
@@ -80,6 +81,7 @@ class TokenDataset(torch.utils.data.Dataset):
         self.tokenizer = tokenizer
         self.max_length=max_length
         self.cache = {}
+        self.fixed_length=fixed_length
         
         # to save memory, store cache in lowest precision
         if len(tokenizer.idx2sym)<256:
@@ -96,8 +98,10 @@ class TokenDataset(torch.utils.data.Dataset):
         text = self.text[index]
         ids_orig = self.tokenizer.encode(text)
         true_text = ids_orig[:self.max_length-1]
-        
-        output_tokens = int(math.ceil(len(true_text)/self.batch_size)*self.batch_size)
+        if self.fixed_length is None:
+            output_tokens = int(math.ceil(len(true_text)/self.batch_size)*self.batch_size)
+        else:
+            output_tokens=self.fixed_length
         ids=torch.tensor(list(true_text)+self.pad_token*(output_tokens))[:output_tokens]
         self.cache[index]=ids.to(self.store_dtype)
         return ids
