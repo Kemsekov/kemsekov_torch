@@ -166,7 +166,7 @@ def train(
         accelerator = None,
         accelerate_args : None | Dict = None,
         ema_args :  None | Dict = None,
-        gradient_clipping_max_norm = None,
+        gradient_clipping_max_norm = 1,
         tie_weights=False, 
         cast_batch_to_mixed_precision_dtype = False,
         on_epoch_end = None,
