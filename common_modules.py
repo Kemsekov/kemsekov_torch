@@ -75,6 +75,93 @@ class StepState:
         """Detach the state from the autograd graph (no-op by default)."""
         return self
 
+def _has_step_descendant(module : nn.Module) -> bool:
+    """True when `module` or any of its descendants implements ``step``."""
+    for child in module.children():
+        if hasattr(child,"step") or _has_step_descendant(child):
+            return True
+    return False
+
+def _missing_step_error(module):
+    return RuntimeError(
+        f"{type(module).__name__} contains step-capable submodules but does not "
+        "implement `init_state`/`step`, so its incremental state cannot be tracked. "
+        "Implement `init_state(batch_size, device=None, dtype=None)` and "
+        "`step(x, state)` on it (use `init_module_state`/`step_module` for its "
+        "children). Without it autoregressive generation would silently run the "
+        "full-sequence forward and produce wrong text."
+    )
+
+def init_module_state(module, batch_size, device=None, dtype=None):
+    """
+    Recursively builds the incremental state for an arbitrary module tree.
+
+    Reflection rules:
+
+    * a module implementing ``init_state`` owns its state and the walker stops
+      there (this is how :class:`SelfAttention`, ``GatedDelta2``, custom
+      wrappers, ... plug in);
+    * ``nn.Sequential`` / ``nn.ModuleList`` / ``nn.ModuleDict`` are reflected
+      into, producing a list/dict of child states aligned with the children;
+    * stateless leaves produce ``None``;
+    * a module that *contains* step-capable submodules but does not implement
+      ``init_state`` raises a descriptive error instead of silently falling
+      back to its full-sequence ``forward``.
+    """
+    init = getattr(module,"init_state",None)
+    if init is not None:
+        return init(batch_size,device=device,dtype=dtype)
+    if isinstance(module,(nn.Sequential,nn.ModuleList)):
+        return [
+            init_module_state(c,batch_size,device=device,dtype=dtype)
+            for c in module
+        ]
+    if isinstance(module,nn.ModuleDict):
+        return {
+            k:init_module_state(c,batch_size,device=device,dtype=dtype)
+            for k,c in module.items()
+        }
+    if _has_step_descendant(module):
+        raise _missing_step_error(module)
+    return None
+
+def step_module(module, x, state):
+    """
+    Runs one incremental step of an arbitrary module tree on a chunk of new
+    positions, mirroring :func:`init_module_state`'s reflection rules.
+
+    * modules implementing ``step`` are called directly;
+    * ``nn.Sequential`` / ``nn.ModuleList`` / ``nn.ModuleDict`` are stepped
+      child by child (in forward order);
+    * stateless leaves are called through ``forward``;
+    * modules containing step-capable children without implementing ``step``
+      raise (see :func:`init_module_state`).
+
+    Returns ``(output, new_state)``.
+    """
+    step = getattr(module,"step",None)
+    if step is not None:
+        return step(x,state)
+    if isinstance(module,(nn.Sequential,nn.ModuleList)):
+        if not (isinstance(state,(list,tuple)) and len(state)==len(module)):
+            state = [None]*len(module)
+        new_states = []
+        for c,s in zip(module,state):
+            x,s = step_module(c,x,s)
+            new_states.append(s)
+        return x,new_states
+    if isinstance(module,nn.ModuleDict):
+        if not isinstance(state,dict):
+            state = {}
+        new_states = {}
+        for k,c in module.items():
+            x,s = step_module(c,x,state.get(k))
+            new_states[k] = s
+        return x,new_states
+    if _has_step_descendant(module):
+        raise _missing_step_error(module)
+    return module(x),None
+
 class StepSequential(nn.Sequential):
     """
     :class:`nn.Sequential` that additionally implements the ``step`` protocol.
@@ -83,25 +170,21 @@ class StepSequential(nn.Sequential):
     stateless children map to ``None``. Parameter names / ``state_dict``
     layout are identical to :class:`nn.Sequential`, so checkpoints are fully
     interchangeable.
+
+    Note that plain ``nn.Sequential``/``nn.ModuleList`` containers are handled
+    by :func:`step_module` as well, so using this class is optional.
     """
 
     def init_state(self, batch_size, device=None, dtype=None):
-        states = []
-        for m in self:
-            init = getattr(m, "init_state", None)
-            states.append(
-                None if init is None else init(batch_size, device=device, dtype=dtype)
-            )
-        return states
+        return [
+            init_module_state(m,batch_size,device=device,dtype=dtype)
+            for m in self
+        ]
 
     def step(self, x, states):
         new_states = []
         for m, state in zip(self, states):
-            step = getattr(m, "step", None)
-            if step is None:
-                x = m(x)
-            else:
-                x, state = step(x, state)
+            x, state = step_module(m,x,state)
             new_states.append(state)
         return x, new_states
 
@@ -138,15 +221,10 @@ class Residual(torch.nn.Module):
         return self.alpha*out+x
 
     def init_state(self, batch_size, device=None, dtype=None):
-        init = getattr(self.m, "init_state", None)
-        return None if init is None else init(batch_size, device=device, dtype=dtype)
+        return init_module_state(self.m,batch_size,device=device,dtype=dtype)
 
     def step(self, x, state):
-        step = getattr(self.m, "step", None)
-        if step is None:
-            out = self.m(x)
-        else:
-            out, state = step(x, state)
+        out, state = step_module(self.m,x,state)
         if out.shape!=x.shape:
             x = resize_tensor(x,out.shape[1:])
         return self.alpha*out+x, state
@@ -865,8 +943,12 @@ def get_optim_groups(model, weight_decay=1e-2):
     
     Robust against duplicate parameters, unlisted norm modules, and name overlaps.
     """
-    decay_params = set()
-    no_decay_params = set()
+    # Lists (not sets!) keep a deterministic order across processes, which is
+    # required for distributed optimizers (e.g. DeepSpeed ZeRO): all ranks must
+    # iterate parameters in exactly the same order or collectives deadlock.
+    decay_params = []
+    no_decay_params = []
+    seen = set()
     
     # Deduplicated standard normalization layers
     norm_layers = (
@@ -884,8 +966,9 @@ def get_optim_groups(model, weight_decay=1e-2):
     for mn, module in model.named_modules():
         # recurse=False isolates parameters directly owned by this specific submodule
         for pn, p in module.named_parameters(recurse=False):
-            if not p.requires_grad:
+            if not p.requires_grad or id(p) in seen:
                 continue
+            seen.add(id(p))
             
             # Condition 1: Biases and explicit scalers never decay
             is_bias = pn.endswith('bias')
@@ -895,15 +978,11 @@ def get_optim_groups(model, weight_decay=1e-2):
             is_norm = isinstance(module, norm_layers) or p.ndim == 1
             
             if is_bias or is_scaler or is_norm:
-                no_decay_params.add(p)
+                no_decay_params.append(p)
             else:
-                decay_params.add(p)
-
-    # Sanity Check: Ensure no parameter leaked into both or got mixed up
-    overlap = decay_params.intersection(no_decay_params)
-    assert len(overlap) == 0, f"Conflict: {len(overlap)} parameters found in both groups!"
+                decay_params.append(p)
     
     return [
-        {"params": list(decay_params), "weight_decay": weight_decay},
-        {"params": list(no_decay_params), "weight_decay": 0.0}
+        {"params": decay_params, "weight_decay": weight_decay},
+        {"params": no_decay_params, "weight_decay": 0.0}
     ]

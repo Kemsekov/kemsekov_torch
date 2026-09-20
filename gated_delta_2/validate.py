@@ -110,32 +110,28 @@ def _check_gqa_grouping(device="cpu"):
     grouped = GatedDelta2Scan(dim, qk, vd, heads=heads, kv_heads=kv_heads).to(device)
     dense = GatedDelta2Scan(dim, qk, vd, heads=heads, kv_heads=heads).to(device)
     g = heads // kv_heads
-    per_head = {
-        "erase_gate.weight": qk,
-        "write_gate.weight": vd,
-        "decay_gate.weight": qk,
-        "decay_gate.bias": qk,
-        "V.weight": vd,
-    }
+    n_e, n_w, n_d = qk * kv_heads, vd * kv_heads, qk * kv_heads
+    n_q, n_k, n_v = qk * heads, qk * kv_heads, vd * kv_heads
     with torch.no_grad():
-        for (n1, p1), (n2, p2) in zip(
-            grouped.named_parameters(), dense.named_parameters()
-        ):
-            assert n1 == n2
-            if n1 == "QK.weight":
-                QG, KG = p1.split([qk * heads, qk * kv_heads], dim=0)
-                KD = _repeat_head_blocks(KG, qk, g)
-                p2.copy_(torch.cat([QG, KD], dim=0))
-            elif n1 in per_head:
-                p2.copy_(_repeat_head_blocks(p1, per_head[n1], g))
-            else:
-                assert p1.shape == p2.shape, n1
-                p2.copy_(p1)
-        for (n1, b1), (n2, b2) in zip(
-            grouped.named_buffers(), dense.named_buffers()
-        ):
-            assert n1 == n2
-            b2.copy_(b1)
+        p1 = grouped.projection.weight
+        p2 = dense.projection.weight
+        erase, write, decay = p1[:n_e], p1[n_e:n_e + n_w], p1[n_e + n_w:n_e + n_w + n_d]
+        qk_g, v_g = p1[n_e + n_w + n_d:n_e + n_w + n_d + n_q + n_k], p1[n_e + n_w + n_d + n_q + n_k:]
+        QG, KG = qk_g.split([n_q, n_k], dim=0)
+        p2.copy_(
+            torch.cat(
+                [
+                    _repeat_head_blocks(erase, qk, g),
+                    _repeat_head_blocks(write, vd, g),
+                    _repeat_head_blocks(decay, qk, g),
+                    QG,
+                    _repeat_head_blocks(KG, qk, g),
+                    _repeat_head_blocks(v_g, vd, g),
+                ],
+                dim=0,
+            )
+        )
+        dense.decay_bias.copy_(_repeat_head_blocks(grouped.decay_bias, qk, g))
     with torch.no_grad():
         x = torch.randn(2, L, dim, device=device)
         d = _max_rel(grouped(x), dense(x))

@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 
+from kemsekov_torch.common_modules import init_module_state, step_module
+
 
 def zero_module(module):
     with torch.no_grad():
@@ -47,3 +49,32 @@ class RecurrentLayer(nn.Module):
                 update_gate = update_gate * (i < depth).to(update_gate.dtype)
             x = update_gate * self.module(x * pass_gate) + (1 - update_gate) * x
         return x + x0 + self.res_w(x0) * x_in
+
+    def init_state(self, batch_size, device=None, dtype=None):
+        """
+        One inner state per `self.module` application: the module is called
+        `max_recurrence` times per token (once for `x0` and once per
+        refinement step) and each application attends to its own history, so
+        each needs its own KV/recurrent state.
+        """
+        return [
+            init_module_state(self.module,batch_size,device=device,dtype=dtype)
+            for _ in range(self.max_recurrence)
+        ]
+
+    def step(self, x, states):
+        """
+        Incremental equivalent of :meth:`forward` for one chunk of new
+        positions: replays the recurrence with per-application states, exactly
+        mirroring the full-sequence computation for the new positions.
+        """
+        x_in = x
+        x0, s0 = step_module(self.module,x,states[0])
+        x = x0
+        new_states = [s0]
+        for i in range(self.max_recurrence - 1):
+            update_gate, pass_gate = self.gate(x).sigmoid().chunk(2, -1)
+            out, s = step_module(self.module,x * pass_gate,states[i + 1])
+            x = update_gate * out + (1 - update_gate) * x
+            new_states.append(s)
+        return x + x0 + self.res_w(x0) * x_in, new_states

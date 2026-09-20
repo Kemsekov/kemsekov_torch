@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Union
 from typing import Iterable
-from kemsekov_torch.common_modules import Residual
+from kemsekov_torch.common_modules import Residual, init_module_state, step_module
 
 class AttentionResidual(nn.Module):
     def __init__(
@@ -79,3 +79,48 @@ class AttentionResidual(nn.Module):
         out = torch.stack(values,0)*scores.softmax(0)
         out = self.out(out.sum(0))
         return out.transpose(-1,self.features_dimension)
+
+    def init_state(self, batch_size, device=None, dtype=None):
+        """
+        AttentionResidual's cross-stage attention is pointwise over the
+        sequence dimension, so the only temporal state lives inside
+        ``self.models``; one child state per model.
+        """
+        return [
+            init_module_state(m,batch_size,device=device,dtype=dtype)
+            for m in self.models
+        ]
+
+    def step(self, x, states):
+        """
+        Incremental equivalent of :meth:`forward`: the stage-attention
+        bookkeeping is stateless across positions, inner models are stepped.
+        """
+        #xt is [B,...,head_dim]
+        xt=x.transpose(self.features_dimension,-1)
+
+        keys = []
+        values = []
+        new_states = []
+        for i,m in enumerate(self.models):
+            k = self.KV(xt)
+            v=xt
+            q = self.query[i]
+            k=F.normalize(k,2.0,-1)
+            keys.append(k)
+            values.append(v)
+
+            if i>0:
+                x_next = self.get_x_next(keys, values, q)
+            else:
+                x_next = self.out(v).transpose(-1,self.features_dimension)
+
+            x, s = step_module(m,x_next,states[i])
+            xt=x.transpose(self.features_dimension,-1)
+            new_states.append(s)
+
+        k = self.KV(xt)
+        v=xt
+        keys.append(k)
+        values.append(v)
+        return self.get_x_next(keys, values, self.query[-1]), new_states

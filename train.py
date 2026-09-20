@@ -386,14 +386,21 @@ def train(
     import accelerate
     from matplotlib import pyplot as plt
     import tabulate
+    from accelerate.utils import DummyOptim, DummyScheduler
+
     
     _print_green(f"Using dir {save_results_dir}")
     if checkpoints_count==0:
         _print_red("WARNING!!! (checkpoints_count==0) No checkpoints will be saved!")
     # only if we use deepspeed
-    if  accelerate_args is not None and 'deepspeed_plugins' in accelerate_args.keys():
-        optimizer = accelerate.utils.DummyOptim(get_optim_groups(model))
-        scheduler = accelerate.utils.DummyScheduler(optimizer)
+    if  accelerate_args is not None and ('deepspeed_plugins' in accelerate_args.keys() or 'deepspeed_plugin' in accelerate_args.keys()):
+        optimizer = DummyOptim(get_optim_groups(model),lr=default_lr)
+        scheduler = DummyScheduler(
+            optimizer,
+            lr_scheduler_callable=lambda opt: torch.optim.lr_scheduler.CosineAnnealingLR(
+                opt, T_max=num_epochs * len(train_loader)
+            )
+        )
     
     if optimizer is None:
         _print_blue("Using default fused AdamW optimizer")
@@ -703,18 +710,15 @@ def train(
                 plots_and_stats(report_path, train_metric_history, test_metric_history, train_time_history, loss_history, test_loss_history, acc, is_testing, epoch) 
 
                 best_test_metric = test_metric
-                if acc.is_main_process and checkpoints_count>1:
+                if acc.is_main_process:
                     # keep total count of saved checkpoints constant
                     checkpoints = os.listdir(checkpoints_dir)
                     checkpoints=sorted(checkpoints,key=lambda x: int(x.split('-')[-1]))
-                    if len(checkpoints)>=checkpoints_count:
-                        for c in checkpoints[:-checkpoints_count+1]:
-                            c_dir = os.path.join(checkpoints_dir,c)
-                            shutil.rmtree(c_dir,ignore_errors=True)
-                    if checkpoints_count==1:
-                        for c in checkpoints:
-                            c_dir = os.path.join(checkpoints_dir,c)
-                            shutil.rmtree(c_dir,ignore_errors=True)
+                    # after adding the new checkpoint at most `checkpoints_count` remain
+                    keep = max(checkpoints_count-1,0)
+                    for c in checkpoints[:len(checkpoints)-keep]:
+                        c_dir = os.path.join(checkpoints_dir,c)
+                        shutil.rmtree(c_dir,ignore_errors=True)
                         
                     checkpoints_dir_with_epoch=os.path.join(checkpoints_dir,f"epoch-{epoch+1}")
                     # for each improvement save training state and model

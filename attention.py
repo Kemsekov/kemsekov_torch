@@ -122,10 +122,12 @@ class AbsoluteRelativePositionalEmbedding(nn.Module):
                 torch.meshgrid(*axes,indexing='ij'),-1
             ).reshape(-1,self.dimensions)[offset:offset+n]
             POS_IND = POS_IND.reshape(*spatial,self.dimensions)
-            # _prepare_grid builds the grid axes in (last, first, ..., second)
-            # order; replicate that so the FiLM broadcast lines up with x
-            perm = (len(spatial)-1,)+tuple(range(len(spatial)-1))+(len(spatial),)
-            POS_IND = POS_IND.permute(perm)
+            # _prepare_grid builds both the spatial axes and the coordinate
+            # components in (last, first, ..., second) order; replicate that so
+            # the FiLM broadcast lines up with x and the coordinate MLP sees
+            # the same feature order
+            order = (len(spatial)-1,)+tuple(range(len(spatial)-1))
+            POS_IND = POS_IND[...,order].permute(order+(len(spatial),))
         # same *2 as _prepare_grid
         POS_IND = POS_IND*2
         # pos ind always centered at zero, and be in range [-1,1]
@@ -417,13 +419,28 @@ class SelfAttention(nn.Module):
         state.k = k if state.k is None else torch.cat([state.k,k],dim=-2)
         state.v = v if state.v is None else torch.cat([state.v,v],dim=-2)
 
-        # 5. New queries attend to the whole (causal) cache
-        attn_out = F.scaled_dot_product_attention(
-            q, state.k, state.v,
-            dropout_p=self.dropout if self.training else 0.0,
-            is_causal=False,
-            enable_gqa=self.heads!=self.kv_heads
-        )
+        # 5. New queries attend to the whole cache. For multi-token chunks the
+        #    causal mask has to be built explicitly: SDPA's `is_causal` aligns
+        #    to the bottom-right corner, which would let early chunk tokens
+        #    attend to later chunk tokens.
+        T = state.k.shape[-2] - n
+        if self.is_causal and T>0 and n>1:
+            q_pos = torch.arange(T,T+n,device=x.device)
+            k_pos = torch.arange(T+n,device=x.device)
+            attn_mask = k_pos[None,:]<=q_pos[:,None]
+            attn_out = F.scaled_dot_product_attention(
+                q, state.k, state.v,
+                dropout_p=self.dropout if self.training else 0.0,
+                attn_mask=attn_mask,
+                enable_gqa=self.heads!=self.kv_heads
+            )
+        else:
+            attn_out = F.scaled_dot_product_attention(
+                q, state.k, state.v,
+                dropout_p=self.dropout if self.training else 0.0,
+                is_causal=self.is_causal and T==0,
+                enable_gqa=self.heads!=self.kv_heads
+            )
 
         # apply exclusive self-attention (uses the *new* values only)
         if self.xsa:

@@ -36,15 +36,20 @@ class GatedDelta2Base(nn.Module):
         self.V_dim = V_dim
         self.dim = dim
         self.pernorm=nn.RMSNorm(dim)
-        self.erase_gate = nn.Linear(dim, QK_dim * kv_heads, bias=False)
         self.register_buffer(
             "erase_gate_scale", torch.tensor([erase_gate_scale])
         )
-        self.write_gate = nn.Linear(dim, V_dim * kv_heads, bias=False)
         self.decay = nn.Parameter(torch.tensor([0.0]))
-        self.decay_gate = nn.Linear(dim, QK_dim * kv_heads)
-        self.QK = nn.Linear(dim, QK_dim * (heads + kv_heads), bias=False)
-        self.V = nn.Linear(dim, V_dim * kv_heads, bias=False)
+        self.projection = nn.Linear(
+            dim,
+            QK_dim * kv_heads
+            + V_dim * kv_heads
+            + QK_dim * kv_heads
+            + QK_dim * (heads + kv_heads)
+            + V_dim * kv_heads,
+            bias=False,
+        )
+        self.decay_bias = nn.Parameter(torch.zeros(QK_dim * kv_heads))
         self.out = nn.Sequential(
             nn.RMSNorm(V_dim * heads),
             nn.SiLU(),
@@ -84,17 +89,7 @@ class GatedDelta2Base(nn.Module):
         xt=self.pernorm(xt)
         batch, seqlen, dim = xt.shape
         cdt = self._mixing_dtype(xt)
-        W = torch.cat(
-            [
-                self.erase_gate.weight,
-                self.write_gate.weight,
-                self.decay_gate.weight,
-                self.QK.weight,
-                self.V.weight,
-            ],
-            dim=0,
-        )
-        erase_h, write_h, decay_h, qk_h, v_h = F.linear(xt, W).split(
+        erase_h, write_h, decay_h, qk_h, v_h = self.projection(xt).split(
             [
                 self.QK_dim * self.kv_heads,
                 self.V_dim * self.kv_heads,
@@ -104,7 +99,7 @@ class GatedDelta2Base(nn.Module):
             ],
             dim=-1,
         )
-        decay_h = decay_h + self.decay_gate.bias
+        decay_h = decay_h + self.decay_bias
         Q, K = qk_h.unsqueeze(-1).split(
             [self.QK_dim * self.heads, self.QK_dim * self.kv_heads], dim=-2
         )

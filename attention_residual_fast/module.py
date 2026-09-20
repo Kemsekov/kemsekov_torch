@@ -17,7 +17,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Iterable
-from kemsekov_torch.common_modules import Residual
+from kemsekov_torch.common_modules import Residual, init_module_state, step_module
 from kemsekov_torch.attention_residual_fast.kernels import (
     _KVFn, _AttnFn, _OutFn, _kv_torch, _out_torch, _use_fused,
 )
@@ -165,3 +165,39 @@ class AR2Fast(nn.Module):
         scores = (torch.stack(keys) * self.query[-1].unsqueeze(0)).mean(-1, keepdim=True)
         out = self.out((torch.stack(values, 0) * scores.softmax(0)).sum(0))
         return out.transpose(-1, fd)
+
+    def init_state(self, batch_size, device=None, dtype=None):
+        """One child state per model in ``self.models`` (the stage attention
+        itself is pointwise over the sequence dimension)."""
+        return [
+            init_module_state(m,batch_size,device=device,dtype=dtype)
+            for m in self.models
+        ]
+
+    def step(self, x, states):
+        """Incremental equivalent of :meth:`_forward_torch` (the exact torch
+        semantics): inner models are stepped, stage attention is stateless."""
+        fd = self.features_dimension
+        xt = x.transpose(fd, -1)
+        keys, values = [], []
+        new_states = []
+        for i, m in enumerate(self.models):
+            k = F.normalize(self.KV(xt), 2.0, -1)
+            v = xt
+            q = self.query[i]
+            keys.append(k)
+            values.append(v)
+            if i > 0:
+                scores = (torch.stack(keys) * q.unsqueeze(0)).mean(-1, keepdim=True)
+                x_next = self.out((torch.stack(values, 0) * scores.softmax(0)).sum(0))
+                x_next = x_next.transpose(-1, fd)
+            else:
+                x_next = self.out(v).transpose(-1, fd)
+            x, s = step_module(m, x_next, states[i])
+            xt = x.transpose(fd, -1)
+            new_states.append(s)
+        keys.append(self.KV(xt))
+        values.append(xt)
+        scores = (torch.stack(keys) * self.query[-1].unsqueeze(0)).mean(-1, keepdim=True)
+        out = self.out((torch.stack(values, 0) * scores.softmax(0)).sum(0))
+        return out.transpose(-1, fd), new_states
