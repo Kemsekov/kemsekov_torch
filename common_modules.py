@@ -65,10 +65,6 @@ class StepState:
         def init_state(self, batch_size, device=None, dtype=None) -> StepState
         def step(self, x, state) -> (output, new_state)
 
-    Containers such as :class:`StepSequential` thread the states of their
-    children through transparently, so callers (e.g. ``AutoregressiveChar``)
-    never need to know which concrete implementation (self-attention, gated
-    delta, ...) is used underneath.
     """
 
     def detach(self) -> "StepState":
@@ -162,32 +158,6 @@ def step_module(module, x, state):
         raise _missing_step_error(module)
     return module(x),None
 
-class StepSequential(nn.Sequential):
-    """
-    :class:`nn.Sequential` that additionally implements the ``step`` protocol.
-
-    The state of the sequence is a list aligned with its children, where
-    stateless children map to ``None``. Parameter names / ``state_dict``
-    layout are identical to :class:`nn.Sequential`, so checkpoints are fully
-    interchangeable.
-
-    Note that plain ``nn.Sequential``/``nn.ModuleList`` containers are handled
-    by :func:`step_module` as well, so using this class is optional.
-    """
-
-    def init_state(self, batch_size, device=None, dtype=None):
-        return [
-            init_module_state(m,batch_size,device=device,dtype=dtype)
-            for m in self
-        ]
-
-    def step(self, x, states):
-        new_states = []
-        for m, state in zip(self, states):
-            x, state = step_module(m,x,state)
-            new_states.append(state)
-        return x, new_states
-
 class Residual(torch.nn.Module):
     """
     Residual module that sums outputs of module with it's input. It supports any models that outputs any shape.
@@ -206,7 +176,7 @@ class Residual(torch.nn.Module):
         """
         super().__init__()
         if isinstance(m,list) or isinstance(m,tuple):
-            m = StepSequential(*m)
+            m = nn.Sequential(*m)
         
         self.m = m
         if init_at_zero:
