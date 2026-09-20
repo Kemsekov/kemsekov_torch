@@ -19,6 +19,22 @@ def _needs_seq_fallback(a, C):
     return bool((lsum.min() < SEQ_FALLBACK_THRESHOLD).item())
 
 
+def _needs_fp32_fallback(a, C, log_min=None):
+    """Exact test for the fp32 decay-normalization fallback: the cumulative
+    log-decay of a chunk/channel leaves the fp32-representable range, so
+    ``exp(-cumsum)`` overflows and ``_scan_fwd`` (which has no fp64 recursion)
+    would produce infinities.  ``a`` must be strictly positive per token."""
+    if log_min is None:
+        log_min = LOG_MIN[torch.float32]
+    B, L, dk = a.shape
+    nch = (L + C - 1) // C
+    Lp = nch * C
+    if Lp > L:
+        a = torch.cat([a, a.new_ones(B, Lp - L, dk)], dim=1)
+    lsum = a.log().view(B, nch, C, dk).sum(dim=2)
+    return bool((lsum.min() < log_min).item())
+
+
 def _scan_fwd(a, k, e, q, z, C, scan_mode, prec):
     """Plain differentiable chunked-scan forward. Autograd derives the
     backward, which lets torch.compile/inductor fuse it (the manual

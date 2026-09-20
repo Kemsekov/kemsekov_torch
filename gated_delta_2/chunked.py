@@ -5,12 +5,20 @@ from .fast import BUDGET, FastScanFn
 from .recurrent import RecurrentDelta2Fn, _can_split, _can_use_recurrent
 from .recurrent_fast import FastRecurrentFn
 from .recurrent_fast import _can_use_recurrent as _can_use_recurrent_fast
-from .scan import Delta2ScanFn, _needs_seq_fallback, _scan_fwd
+from .scan import (
+    Delta2ScanFn,
+    _needs_fp32_fallback,
+    _needs_seq_fallback,
+    _scan_fwd,
+)
 from . import tuning
 
 # a candidate has to agree with the reference chunked scan to this relative
 # tolerance before it is allowed to win the autotuning
 _AGREE_TOL = 5e-3
+# the differentiable scan is only used when every chunk's cumulative log-decay
+# stays above this value (its backward has no fp64 recursion)
+_AUTOGRAD_LOG_MIN = -20.0
 
 
 class GatedDelta2Scan(GatedDelta2Base):
@@ -124,11 +132,24 @@ class GatedDelta2Scan(GatedDelta2Base):
                 t.detach().requires_grad_(True) for t in (alpha, K, et, Q, zt)
             ]
             out = self._run(impl, *inputs, mode)
-            torch.autograd.grad(
+            grads = torch.autograd.grad(
                 out.float().square().mean(), inputs, retain_graph=False
             )
+            if not all(torch.isfinite(g).all() for g in grads):
+                raise RuntimeError("non-finite backward: " + impl)
             return out.detach()
         return run
+
+    def _autograd_ok(self, alpha):
+        """``_scan_fwd`` normalizes the decay in fp32.  Its backward computes
+        products of ``exp(+-cumsum)`` factors, so allowing chunk log-decays
+        close to the fp32 limit overflows the *gradient* even when the forward
+        is finite (mostly visible in compiled graphs).  Only enable it when
+        every chunk stays well inside the fp32 range; otherwise the chunked
+        scan, which falls back to fp64 / sequential internally, is used."""
+        return not _needs_fp32_fallback(
+            alpha.squeeze(-1), self.chunk, log_min=_AUTOGRAD_LOG_MIN
+        )
 
     def _candidates(self, alpha, K, et, Q, zt, mode):
         dk = K.shape[-2]
@@ -138,10 +159,7 @@ class GatedDelta2Scan(GatedDelta2Base):
         if _can_use_recurrent_fast(alpha, K, Q, zt) and L <= 2048 and min(dk, dv) >= 32:
             cands.append(("triton", self._make_candidate("triton", alpha, K, et, Q, zt, mode)))
         cands.append(("scan", self._make_candidate("scan", alpha, K, et, Q, zt, mode)))
-        if not (
-            alpha.is_cuda
-            and _needs_seq_fallback(alpha.squeeze(-1), self.chunk)
-        ):
+        if self._autograd_ok(alpha):
             cands.append(
                 ("autograd", self._make_candidate("autograd", alpha, K, et, Q, zt, mode))
             )
@@ -166,24 +184,28 @@ class GatedDelta2Scan(GatedDelta2Base):
                 return Delta2ScanFn.apply(
                     alpha, K, et, Q, zt, self.chunk, mode, self.prec
                 )
-            if _needs_seq_fallback(alpha.squeeze(-1), self.chunk):
+            if _needs_fp32_fallback(alpha.squeeze(-1), self.chunk):
                 return Delta2ScanFn.apply(
                     alpha, K, et, Q, zt, self.chunk, mode, self.prec
                 )
             return _scan_fwd(alpha, K, et, Q, zt, self.chunk, mode, self.prec)
 
         if impl is not None:
+            if impl == "autograd" and not self._autograd_ok(alpha):
+                impl = "scan"
             return self._run(impl, alpha, K, et, Q, zt, mode)
 
         # --- impl == "auto" (optimized, autotuned) -------------------------
         if torch.compiler.is_compiling():
-            # During torch.compile only the branch-free differentiable scan
-            # can actually be fused; the custom kernels are opaque and would
-            # just leave the compiler tracing Python.  On CPU the compiled
-            # projections are the win and the eager scan stays opaque.
-            if alpha.is_cuda:
-                return self._run("autograd", alpha, K, et, Q, zt, mode)
-            return self._run("scan", alpha, K, et, Q, zt, mode)
+            # The fusible differentiable scan (``_scan_fwd``) normalizes the
+            # decay in fp32; its compiled backward overflows for chunk decay
+            # factors that are still finite in the forward, so the compiler
+            # path uses the same safe custom kernels as the reference
+            # implementation.  ``impl="autograd"`` remains available for
+            # regimes with moderate decay.
+            return self._run(
+                self._heuristic(alpha, K, et, Q, zt), alpha, K, et, Q, zt, mode
+            )
 
         training = torch.is_grad_enabled()
         if not (tuning.enabled() and zt.shape[-2] >= 32):
@@ -217,6 +239,8 @@ class GatedDelta2Scan(GatedDelta2Base):
                     tuning.store(key, impl, scores, mems)
             except Exception:
                 impl = self._heuristic(alpha, K, et, Q, zt)
+        if impl == "autograd" and not self._autograd_ok(alpha):
+            impl = "scan"
         return self._run(impl, alpha, K, et, Q, zt, mode)
 
     def forward(self, xt):
