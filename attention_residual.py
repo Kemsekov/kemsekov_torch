@@ -21,7 +21,7 @@ class AttentionResidual(nn.Module):
         """
         super().__init__()
         self.models = nn.ModuleList(modules)
-        self.query = nn.Parameter(torch.randn(len(modules)+1,features_dim))
+        self.query = nn.Parameter(torch.zeros(len(modules)+1,features_dim))
         # nn.init.orthogonal_(self.query)
         self.KV = nn.Sequential(
             nn.RMSNorm(features_dim),
@@ -32,10 +32,10 @@ class AttentionResidual(nn.Module):
         
         self.out = nn.Sequential(
             nn.RMSNorm(features_dim),
-            Residual([
-                nn.SiLU(),
-                nn.Linear(features_dim,features_dim)
-            ])
+            # Residual([
+            nn.SiLU(),
+            nn.Linear(features_dim,features_dim,bias=False)
+            # ])
         )
         
         self.features_dimension=features_dimension
@@ -71,7 +71,7 @@ class AttentionResidual(nn.Module):
         keys.append(k)
         values.append(v)
         # return xt
-        return self.get_x_next(keys, values, self.query[-1])
+        return self.get_x_next(keys, values, self.query[-1])+xt
 
     def get_x_next(self, keys, values, q:torch.Tensor):
         keys=torch.stack(keys)
@@ -123,4 +123,4 @@ class AttentionResidual(nn.Module):
         v=xt
         keys.append(k)
         values.append(v)
-        return self.get_x_next(keys, values, self.query[-1]), new_states
+        return self.get_x_next(keys, values, self.query[-1])+x, new_states
