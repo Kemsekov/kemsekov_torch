@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.rotary_emb_fast import FastRotEmb
+from kemsekov_torch.rotary_emb import _compute_inv_freq
 from kemsekov_torch.common_modules import ChanLayerNorm,ChanRMSNorm,StepState
 
 def zero_module(module):
@@ -170,9 +171,12 @@ class AttentionState(StepState):
     Incremental state of :class:`SelfAttention`.
 
     ``k``/``v`` are the cached keys/values of shape ``[B, kv_heads, T, head_dim]``
-    (``None`` until the first :meth:`SelfAttention.step` call), ``pos`` is the
-    number of flattened positions consumed so far and ``grid_shape`` optionally
-    holds the full spatial shape for 2d/3d inputs.
+    (``None`` until the first :meth:`SelfAttention.step` call). Keys are cached
+    *un-rotated*: with rotary embeddings enabled they are rotated by
+    :meth:`SelfAttention.step` at every step, because the inverse frequencies
+    depend on the current sequence length. ``pos`` is the number of flattened
+    positions consumed so far and ``grid_shape`` optionally holds the full
+    spatial shape for 2d/3d inputs.
     """
     k: Optional[torch.Tensor] = None
     v: Optional[torch.Tensor] = None
@@ -364,6 +368,40 @@ class SelfAttention(nn.Module):
         """
         return AttentionState(grid_shape=grid_shape)
 
+    def _rope_freqs(self, device, total):
+        """
+        sin/cos tables for absolute positions ``[0, total)``, shaped
+        ``[1, total, 1, half_dim]``.
+
+        Uses the same linear inverse-frequency interpolation as the full
+        forward pass: ``eval_length = total`` and the trained length stored in
+        :attr:`rotary_emb`. Computed on the fly (not through
+        ``rotary_emb.get_1d_freq``) because ``total`` grows on every
+        generation step and caching a table per length would waste memory.
+        """
+        rotate_dim = self.head_dim // 2 * 2
+        half_dim = rotate_dim // 2
+        inv_freq = _compute_inv_freq(
+            self.rotary_emb.base,
+            half_dim,
+            device,
+            trained_length=self.rotary_emb.max_seq_len1d[0],
+            eval_length=total,
+        )
+        t = torch.arange(total, device=device, dtype=torch.float32)
+        freqs = torch.einsum("i,j->ij", t, inv_freq)
+        return freqs.sin()[None, :, None, :], freqs.cos()[None, :, None, :], rotate_dim
+
+    @staticmethod
+    def _rope_apply(x, sin, cos, rotate_dim):
+        """Rotate every ``head_dim`` slice of ``x`` (``[..., head_dim]``) with
+        ``sin``/``cos`` and copy the non-rotated tail, mirroring
+        :meth:`RotEmb._apply_rotary_pos_emb`."""
+        half_dim = rotate_dim // 2
+        x1, x2 = x[..., :half_dim], x[..., half_dim:rotate_dim]
+        rotated = torch.cat([x1 * cos - x2 * sin, x1 * sin + x2 * cos], dim=-1)
+        return torch.cat([rotated, x[..., rotate_dim:]], dim=-1)
+
     def step(self, x, state: AttentionState):
         """
         Incremental forward pass: processes a chunk of new positions and
@@ -376,12 +414,13 @@ class SelfAttention(nn.Module):
         state: :class:`AttentionState` returned by :meth:`init_state` (or by a
                previous call to this method).
 
+        With ``add_rotary_embedding`` the new queries are rotated at their
+        absolute flattened positions and all cached keys are re-rotated with
+        the frequency table for the current total length, so the result matches
+        a full :meth:`forward` pass over everything consumed so far.
+
         Returns `(output, state)` with the same output shape as `x`.
         """
-        if self.add_rotary_embedding:
-            raise NotImplementedError(
-                "SelfAttention.step does not support add_rotary_embedding yet"
-            )
         if self.conv_kernel!=1:
             raise NotImplementedError(
                 "SelfAttention.step requires conv_kernel==1"
@@ -410,16 +449,37 @@ class SelfAttention(nn.Module):
         k = k.view(B,self.kv_heads,self.head_dim,n)
         v = v.view(B,self.kv_heads,self.head_dim,n)
 
-        # 3. [B, heads, n, head_dim]
+        # 3. Rotary embedding of the new queries at their absolute positions.
+        #    Keys are cached un-rotated (see below) and rotated at attention
+        #    time with the same table.
+        if self.add_rotary_embedding:
+            total = state.pos + n
+            sin, cos, rotate_dim = self._rope_freqs(q.device, total)
+            q = self._rope_apply(
+                q.permute(0,3,1,2), sin[:, state.pos:total], cos[:, state.pos:total], rotate_dim
+            ).permute(0,2,3,1)
+
+        # 4. [B, heads, n, head_dim]
         q = q.transpose(-1,-2).contiguous()
         k = k.transpose(-1,-2).contiguous()
         v = v.transpose(-1,-2).contiguous()
 
-        # 4. Append the new keys/values to the cache
+        # 5. Append the un-rotated new keys/values to the cache
         state.k = k if state.k is None else torch.cat([state.k,k],dim=-2)
         state.v = v if state.v is None else torch.cat([state.v,v],dim=-2)
 
-        # 5. New queries attend to the whole cache. For multi-token chunks the
+        # Rotary embeddings depend on the *current* total length (inverse
+        # frequencies are linearly interpolated beyond the trained length), so
+        # the cached keys are re-rotated on every step. This reproduces what a
+        # full forward pass over the whole history would compute.
+        if self.add_rotary_embedding:
+            k_attn = self._rope_apply(
+                state.k.permute(0,2,1,3), sin, cos, rotate_dim
+            ).permute(0,2,1,3)
+        else:
+            k_attn = state.k
+
+        # 6. New queries attend to the whole cache. For multi-token chunks the
         #    causal mask has to be built explicitly: SDPA's `is_causal` aligns
         #    to the bottom-right corner, which would let early chunk tokens
         #    attend to later chunk tokens.
@@ -429,14 +489,14 @@ class SelfAttention(nn.Module):
             k_pos = torch.arange(T+n,device=x.device)
             attn_mask = k_pos[None,:]<=q_pos[:,None]
             attn_out = F.scaled_dot_product_attention(
-                q, state.k, state.v,
+                q, k_attn, state.v,
                 dropout_p=self.dropout if self.training else 0.0,
                 attn_mask=attn_mask,
                 enable_gqa=self.heads!=self.kv_heads
             )
         else:
             attn_out = F.scaled_dot_product_attention(
-                q, state.k, state.v,
+                q, k_attn, state.v,
                 dropout_p=self.dropout if self.training else 0.0,
                 is_causal=self.is_causal and T==0,
                 enable_gqa=self.heads!=self.kv_heads
