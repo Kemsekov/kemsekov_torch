@@ -248,7 +248,11 @@ rounding on CPU and CUDA for float32/float16/bfloat16 and any decay strength.
 | `"scan"` | optimized chunked WY scan (`fast.py`) |
 | `"autograd"` | branch-free differentiable scan, made for `torch.compile` |
 
-Under `torch.compile` the tuner is bypassed: CUDA routes to the differentiable
-scan (the only backend Inductor can fuse end-to-end), CPU keeps the
-manual-backward scan opaque and compiles the projections.  Set
-`GD2_AUTOTUNE=0` to disable runtime tuning and use the static heuristic.
+Under `torch.compile` the tuner is bypassed and the same custom kernels as
+the reference implementation are used (they are opaque to Dynamo, so the
+compiler still fuses the projections).  The differentiable scan is only
+selected when every chunk's cumulative log-decay stays well inside the fp32
+range: its normalization is fp32 and the compiled backward overflows when the
+decay-normalized factors approach the fp32 limit, even if the forward is
+finite (the safe chunked scan falls back to fp64 / sequential internally).
+Set `GD2_AUTOTUNE=0` to disable runtime tuning and use the static heuristic.
