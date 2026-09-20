@@ -10,6 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from kemsekov_torch.rotary_emb_fast import FastRotEmb
 from kemsekov_torch.rotary_emb import _compute_inv_freq
+from kemsekov_torch.alibi import AlibiEmb
 from kemsekov_torch.common_modules import ChanLayerNorm,ChanRMSNorm,StepState
 
 def zero_module(module):
@@ -209,6 +210,7 @@ class SelfAttention(nn.Module):
         output_bias = True,
         abs_pos_jit_prob = 0.0,
         add_absolute_pos = False,
+        add_alibi = False,
         prenorm : Literal[None,'group','layer','rms']='group',
         is_causal=False,
         xsa=False,
@@ -225,6 +227,7 @@ class SelfAttention(nn.Module):
         output_bias: add bias to output conv or not. If you use GroupNorm after self-attention, i advice you to set this value to False
         abs_pos_jit_prob: setting this value to 0.5 or 1.0, will make absolute positions embedding work as scale-translate independent feature, which will allow model to extrapolate to much larger sequence lengths
         add_absolute_pos: add absolute position embedding
+        add_alibi: add ALiBi linear distance bias to the attention logits (causal when is_causal, symmetric over both directions otherwise)
         prenorm: add group or layer pre-normalization for input
         xsa: apply exclusive self-attention fix. It will slow down module performance on about 13% but will improve model quality
         """
@@ -251,6 +254,12 @@ class SelfAttention(nn.Module):
         
         self.add_rotary_embedding=add_rotary_embedding
         self.rotary_emb = FastRotEmb()
+        
+        self.add_alibi = add_alibi
+        if add_alibi:
+            self.alibi_emb = AlibiEmb(heads, is_causal=is_causal)
+        else:
+            self.alibi_emb = None
         
         # small heuristic for groups number estimation
         groups = max(1,dim//32)
@@ -325,11 +334,19 @@ class SelfAttention(nn.Module):
         v = v.transpose(-1,-2).contiguous()
         # (BATCH_SIZE, ... , HEADS_NUM, LENGTH, HEAD_DIM)
    
-        # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
+        # 5. Scaled dot-product attention (uses FlashAttention-2 when available).
+        #    The ALiBi bias already contains the causal mask, so `is_causal`
+        #    must be turned off when it is present.
+        attn_mask = None
+        if self.add_alibi:
+            attn_mask = self.alibi_emb(
+                q.shape[-2], q.shape[-2], device=q.device, dtype=q.dtype
+            )
         attn_out = F.scaled_dot_product_attention(
             q, k, v,
             dropout_p=self.dropout if self.training else 0.0,
-            is_causal=self.is_causal,
+            attn_mask=attn_mask,
+            is_causal=self.is_causal and attn_mask is None,
             enable_gqa=self.heads!=self.kv_heads
         )  # [B, heads, L, head_dim]
         
@@ -482,25 +499,28 @@ class SelfAttention(nn.Module):
         # 6. New queries attend to the whole cache. For multi-token chunks the
         #    causal mask has to be built explicitly: SDPA's `is_causal` aligns
         #    to the bottom-right corner, which would let early chunk tokens
-        #    attend to later chunk tokens.
+        #    attend to later chunk tokens. The ALiBi bias (when enabled)
+        #    already contains the causal mask.
         T = state.k.shape[-2] - n
-        if self.is_causal and T>0 and n>1:
+        attn_mask = None
+        is_causal = self.is_causal and T==0
+        if self.add_alibi:
+            attn_mask = self.alibi_emb(
+                n, state.k.shape[-2], device=x.device, dtype=q.dtype, q_offset=T
+            )
+            is_causal = False
+        elif self.is_causal and T>0 and n>1:
             q_pos = torch.arange(T,T+n,device=x.device)
             k_pos = torch.arange(T+n,device=x.device)
             attn_mask = k_pos[None,:]<=q_pos[:,None]
-            attn_out = F.scaled_dot_product_attention(
-                q, k_attn, state.v,
-                dropout_p=self.dropout if self.training else 0.0,
-                attn_mask=attn_mask,
-                enable_gqa=self.heads!=self.kv_heads
-            )
-        else:
-            attn_out = F.scaled_dot_product_attention(
-                q, k_attn, state.v,
-                dropout_p=self.dropout if self.training else 0.0,
-                is_causal=self.is_causal and T==0,
-                enable_gqa=self.heads!=self.kv_heads
-            )
+            is_causal = False
+        attn_out = F.scaled_dot_product_attention(
+            q, k_attn, state.v,
+            dropout_p=self.dropout if self.training else 0.0,
+            attn_mask=attn_mask,
+            is_causal=is_causal,
+            enable_gqa=self.heads!=self.kv_heads
+        )
 
         # apply exclusive self-attention (uses the *new* values only)
         if self.xsa:
@@ -548,6 +568,7 @@ class CrossAttention(nn.Module):
         dimensions: Literal[1,2,3] = 2,
         add_rotary_embedding = False,
         add_absolute_pos=False,
+        add_alibi=False,
         abs_pos_jit_prob=0.0,
         output_bias = True,
         prenorm : Literal[None,'group','layer','rms']='group',
@@ -578,6 +599,12 @@ class CrossAttention(nn.Module):
         
         self.add_rotary_embedding = add_rotary_embedding
         self.rotary_emb = FastRotEmb()
+        
+        self.add_alibi = add_alibi
+        if add_alibi:
+            self.alibi_emb = AlibiEmb(heads, is_causal=is_causal)
+        else:
+            self.alibi_emb = None
         
         groups = max(1, dim // 32)
         if groups == 1 and dim // 16 >= 2: groups = 2
@@ -674,11 +701,19 @@ class CrossAttention(nn.Module):
         # (BATCH_SIZE, HEADS_NUM, LENGTH, HEAD_DIM)
         
         # use linear attention when needed
-        # 5. Scaled dot-product attention (uses FlashAttention-2 when available)
+        # 5. Scaled dot-product attention (uses FlashAttention-2 when available).
+        #    ALiBi (when enabled) supplies an additive mask that is relative to
+        #    the query/key positions of `x`/`memory`, and includes causality.
+        attn_mask = None
+        if self.add_alibi:
+            attn_mask = self.alibi_emb(
+                q.shape[-2], k.shape[-2], device=q.device, dtype=q.dtype
+            )
         attn_out = F.scaled_dot_product_attention(
             q, k, v,
             dropout_p=self.dropout if self.training else 0,
-            is_causal=self.is_causal,
+            attn_mask=attn_mask,
+            is_causal=self.is_causal and attn_mask is None,
             enable_gqa=self.groups>1
         )  # [B, heads, L, head_dim]
         

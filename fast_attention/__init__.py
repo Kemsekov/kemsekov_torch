@@ -840,6 +840,8 @@ class FastSelfAttention(SelfAttention):
             return super().forward(x)
         if self.dropout > 0 and self.training:
             return super().forward(x)
+        if self.add_alibi:
+            return super().forward(x)
         L = x[0].numel() // x.shape[1]
         if L < 16:
             return super().forward(x)
@@ -922,6 +924,8 @@ class FastCrossAttention(CrossAttention):
         if self.dropout > 0 and self.training:
             return super().forward(x, memory)
         if self.is_causal:
+            return super().forward(x, memory)
+        if self.add_alibi:
             return super().forward(x, memory)
         Lq = x[0].numel() // x.shape[1]
         Lk = memory[0].numel() // memory.shape[1]
