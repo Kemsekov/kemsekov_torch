@@ -214,3 +214,41 @@ On CPU and for shapes that cannot use Triton the module falls back to the
 same chunked scan as the other two packages (identical numerics), so all
 three are equal there; the CPU default `chunk=64` was verified optimal
 against 16..512 on the CPU grid.
+
+## Optimized backends (`fast.py`, `recurrent_fast.py`, `tuning.py`)
+
+`GatedDelta2Scan` now chooses its mixing backend at runtime; the sequence
+mixing continues to match the serial reference (`GatedDelta2`) up to float
+rounding on CPU and CUDA for float32/float16/bfloat16 and any decay strength.
+
+* `fast.py` -- chunked WY scan that inverts the unit-lower WY factor once
+  (`Tinv = (I + tril(E K^T, -1))^-1`) and reuses it as batched matmuls in the
+  forward and backward passes, caches a leaner set of intermediates
+  (`Kb/Eb/Qb/Kt` are recomputed), and can drop `Tinv/Y/U` as well when the
+  `budget` (default 256 MB, `GD2_SCAN_BUDGET_MB`) is exceeded.
+* `recurrent_fast.py` -- fused per-token Triton recurrence whose backward
+  accumulates key-side gradients either with per-value-tile buffers plus
+  reduction kernels or with relaxed atomic adds into `(B, L, DK)`, switching
+  at `GD2_ATOMIC_MB` (default 64 MB) to keep the scratch small.
+* `tuning.py` -- first time a `(device, dtype, shape, training)` combination
+  is seen, the applicable backends are benchmarked on private cloned inputs
+  (one warmup + timed runs; forward-only in inference, forward+backward in
+  training), checked against the reference scan (`5e-3` relative, finite),
+  and the winner is cached in `~/.cache/gd2_tune.json`.  On CUDA the peak
+  memory of each candidate is measured as well and, among candidates within
+  10% of the fastest, the least memory-hungry one wins.
+
+`impl` selects a specific backend instead of autotuning:
+
+| impl | backend |
+|---|---|
+| `"auto"` (default) | autotuned |
+| `"triton"` | fused per-token Triton recurrence |
+| `"split"` | two-level split recurrent kernels |
+| `"scan"` | optimized chunked WY scan (`fast.py`) |
+| `"autograd"` | branch-free differentiable scan, made for `torch.compile` |
+
+Under `torch.compile` the tuner is bypassed: CUDA routes to the differentiable
+scan (the only backend Inductor can fuse end-to-end), CPU keeps the
+manual-backward scan opaque and compiles the projections.  Set
+`GD2_AUTOTUNE=0` to disable runtime tuning and use the static heuristic.

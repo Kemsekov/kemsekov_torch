@@ -82,13 +82,27 @@ def _scan_fwd(a, k, e, q, z, C, scan_mode, prec):
         return O.reshape(B, Lp, dv)[:, :L]
 
 
-def _tri_solve(A, RHS, upper=False):
+def _tri_solve_impl(A, RHS, upper=False):
     dt = A.dtype
     if dt == torch.float32 and A.shape[-1] > 64:
         A = A.double()
         RHS = RHS.double()
     X = torch.linalg.solve_triangular(A, RHS, upper=upper, unitriangular=True)
     return X.to(dt)
+
+
+@torch.compiler.disable
+def _tri_solve_eager(A, RHS, upper=False):
+    # Inductor's decomposition of the triangular solve is much slower than
+    # the eager batched trsm kernel on CPU, so keep it opaque there; on CUDA
+    # the traced version is faster and disabling it costs a graph break.
+    return _tri_solve_impl(A, RHS, upper)
+
+
+def _tri_solve(A, RHS, upper=False):
+    if A.device.type == "cpu":
+        return _tri_solve_eager(A, RHS, upper)
+    return _tri_solve_impl(A, RHS, upper)
 
 
 def _states_seq(M, b):
