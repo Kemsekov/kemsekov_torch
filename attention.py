@@ -240,9 +240,9 @@ class SelfAttention(nn.Module):
         inner_dim = heads * head_dim
         self.dimensions=dimensions
         self.xsa = xsa
-        self.groups = heads/kv_heads
+        self.groups = heads//kv_heads
         self.kv_heads = kv_heads
-        
+        assert heads%kv_heads==0,'heads must be divisible by kv_heads'
         # Total inner dimension for QKV projection (Q gets full heads, K and V get kv_heads)
         self.qkv_inner_dim = (self.heads + 2 * self.kv_heads) * self.head_dim
         
