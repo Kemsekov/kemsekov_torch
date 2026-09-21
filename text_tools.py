@@ -107,3 +107,39 @@ class TokenDataset(torch.utils.data.Dataset):
         ids=torch.tensor(list(true_text)+self.pad_token*(output_tokens))[:output_tokens]
         self.cache[index]=ids.to(self.store_dtype)
         return ids
+
+
+
+# module to convert text tokens to vector
+class Embedding(nn.Module):
+    """
+    Module for token to embedding vector learning
+    """
+    def __init__(self, vocab_size, embedding_size):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.embedding_size = embedding_size
+
+        # Initialize weights and bias
+        self.weight = nn.Parameter(torch.Tensor(vocab_size, embedding_size))
+        self.bias = nn.Parameter(torch.Tensor(embedding_size))
+
+        self.reset_parameters()
+
+    #normal init
+    def reset_parameters(self):
+        # Initialize weights with a normal distribution
+        std = 1.0 / (self.vocab_size**0.5)
+        
+        nn.init.normal_(self.weight, mean=0.0, std=std)
+        # Initialize bias to zeros
+        nn.init.zeros_(self.bias)
+        
+    def forward(self, input):
+        # Input is expected to be a tensor of indices
+        return torch.nn.functional.embedding(input, self.weight)
+
+    def encode(self,ind): return self(ind)
+    
+    def decode(self,act):
+        return act@self.weight.T
