@@ -15,7 +15,7 @@ The full cross-length comparison suite lives in the repository tests
 import torch
 
 from . import GatedDelta2, GatedDelta2Scan
-from . import recurrent
+from . import recurrent, recurrent_fast
 
 # tolerated forward / gradient relative error per dtype
 TOL = {
@@ -32,26 +32,52 @@ def _max_rel(a, b):
     return (a - b).abs().max().item() / max(a.abs().max().item(), 1e-9)
 
 
-def _check_dtype(dtype, device="cpu", heads=2, kv_heads=None, force_scan=False):
+def _randomize(mod, seed=1234, decay_scale=0.35):
+    """Fill every parameter with small random values.
+
+    The default init zeroes the output projection (``zero_module``), which
+    makes the mixing tensors irrelevant to ``y.square().mean()`` and the
+    parameter gradients exactly zero.  Randomizing exercises the mixing
+    forward *and* backward paths, with a decay strength inside the
+    fp32-representable range.
+    """
+    gen = torch.Generator().manual_seed(seed)
+    with torch.no_grad():
+        for name, p in mod.named_parameters():
+            if name == "decay":
+                p.copy_(torch.rand(p.shape, generator=gen) * decay_scale)
+            elif "decay_bias" in name:
+                p.copy_(torch.randn(p.shape, generator=gen) * 0.2)
+            else:
+                p.copy_(torch.randn(p.shape, generator=gen) * 0.15)
+    return mod
+
+
+def _check_dtype(
+    dtype, device="cpu", heads=2, kv_heads=None, force_scan=False, impl="auto"
+):
     torch.manual_seed(0)
     B, L, dim, qk, vd = 3, 64, 32, 64, 20
     x = torch.randn(B, L, dim, requires_grad=True).to(device=device, dtype=dtype)
 
-    serial = GatedDelta2(dim, qk, vd, heads=heads, kv_heads=kv_heads).to(
-        device=device, dtype=dtype
-    )
-    chunked = GatedDelta2Scan(dim, qk, vd, heads=heads, kv_heads=kv_heads).to(
-        device=device, dtype=dtype
-    )
+    serial = _randomize(
+        GatedDelta2(dim, qk, vd, heads=heads, kv_heads=kv_heads)
+    ).to(device=device, dtype=dtype)
+    chunked = GatedDelta2Scan(
+        dim, qk, vd, heads=heads, kv_heads=kv_heads, impl=impl
+    ).to(device=device, dtype=dtype)
     for (_, p1), (_, p2) in zip(serial.named_parameters(), chunked.named_parameters()):
         assert p1.shape == p2.shape
         p2.data.copy_(p1.data)
 
-    # force_scan disables the fused Triton kernels so the chunked scan path is
-    # exercised even on CUDA
+    # force_scan disables both fused Triton recurrences (the optimized
+    # ``recurrent_fast`` and the reference ``recurrent``) so the chunked scan
+    # path is exercised even on CUDA
     had_triton = recurrent._HAS_TRITON
+    had_fast = recurrent_fast._HAS_TRITON
     if force_scan:
         recurrent._HAS_TRITON = False
+        recurrent_fast._HAS_TRITON = False
     try:
         y_ref = serial(x)
         y = chunked(x)
@@ -62,10 +88,11 @@ def _check_dtype(dtype, device="cpu", heads=2, kv_heads=None, force_scan=False):
         g = torch.autograd.grad(y.square().mean(), [x, *chunked.parameters()])
     finally:
         recurrent._HAS_TRITON = had_triton
+        recurrent_fast._HAS_TRITON = had_fast
     rel_g = max(_max_rel(a, b) for a, b in zip(g_ref, g))
     tol_fwd, tol_grad = TOL[dtype]
-    print(f"  {str(device):4s} {str(dtype):14s} heads={heads} kv_heads={kv_heads}"
-          f"{' forced-scan' if force_scan else '':12s}: "
+    print(f"  {str(device):4s} {str(dtype):14s} heads={heads} kv_heads={kv_heads} "
+          f"impl={impl:8s}{' forced-scan' if force_scan else ''}: "
           f"fwd rel={rel:.2e}  grad rel={rel_g:.2e}")
     return rel < tol_fwd and rel_g < tol_grad
 
@@ -73,7 +100,7 @@ def _check_dtype(dtype, device="cpu", heads=2, kv_heads=None, force_scan=False):
 def _check_state_dict(heads=4, kv_heads=2):
     torch.manual_seed(1)
     B, L, dim, qk, vd = 3, 64, 32, 64, 20
-    serial = GatedDelta2(dim, qk, vd, heads=heads, kv_heads=kv_heads)
+    serial = _randomize(GatedDelta2(dim, qk, vd, heads=heads, kv_heads=kv_heads))
     m2 = GatedDelta2Scan(dim, qk, vd, heads=heads, kv_heads=kv_heads)
     assert set(serial.state_dict()) == set(m2.state_dict())
     m2.load_state_dict(serial.state_dict())
@@ -109,6 +136,7 @@ def _check_gqa_grouping(device="cpu"):
     dim, qk, vd, heads, kv_heads, L = 32, 16, 12, 4, 2, 32
     grouped = GatedDelta2Scan(dim, qk, vd, heads=heads, kv_heads=kv_heads).to(device)
     dense = GatedDelta2Scan(dim, qk, vd, heads=heads, kv_heads=heads).to(device)
+    _randomize(grouped)
     g = heads // kv_heads
     n_e, n_w, n_d = qk * kv_heads, vd * kv_heads, qk * kv_heads
     n_q, n_k, n_v = qk * heads, qk * kv_heads, vd * kv_heads
@@ -132,6 +160,14 @@ def _check_gqa_grouping(device="cpu"):
             )
         )
         dense.decay_bias.copy_(_repeat_head_blocks(grouped.decay_bias, qk, g))
+        # parameters shared by both layouts (no head grouping): the pre-norm,
+        # the global decay scalar and the output projection
+        dense.decay.copy_(grouped.decay)
+        dense.pernorm.weight.copy_(grouped.pernorm.weight)
+        for (_, pg), (_, pd) in zip(
+            grouped.out.named_parameters(), dense.out.named_parameters()
+        ):
+            pd.copy_(pg)
     with torch.no_grad():
         x = torch.randn(2, L, dim, device=device)
         d = _max_rel(grouped(x), dense(x))
@@ -151,6 +187,17 @@ def run():
                     ok = _check_dtype(
                         dtype, device, heads, kv_heads, force_scan=True
                     ) and ok
+        # explicit backend sweep (per-token Triton recurrence, two-level
+        # recurrent, optimized chunked scan, differentiable scan)
+        impls = ["auto", "scan", "autograd"]
+        if device == "cuda":
+            impls += ["triton", "split"]
+        heads, kv_heads = GQA_CONFIGS[0]
+        for impl in impls:
+            for dtype in (torch.float32, torch.float16, torch.bfloat16):
+                ok = _check_dtype(
+                    dtype, device, heads, kv_heads, impl=impl
+                ) and ok
     ok = _check_gqa_grouping("cuda" if devices[-1] == "cuda" else "cpu") and ok
     ok = _check_state_dict() and ok
     print("PASS" if ok else "FAIL")

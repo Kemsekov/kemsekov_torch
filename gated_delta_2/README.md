@@ -30,12 +30,17 @@ strategies and identical parameters/buffers (state dicts are interchangeable):
 
 ```
 gated_delta_2/
-├── base.py        # shared layer definitions, head movement, L2-norm q/k projection
-├── serial.py      # GatedDelta2        -- token-by-token reference loop
-├── scan.py        # scan kernel: chunk prep (WY), unit-lower solves,
-│                  #   affine prefix scan (Blelloch / sequential), manual backward
-├── chunked.py     # GatedDelta2Scan    -- chunked parallel-scan module
-└── __init__.py    # public exports
+├── base.py          # shared layer definitions, head movement, L2-norm q/k projection
+├── serial.py        # GatedDelta2        -- token-by-token reference loop
+├── scan.py          # reference scan kernel: chunk prep (WY), unit-lower solves,
+│                    #   affine prefix scan (Blelloch / sequential), manual backward
+├── fast.py          # optimized chunked WY scan (single inverted WY factor, lean cache)
+├── recurrent.py     # reference fused per-token recurrence (plain + two-level split)
+├── recurrent_fast.py# optimized fused per-token recurrence (atomic/buffered backward)
+├── chunked.py       # GatedDelta2Scan    -- dispatch + chunked parallel-scan module
+├── tuning.py        # runtime backend autotuner (cached under ~/.cache)
+├── validate.py      # serial-agreement self-check (fwd + grad) for every backend
+└── __init__.py      # public exports
 ```
 
 All modules consume the same per-head inputs produced by
@@ -93,23 +98,27 @@ GQA.
 
 The module picks the mixing implementation automatically:
 
-* **Fused recurrent Triton kernels** (`recurrent.py`, used on CUDA when the
-  mixing tensors are float32 and `QK_dim`, `V_dim <= 256`): the exact
+* **Fused recurrent Triton kernels** (`recurrent_fast.py`, used on CUDA when
+  the mixing tensors are float32 and `QK_dim`, `V_dim <= 256`): the exact
   per-token recurrence with the state held in registers (FLA
   `fused_recurrent` style), one block per (batch, head) tiled over the value
   dim. This is numerically the same recurrence as the serial reference, needs
   no WY solve / chunk scan and handles any decay strength exactly (hard
-  resets included). Forward + checkpointed manual backward.
-* **Chunked differentiable scan** (`scan.py::_scan_fwd`): the WY-parallel
-  formulation with float64 decay normalization and autograd backward —
-  used on CPU, for float64 models (gradcheck), or when the dims exceed the
-  Triton path.
-* **Sequential float64 fallback** (`Delta2ScanFn`): only when the cumulative
-  decay of a chunk leaves the float64 range (extreme decay); exact and
-  rarely used.
+  resets included). Forward + checkpointed manual backward.  These kernels
+  are the *preferred* path: the dispatch uses them whenever the constraints
+  above are met (and the autotuner always benchmarks them).
+* **Optimized chunked WY scan** (`fast.py`): the WY-parallel formulation with
+  float64 decay normalization, used on CPU, for float64 models (gradcheck),
+  for wide dims and for long sequences where it measures faster.
+* **Chunked differentiable scan** (`scan.py::_scan_fwd`): branch-free
+  autograd variant for `torch.compile` and for regimes with moderate decay.
+* **Sequential float64 fallback** (`Delta2ScanFn`): when the chunked WY form
+  cannot represent the cumulative decay (extreme decay / hard resets); exact
+  and rarely used.
 
-`validate.py` exercises all precisions (float32/float16/bfloat16); the
-serial-vs-scan agreement holds across every path.
+`validate.py` exercises all precisions (float32/float16/bfloat16) and every
+backend against the serial reference; the serial agreement holds across every
+path.
 
 ## How the parallel scan works (`scan.py`)
 
@@ -162,7 +171,10 @@ strength.
 ## Validation
 
 Quick check that a parallel scan matches the serial reference (outputs and
-gradients through the whole model):
+gradients through the whole model).  Note that the default init zeroes the
+output projection, which makes the mixing path irrelevant to the loss and the
+mixing gradients exactly zero — randomize the parameters (or run
+`python -m gated_delta_2.validate`, which does) to exercise the backward:
 
 ```python
 import torch
@@ -170,6 +182,11 @@ from gated_delta_2 import GatedDelta2, GatedDelta2Scan
 
 torch.manual_seed(0)
 m1 = GatedDelta2(32, 64, 20, heads=2)
+with torch.no_grad():
+    for name, p in m1.named_parameters():
+        p.copy_(torch.randn_like(p) * 0.15)
+        if name == "decay":
+            p.abs_()
 torch.manual_seed(0)
 m2 = GatedDelta2Scan(32, 64, 20, heads=2)
 for (_, p1), (_, p2) in zip(m1.named_parameters(), m2.named_parameters()):
@@ -177,11 +194,16 @@ for (_, p1), (_, p2) in zip(m1.named_parameters(), m2.named_parameters()):
 
 x = torch.randn(7, 100, 32, requires_grad=True)
 y1, y2 = m1(x), m2(x)
-print((y1 - y2).abs().max().item() / y1.abs().max().item())   # ~1e-6
+print((y1 - y2).abs().max().item() / y1.abs().max().item())   # ~1e-7
 g1 = torch.autograd.grad(y1.square().mean(), m1.parameters())
 g2 = torch.autograd.grad(y2.square().mean(), m2.parameters())
 print(max(((a - b).abs().max() / a.abs().max()).item() for a, b in zip(g1, g2)))
 ```
+
+`python -m gated_delta_2.validate` sweeps the dtypes, GQA configurations and
+every backend (`auto`, `triton`, `split`, `scan`, `autograd`, plus the chunked
+scan with Triton disabled) and checks the forward, input-gradient and
+parameter-gradient agreement against `GatedDelta2`.
 
 Measured on CPU (torch 2.14, 6 threads, dim=32, QK=64, V=20, heads=2, B=7,
 fp32 default): forward+backward of `GatedDelta2Scan` vs `GatedDelta2` is
@@ -196,24 +218,31 @@ errors ~1e-6 to ~1e-5 across L = 100 … 8192.
 * Delta-rule parallelization background: Yang et al., *Parallelizing Linear
   Transformers with the Delta Rule over Sequence Length* (DeltaNet).
 
-## Auto-selected backend (this package)
+## Dispatch (`chunked.py`)
 
-`GatedDelta2Scan` here measures nothing at runtime: it *routes* each call to
-the fastest of the two CUDA kernels by a rule tuned offline (optuna over a
-432-config benchmark grid, objective = mean over the grid of
-`t_chosen / t_gd21`, so every shape contributes equally):
+`GatedDelta2Scan` routes each call as follows:
 
-* plain per-row fused kernels (the `gated_delta_2` implementation) when
-  `L < 1024`, or `DK/DV < 16`, or the state tiles are wide
-  (`DK >= 64 and DV >= 64`, or `rows = batch*heads >= 32` together with
-  `DK >= 64` or `DV >= 64`);
-* the two-level split-recurrent kernels (the `gated_delta_21`
-  implementation) for long sequences (`L >= 1024`) with narrow tiles.
-
-On CPU and for shapes that cannot use Triton the module falls back to the
-same chunked scan as the other two packages (identical numerics), so all
-three are equal there; the CPU default `chunk=64` was verified optimal
-against 16..512 on the CPU grid.
+* **Fused per-token Triton recurrence** (`recurrent_fast.py`) whenever its
+  kernel constraints are met (CUDA, float32 mixing tensors,
+  `QK_dim, V_dim <= 256`).  This is the exact recurrence of the serial
+  reference (no WY solve, no decay normalization), so it handles any sequence
+  length and any decay strength (hard resets included).  It is the preferred
+  path and is never excluded from autotuning.
+* **Optimized chunked WY scan** (`fast.py`) otherwise: CPU, float64 models,
+  wide dims, or shapes where it measures faster (`scan`).
+* **Autotuning** (`impl="auto"`, default): the first time a
+  `(device, dtype, shape, training)` combination is seen, the applicable
+  candidates (`triton`, `scan`, and `autograd` when the decay is moderate)
+  are benchmarked on private cloned inputs, checked against each other
+  (`5e-3` relative, finite) and the winner is cached in
+  `~/.cache/gd2_tune.json`.  On CPU only `scan`/`autograd` are available, so
+  all backends are equal there.
+* **Static heuristic** (`GD2_AUTOTUNE=0`, `torch.compile`, or tuning failure):
+  the fused recurrent kernel when applicable, else the chunked scan.
+* `impl="triton" | "split" | "scan" | "autograd"` forces a backend.  The
+  reference two-level recurrent kernels (`recurrent.py`, `"split"`) are kept
+  as an explicit escape hatch and are never autotuned (slow first-use JIT);
+  the fused recurrent path supersedes them whenever it is applicable.
 
 ## Optimized backends (`fast.py`, `recurrent_fast.py`, `tuning.py`)
 
@@ -248,11 +277,12 @@ rounding on CPU and CUDA for float32/float16/bfloat16 and any decay strength.
 | `"scan"` | optimized chunked WY scan (`fast.py`) |
 | `"autograd"` | branch-free differentiable scan, made for `torch.compile` |
 
-Under `torch.compile` the tuner is bypassed and the same custom kernels as
-the reference implementation are used (they are opaque to Dynamo, so the
-compiler still fuses the projections).  The differentiable scan is only
-selected when every chunk's cumulative log-decay stays well inside the fp32
-range: its normalization is fp32 and the compiled backward overflows when the
-decay-normalized factors approach the fp32 limit, even if the forward is
-finite (the safe chunked scan falls back to fp64 / sequential internally).
-Set `GD2_AUTOTUNE=0` to disable runtime tuning and use the static heuristic.
+Under `torch.compile` the tuner is bypassed and the static heuristic picks
+the preferred custom kernel (fused recurrent Triton when applicable, else the
+chunked scan); the kernels are opaque to Dynamo, so the compiler still fuses
+the projections.  The differentiable scan is only selected when every chunk's
+cumulative log-decay stays well inside the fp32 range: its normalization is
+fp32 and the compiled backward overflows when the decay-normalized factors
+approach the fp32 limit, even if the forward is finite (the safe chunked scan
+falls back to fp64 / sequential internally).  Set `GD2_AUTOTUNE=0` to disable
+runtime tuning and use the static heuristic.

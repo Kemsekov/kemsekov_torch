@@ -2,7 +2,7 @@ import torch
 
 from .base import GatedDelta2Base
 from .fast import BUDGET, FastScanFn
-from .recurrent import RecurrentDelta2Fn, _can_split, _can_use_recurrent
+from .recurrent import RecurrentDelta2Fn, _can_use_recurrent
 from .recurrent_fast import FastRecurrentFn
 from .recurrent_fast import _can_use_recurrent as _can_use_recurrent_fast
 from .scan import (
@@ -88,10 +88,14 @@ class GatedDelta2Scan(GatedDelta2Base):
 
     # ------------------------------------------------------------------ run
     def _run(self, impl, alpha, K, et, Q, zt, mode):
-        if impl == "triton" and _can_use_recurrent_fast(alpha, K, Q, zt):
-            return FastRecurrentFn.apply(alpha, K, et, Q, zt)
-        if impl == "split" and _can_use_recurrent(alpha, K, Q, zt) and alpha.is_cuda:
-            return RecurrentDelta2Fn.apply(alpha, K, et, Q, zt)
+        if impl == "triton":
+            if _can_use_recurrent_fast(alpha, K, Q, zt):
+                return FastRecurrentFn.apply(alpha, K, et, Q, zt)
+            impl = "scan"
+        if impl == "split":
+            if _can_use_recurrent(alpha, K, Q, zt) and alpha.is_cuda:
+                return RecurrentDelta2Fn.apply(alpha, K, et, Q, zt)
+            impl = "scan"
         if impl == "autograd":
             return _scan_fwd(alpha, K, et, Q, zt, self.chunk, mode, self.prec)
         return FastScanFn.apply(
@@ -100,14 +104,13 @@ class GatedDelta2Scan(GatedDelta2Base):
 
     # ------------------------------------------------------------ heuristics
     def _heuristic(self, alpha, K, et, Q, zt):
-        dk = K.shape[-2]
-        dv = zt.shape[-1]
-        L = zt.shape[-2]
+        """Static fallback used when autotuning is disabled, when running
+        under ``torch.compile`` or when tuning fails: the fused recurrent
+        Triton kernel (``recurrent_fast``) is the exact per-token recurrence
+        with no WY solve / chunk scan, so it is preferred whenever its kernel
+        constraints are met; otherwise the chunked scan (which carries its own
+        fp64 / sequential-decay fallbacks) is used."""
         if _can_use_recurrent_fast(alpha, K, Q, zt):
-            if L > 2048 and dk >= 64 and dv >= 64:
-                return "scan"
-            if _can_split(alpha.shape[0], L, dk, dv):
-                return "split"
             return "triton"
         return "scan"
 
@@ -118,7 +121,9 @@ class GatedDelta2Scan(GatedDelta2Base):
         )
         return "|".join(
             str(v) for v in (
-                "v1", dev, torch.__version__, alpha.dtype, int(training),
+                # v2: the fused recurrent kernel became an always-on candidate
+                # (old caches never considered it for long/wide/thin shapes)
+                "v2", dev, torch.__version__, alpha.dtype, int(training),
                 alpha.shape[0], zt.shape[-2], K.shape[-2], zt.shape[-1],
                 self.chunk,
             )
@@ -152,11 +157,13 @@ class GatedDelta2Scan(GatedDelta2Base):
         )
 
     def _candidates(self, alpha, K, et, Q, zt, mode):
-        dk = K.shape[-2]
-        dv = zt.shape[-1]
-        L = zt.shape[-2]
+        # The fused recurrent kernel is always benchmarked when its kernel
+        # constraints are met (any sequence length, any QK/V dim it supports),
+        # so the autotuner can pick it whenever it measures fastest.  The
+        # chunked scan (with its fp64 / sequential fallbacks) and the
+        # differentiable scan are the alternatives.
         cands = []
-        if _can_use_recurrent_fast(alpha, K, Q, zt) and L <= 2048 and min(dk, dv) >= 32:
+        if _can_use_recurrent_fast(alpha, K, Q, zt):
             cands.append(("triton", self._make_candidate("triton", alpha, K, et, Q, zt, mode)))
         cands.append(("scan", self._make_candidate("scan", alpha, K, et, Q, zt, mode)))
         if self._autograd_ok(alpha):
@@ -213,13 +220,17 @@ class GatedDelta2Scan(GatedDelta2Base):
                 self._heuristic(alpha, K, et, Q, zt), alpha, K, et, Q, zt, mode
             )
 
-        # cases we never tune: the reference split kernels take minutes to JIT
-        # on first use, and the sequential fallback has no alternatives
-        if _can_use_recurrent_fast(alpha, K, Q, zt) and _can_split(
-            alpha.shape[0], zt.shape[-2], K.shape[-2], zt.shape[-1]
+        # The fused recurrent kernel (``recurrent_fast``) evaluates the exact
+        # per-token recurrence, so it handles extreme decay without any rescale
+        # and is always a candidate when its kernel constraints are met.  The
+        # sequential-decay scan is only forced when that kernel is unavailable.
+        # The reference split kernels are never autotuned (minutes of JIT on
+        # first use); ``impl="split"`` remains an explicit escape hatch.
+        if (
+            not _can_use_recurrent_fast(alpha, K, Q, zt)
+            and alpha.is_cuda
+            and _needs_seq_fallback(alpha.squeeze(-1), self.chunk)
         ):
-            return self._run("split", alpha, K, et, Q, zt, mode)
-        if alpha.is_cuda and _needs_seq_fallback(alpha.squeeze(-1), self.chunk):
             return self._run("scan", alpha, K, et, Q, zt, mode)
 
         key = self._tune_key(alpha, K, zt, training)
