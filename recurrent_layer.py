@@ -12,43 +12,44 @@ def zero_module(module):
 
 
 class RecurrentLayer(nn.Module):
-    def __init__(self, module, in_dim, max_recurrence=8, mlp_factor=1):
+    def __init__(self, module, in_dim, max_recurrence=8):
         super().__init__()
         if not 1 <= max_recurrence < 10:
             raise ValueError("max_recurrence must be between 1 and 9")
         self.module = module
         self.gate = nn.Sequential(
-            nn.Linear(in_dim, in_dim * mlp_factor),
-            nn.RMSNorm(in_dim * mlp_factor),
+            nn.RMSNorm(in_dim),
             nn.SiLU(),
-            zero_module(nn.Linear(in_dim * mlp_factor, in_dim * 2)),
+            zero_module(nn.Linear(in_dim, 2))
         )
         self.max_recurrence = max_recurrence
         self.res_w = nn.Sequential(
-                    nn.RMSNorm(in_dim),
-                    nn.SiLU(),
-                    zero_module(nn.Linear(in_dim, 1)),
-                )
-        self.register_buffer("_train_steps", torch.zeros((), dtype=torch.long), persistent=False)
+            nn.RMSNorm(in_dim),
+            nn.SiLU(),
+            zero_module(nn.Linear(in_dim, 1)),
+        )
 
     def forward(self, x):
         x_in = x
-        x0 = self.module(x)
+        with torch.no_grad():
+            x0 = self.module(x)
         x = x0
         n = self.max_recurrence - 1
-        depth = None
-        if self.training:
-            self._train_steps += 1
-            s = self._train_steps
-            full = x0.new_full((), self.max_recurrence)
-            cand = ((s - 1) % self.max_recurrence) + 1
-            depth = full.where(s > 100, cand)
+
         for i in range(n):
-            update_gate, pass_gate = self.gate(x).sigmoid().chunk(2, -1)
-            if depth is not None:
-                update_gate = update_gate * (i < depth).to(update_gate.dtype)
-            x = update_gate * self.module(x * pass_gate) + (1 - update_gate) * x
+            if i==n-1:
+                x = self.next_x(x+x_in)
+            else:
+                with torch.no_grad():
+                    x = self.next_x(x+x_in)
+     
         return x + x0 + self.res_w(x0) * x_in
+
+    def next_x(self, x):
+        update_gate, pass_gate = self.gate(x).sigmoid().chunk(2, -1)
+        y = self.module(x * pass_gate)
+        x = update_gate * y + (1 - update_gate) * x
+        return x
 
     def init_state(self, batch_size, device=None, dtype=None):
         """
@@ -74,7 +75,41 @@ class RecurrentLayer(nn.Module):
         new_states = [s0]
         for i in range(self.max_recurrence - 1):
             update_gate, pass_gate = self.gate(x).sigmoid().chunk(2, -1)
-            out, s = step_module(self.module,x * pass_gate,states[i + 1])
+            out, s = step_module(self.module,x * pass_gate+x_in,states[i + 1])
             x = update_gate * out + (1 - update_gate) * x
             new_states.append(s)
         return x + x0 + self.res_w(x0) * x_in, new_states
+
+
+class RecurrentLayer1(nn.Module):
+    def __init__(self, module, max_recurrence=8):
+        super().__init__()
+        if not 1 <= max_recurrence < 10:
+            raise ValueError("max_recurrence must be between 1 and 9")
+        self.module = module
+        self.max_recurrence = max_recurrence
+
+    def forward(self, x):
+        x_in = x
+        n=self.max_recurrence
+        for i in range(n):
+            y = x+(x_in if i>0 else 0)
+            if i==n-1:
+                x = self.module(y)
+            else:
+                with torch.no_grad():
+                    x = self.module(y)
+        return x + x_in
+
+    def init_state(self, batch_size, device=None, dtype=None):
+        """
+        One inner state per `self.module` application: the module is called
+        `max_recurrence` times per token (once for `x0` and once per
+        refinement step) and each application attends to its own history, so
+        each needs its own KV/recurrent state.
+        """
+        return [
+            init_module_state(self.module,batch_size,device=device,dtype=dtype)
+            for _ in range(self.max_recurrence)
+        ]
+

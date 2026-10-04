@@ -52,6 +52,7 @@ class AlibiEmb(nn.Module):
         assert slopes.numel() == heads, "AlibiEmb expects one slope per head"
         self.heads = heads
         self.is_causal = is_causal
+        # self.slopes = torch.nn.Parameter(slopes)
         # derived from `heads`; keep it out of the state dict
         self.register_buffer("slopes", slopes, persistent=False)
 

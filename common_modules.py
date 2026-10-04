@@ -1,9 +1,10 @@
 from typing import List, Literal, Tuple
 import torch
 import torch.nn as nn
+from kemsekov_torch.complex_linear import ComplexLinear
 
 class SwiGLU(nn.Module):
-    def __init__(self, dim,out_dim=None,transpose=False):
+    def __init__(self, dim,out_dim=None,transpose=False,complex=False):
         """
         Applies SwiGLU to inputs of shape `[B,...,dim]`
         
@@ -13,14 +14,17 @@ class SwiGLU(nn.Module):
         super().__init__()
         out_dim=out_dim or dim
         self.input_transpose = Transpose(1,-1) if transpose else nn.Identity()
-        self.gate_proj = nn.Linear(dim, out_dim, bias=False)
-        self.up_proj = nn.Linear(dim, out_dim, bias=False)
+        module = ComplexLinear if complex else nn.Linear
+        self.gate_proj = module(dim, out_dim, bias=False)
+        self.up_proj = module(dim, out_dim, bias=False)
+        self.out=module(out_dim,dim,bias=False)
     
     def forward(self, x):
         x=self.input_transpose(x)
         gate = self.gate_proj(x)
         up = self.up_proj(x)
-        return self.input_transpose(nn.functional.silu(gate) * up)
+        out = self.input_transpose(nn.functional.silu(gate) * up)
+        return self.out(out)
 
 class ConcatTensors(torch.nn.Module):
     """
