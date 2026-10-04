@@ -61,6 +61,99 @@ class SimpleTokenizer(nn.Module):
         chars = [self.idx2sym_list[i] for i in indices]
         return ''.join(chars)
 
+class HFTokenizer(nn.Module):
+    """
+    Drop-in replacement for SimpleTokenizer backed by a HuggingFace `tokenizers` tokenizer
+    trained on the provided text lines.
+
+    `hf_tokenizer_type` selects the algorithm ("bpe", "wordpiece" or "unigram"),
+    the other hf_* arguments configure training. The fitted tokenizer is kept as its
+    JSON config in `hf_config`, so the module stays torch.jit exportable and can be
+    restored after `torch.jit.load` without this class:
+
+        tok = torch.jit.load("tokenizer.pt")
+        from tokenizers import Tokenizer
+        hf_tokenizer = Tokenizer.from_str(tok.hf_config)
+    """
+    def __init__(self, texts: List[str], lowercase=False, unknown_symbols_placeholder=' ',
+                 hf_tokenizer_type="bpe", hf_vocab_size=32000, hf_min_frequency=2,
+                 hf_special_tokens: List[str] = None):
+        super().__init__()
+        from tokenizers import Tokenizer, models, trainers, pre_tokenizers, decoders
+
+        if hf_tokenizer_type == "bpe":
+            hf_tokenizer = Tokenizer(models.BPE())
+            hf_tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+            hf_tokenizer.decoder = decoders.ByteLevel()
+            trainer = trainers.BpeTrainer(
+                vocab_size=hf_vocab_size,
+                min_frequency=hf_min_frequency,
+                special_tokens=hf_special_tokens or [],
+                show_progress=False,
+            )
+        elif hf_tokenizer_type == "wordpiece":
+            hf_tokenizer = Tokenizer(models.WordPiece(unk_token="[UNK]"))
+            hf_tokenizer.pre_tokenizer = pre_tokenizers.BertPreTokenizer()
+            hf_tokenizer.decoder = decoders.WordPiece()
+            trainer = trainers.WordPieceTrainer(
+                vocab_size=hf_vocab_size,
+                min_frequency=hf_min_frequency,
+                special_tokens=hf_special_tokens or ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"],
+                show_progress=False,
+            )
+        elif hf_tokenizer_type == "unigram":
+            special_tokens = hf_special_tokens or ["[UNK]"]
+            if "[UNK]" not in special_tokens:
+                special_tokens = ["[UNK]"] + special_tokens
+            hf_tokenizer = Tokenizer(models.Unigram())
+            hf_tokenizer.pre_tokenizer = pre_tokenizers.Metaspace()
+            hf_tokenizer.decoder = decoders.Metaspace()
+            trainer = trainers.UnigramTrainer(
+                vocab_size=hf_vocab_size,
+                unk_token="[UNK]",
+                special_tokens=special_tokens,
+                show_progress=False,
+            )
+        else:
+            raise ValueError("Unknown hf_tokenizer_type '%s', expected bpe/wordpiece/unigram" % hf_tokenizer_type)
+
+        hf_tokenizer.train_from_iterator(
+            (t.lower() for t in texts) if lowercase else texts,
+            trainer=trainer,
+        )
+
+        self.hf_tokenizer_type = hf_tokenizer_type
+        self.hf_vocab_size = hf_vocab_size
+        self.hf_config = hf_tokenizer.to_str()
+        self._hf_tokenizer = hf_tokenizer  # python-only, not serialized by torch.jit
+
+        self.vocab_size = hf_tokenizer.get_vocab_size(with_added_tokens=True)
+        self.idx2sym_list: List[str] = [
+            hf_tokenizer.id_to_token(i) or unknown_symbols_placeholder
+            for i in range(self.vocab_size)
+        ]
+        self.idx2sym: torch.StringType = "".join(self.idx2sym_list)
+        self.sym2idx: Dict[str, int] = hf_tokenizer.get_vocab()
+        self.unknown_symbols_placeholder = unknown_symbols_placeholder
+        self.lowercase = lowercase
+
+        placeholder_ids = hf_tokenizer.encode(unknown_symbols_placeholder).ids
+        self.space_idx = placeholder_ids[0] if len(placeholder_ids) > 0 else 0
+
+    def forward(self, x):
+        return x
+
+    def encode(self, text: str) -> torch.Tensor:
+        """Convert a string to a tensor of token indices (torch.long)."""
+        if self.lowercase:
+            text = text.lower()
+        return torch.tensor(self._hf_tokenizer.encode(text).ids, dtype=torch.long)
+
+    def decode(self, indices: Tensor) -> str:
+        """Convert a tensor of token indices back to a string."""
+        return self._hf_tokenizer.decode(indices.tolist()).replace('�',self.unknown_symbols_placeholder)
+
+
 class TokenDataset(torch.utils.data.Dataset):
     """
     Dataset that returns tokenized text with output tokens length as multiple of `batch_size`.
@@ -86,10 +179,12 @@ class TokenDataset(torch.utils.data.Dataset):
         self.fixed_length=fixed_length
         
         # to save memory, store cache in lowest precision
-        if len(tokenizer.idx2sym)<256:
+        if tokenizer.vocab_size<256:
             self.store_dtype=torch.uint8
-        else:
+        elif tokenizer.vocab_size<65536:
             self.store_dtype=torch.uint16
+        else:
+            self.store_dtype=torch.uint32
     
     def __len__(self):
         return len(self.text)
