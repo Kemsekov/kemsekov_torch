@@ -140,6 +140,21 @@ class HFTokenizer(nn.Module):
         placeholder_ids = hf_tokenizer.encode(unknown_symbols_placeholder).ids
         self.space_idx = placeholder_ids[0] if len(placeholder_ids) > 0 else 0
 
+    def load(path_to_file: str):
+        from tokenizers import Tokenizer
+        tok : nn.Module = torch.jit.load(path_to_file)
+        hf_tokenizer = Tokenizer.from_str(tok.hf_config)
+        res = HFTokenizer(["1"])
+        res.load_state_dict(tok.state_dict())
+        
+        # do this for all attributes of  res.attr=tok.attr
+        for k in dir(res):
+            if not k.startswith('_') and not callable(getattr(res, k)):
+                setattr(res, k, getattr(tok, k))
+        
+        res._hf_tokenizer=hf_tokenizer
+        return res
+    
     def forward(self, x):
         return x
 
@@ -151,7 +166,7 @@ class HFTokenizer(nn.Module):
 
     def decode(self, indices: Tensor) -> str:
         """Convert a tensor of token indices back to a string."""
-        return self._hf_tokenizer.decode(indices.tolist()).replace('�',self.unknown_symbols_placeholder)
+        return self._hf_tokenizer.decode(indices.tolist())
 
 
 class TokenDataset(torch.utils.data.Dataset):
